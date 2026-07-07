@@ -8,6 +8,7 @@ struct GraftProject: Codable, Identifiable {
     var description: String
     var status: String // active/paused/done
     var colour: String // hex string
+    var icon: String
     var createdAt: String
     var updatedAt: String
     var issueCounts: IssueCounts?
@@ -27,7 +28,7 @@ struct GraftProject: Codable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, description, status, colour
+        case id, name, description, status, colour, icon
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case issueCounts = "issue_counts"

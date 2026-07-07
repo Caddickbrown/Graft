@@ -35,7 +35,7 @@ struct ProjectDetailView: View {
         let order = ["backlog", "todo", "in-progress", "review", "done"]
         return order.compactMap { status in
             let filtered = projectIssues.filter { $0.status == status }
-            return filtered.isEmpty ? nil : (status, filtered)
+            return (status, filtered)  // always show all columns, even empty
         }
     }
 
@@ -48,9 +48,15 @@ struct ProjectDetailView: View {
 
                     // Project header card
                     HStack(spacing: 12) {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(hex: currentProject.colour))
-                            .frame(width: 36, height: 36)
+                        if !currentProject.icon.isEmpty {
+                            Text(currentProject.icon)
+                                .font(.system(size: 28))
+                                .frame(width: 36, height: 36)
+                        } else {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(hex: currentProject.colour))
+                                .frame(width: 36, height: 36)
+                        }
 
                         VStack(alignment: .leading, spacing: 3) {
                             if !currentProject.description.isEmpty {

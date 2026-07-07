@@ -82,6 +82,7 @@ struct EditProjectView: View {
     @State private var description = ""
     @State private var selectedColour = Color.indigo
     @State private var status = "active"
+    @State private var icon = ""
     @State private var isSaving = false
 
     let statuses = ["active", "paused", "done"]
@@ -93,6 +94,18 @@ struct EditProjectView: View {
                     TextField("Name", text: $name)
                     TextField("Description (optional)", text: $description, axis: .vertical)
                         .lineLimit(3...6)
+                }
+
+                Section("Icon") {
+                    HStack {
+                        if !icon.isEmpty {
+                            Text(icon)
+                                .font(.system(size: 28))
+                                .frame(width: 40)
+                        }
+                        TextField("Emoji icon (optional)", text: $icon)
+                            .autocorrectionDisabled()
+                    }
                 }
 
                 Section("Appearance") {
@@ -115,6 +128,7 @@ struct EditProjectView: View {
                 description = project.description
                 status = project.status
                 selectedColour = Color(hex: project.colour)
+                icon = project.icon
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -140,6 +154,7 @@ struct EditProjectView: View {
         updated.description = description
         updated.status = status
         updated.colour = selectedColour.toHex()
+        updated.icon = icon
         try? await store.updateProject(updated)
         dismiss()
     }

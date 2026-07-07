@@ -75,7 +75,7 @@ struct MilestoneRowView: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "flag.fill")
-                .foregroundStyle(.indigo)
+                .foregroundStyle(Color.gSage)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(milestone.name)
@@ -111,7 +111,8 @@ struct MilestoneFormView: View {
 
     @State private var name = ""
     @State private var description = ""
-    @State private var dueDate = ""
+    @State private var hasDueDate = false
+    @State private var dueDate = Date()
     @State private var isSaving = false
 
     var isEditing: Bool { milestone != nil }
@@ -126,8 +127,11 @@ struct MilestoneFormView: View {
                 }
 
                 Section("Due date") {
-                    TextField("YYYY-MM-DD (optional)", text: $dueDate)
-                        .keyboardType(.numbersAndPunctuation)
+                    Toggle("Set due date", isOn: $hasDueDate.animation())
+                    if hasDueDate {
+                        DatePicker("Due", selection: $dueDate, displayedComponents: .date)
+                            .datePickerStyle(.compact)
+                    }
                 }
             }
             .navigationTitle(isEditing ? "Edit milestone" : "New milestone")
@@ -136,7 +140,11 @@ struct MilestoneFormView: View {
                 if let m = milestone {
                     name = m.name
                     description = m.description
-                    dueDate = m.dueDate ?? ""
+                    if let due = m.dueDate, !due.isEmpty,
+                       let parsed = ISO8601DateFormatter().date(from: due + "T00:00:00Z") {
+                        hasDueDate = true
+                        dueDate = parsed
+                    }
                 }
             }
             .toolbar {
@@ -158,7 +166,13 @@ struct MilestoneFormView: View {
     private func save() async {
         isSaving = true
         defer { isSaving = false }
-        let due = dueDate.isEmpty ? nil : dueDate
+
+        let dateFormatter: DateFormatter = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd"
+            return f
+        }()
+        let due: String? = hasDueDate ? dateFormatter.string(from: dueDate) : nil
 
         if var existing = milestone {
             existing.name = name

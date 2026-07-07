@@ -98,12 +98,13 @@ final class GraftStore {
 
     func createProject(name: String, description: String, colour: String, status: String = "active") async throws {
         let base = activeBase
-        let body: [String: String] = [
+        var body: [String: String] = [
             "name": name,
             "description": description,
             "colour": colour,
             "status": status
         ]
+        // icon defaults to empty on create (can be set via edit)
         let _: GraftProject = try await api.post("\(base)/api/projects", body: body)
         await sync()
     }
@@ -114,7 +115,8 @@ final class GraftStore {
             "name": project.name,
             "description": project.description,
             "colour": project.colour,
-            "status": project.status
+            "status": project.status,
+            "icon": project.icon,
         ]
         let _: GraftProject = try await api.put("\(base)/api/projects/\(project.id)", body: body)
         await sync()

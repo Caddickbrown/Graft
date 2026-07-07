@@ -80,6 +80,20 @@
   </main>
 </div>
 
+<!-- Issue detail slide-over -->
+<div class="slideover-overlay" id="slideover-overlay" onclick="GRAFT.closeSlideover()" style="display:none"></div>
+<aside class="slideover" id="issue-slideover" style="display:none">
+  <div class="slideover-header">
+    <span class="issue-id-badge" id="detail-id"></span>
+    <button class="modal-close" onclick="GRAFT.closeSlideover()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="slideover-body" id="slideover-body">
+    <!-- Populated by JS -->
+  </div>
+</aside>
+
 <!-- New/Edit Issue Modal -->
 <div class="modal-overlay" id="modal-new-issue" style="display:none">
   <div class="modal modal-wide">
@@ -145,6 +159,7 @@
         </div>
       </div>
       <div class="modal-footer">
+        <button type="button" class="btn btn-ghost btn-danger" id="issue-delete-btn" style="display:none" onclick="GRAFT.deleteIssue()">Delete</button>
         <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-new-issue')">Cancel</button>
         <button type="submit" class="btn btn-primary">Save issue</button>
       </div>

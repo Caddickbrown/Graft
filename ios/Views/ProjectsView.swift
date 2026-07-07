@@ -164,6 +164,10 @@ struct ProjectCardView: View {
             VStack(alignment: .leading, spacing: 6) {
                 // Name + status
                 HStack(alignment: .firstTextBaseline) {
+                    if !project.icon.isEmpty {
+                        Text(project.icon)
+                            .font(.system(size: 18))
+                    }
                     Text(project.name)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color.gInk)
