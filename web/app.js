@@ -112,7 +112,7 @@
         <div class="nav-section-label">Projects</div>
         ${active.map(p => `
           <a href="project.html?id=${p.id}" class="nav-item${p.id === current ? ' active' : ''}">
-            <span class="nav-project-dot" style="background:${p.colour}"></span>
+            ${p.icon ? `<span class="nav-project-icon">${p.icon}</span>` : `<span class="nav-project-dot" style="background:${p.colour}"></span>`}
             ${p.name}
           </a>`).join('')}
       `;
@@ -125,7 +125,13 @@
     const showProject = opts.showProject && issue.project_name
       ? `<span class="assignee-chip">${issue.project_name}</span>` : '';
     return `
-      <div class="kanban-card" data-priority="${issue.priority}" onclick="GRAFT.openIssueSlideover('${issue.id}')">
+      <div class="kanban-card"
+           data-priority="${issue.priority}"
+           data-id="${issue.id}"
+           draggable="true"
+           onclick="GRAFT.openIssueSlideover('${issue.id}')"
+           ondragstart="GRAFT._dragStart(event)"
+           ondragend="GRAFT._dragEnd(event)">
         <div class="kanban-card-title">${issue.title}</div>
         <div class="kanban-card-meta">
           ${priorityDot(issue.priority)}
@@ -285,30 +291,85 @@
     } catch { toast('Error deleting issue'); }
   }
 
-  // ── Issue slide-over ────────────────────────────────────────────
+  // ── Issue slide-over (inline editable) ──────────────────────────
+  let _slideoverIssueId = null;
+
   async function openIssueSlideover(id) {
     const issue = _allIssues.find(i => i.id === id);
     if (!issue) return;
-    document.getElementById('detail-id').textContent = id;
+    _slideoverIssueId = id;
+    document.getElementById('detail-id').textContent = id.replace('iss_', '#');
+
+    // Build milestone options for this issue's project
+    const msOptions = _allMilestones
+      .filter(m => m.project_id === issue.project_id)
+      .map(m => `<option value="${m.id}" ${issue.milestone_id === m.id ? 'selected' : ''}>${m.name}</option>`)
+      .join('');
+
     document.getElementById('slideover-body').innerHTML = `
-      <div class="detail-title">${issue.title}</div>
-      ${issue.description ? `<div class="detail-desc">${issue.description}</div>` : ''}
-      <div class="detail-meta">
-        <div class="detail-meta-row">
-          <span class="detail-meta-label">Status</span>
-          <span>${STATUS_LABELS[issue.status] || issue.status}</span>
-        </div>
-        <div class="detail-meta-row">
-          <span class="detail-meta-label">Priority</span>
-          ${priorityDot(issue.priority)} <span>${issue.priority.charAt(0).toUpperCase() + issue.priority.slice(1)}</span>
-        </div>
-        ${issue.assignee ? `<div class="detail-meta-row"><span class="detail-meta-label">Assignee</span><span>${issue.assignee}</span></div>` : ''}
-        ${issue.milestone_name ? `<div class="detail-meta-row"><span class="detail-meta-label">Milestone</span>${milestoneTag(issue.milestone_name)}</div>` : ''}
-        ${(issue.labels||[]).length ? `<div class="detail-meta-row"><span class="detail-meta-label">Labels</span><div style="display:flex;gap:4px;flex-wrap:wrap">${(issue.labels||[]).map(l=>`<span class="label-chip">${l}</span>`).join('')}</div></div>` : ''}
+      <div class="so-field">
+        <div class="so-title"
+             contenteditable="true"
+             data-field="title"
+             onblur="GRAFT._soSave()"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
+        >${issue.title}</div>
       </div>
-      <div class="detail-actions">
-        <button class="btn btn-ghost" onclick="GRAFT.openEditIssue(GRAFT._issue('${id}'))">Edit</button>
-        <button class="btn btn-ghost btn-danger" onclick="GRAFT._deleteIssueFromSlideover('${id}')">Delete</button>
+
+      <div class="so-field">
+        <div class="so-desc"
+             contenteditable="true"
+             data-field="description"
+             onblur="GRAFT._soSave()"
+             placeholder="Add a description…"
+        >${issue.description || ''}</div>
+      </div>
+
+      <div class="so-meta">
+        <div class="so-meta-row">
+          <span class="so-label">Status</span>
+          <select class="so-select" data-field="status" onchange="GRAFT._soSave()">
+            <option value="backlog"     ${issue.status==='backlog'     ?'selected':''}>Backlog</option>
+            <option value="todo"        ${issue.status==='todo'        ?'selected':''}>Todo</option>
+            <option value="in-progress" ${issue.status==='in-progress' ?'selected':''}>In progress</option>
+            <option value="review"      ${issue.status==='review'      ?'selected':''}>Review</option>
+            <option value="done"        ${issue.status==='done'        ?'selected':''}>Done</option>
+          </select>
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Priority</span>
+          <select class="so-select" data-field="priority" onchange="GRAFT._soSave()">
+            <option value="urgent" ${issue.priority==='urgent'?'selected':''}>🔴 Urgent</option>
+            <option value="high"   ${issue.priority==='high'  ?'selected':''}>🟠 High</option>
+            <option value="normal" ${issue.priority==='normal'?'selected':''}>⚪ Normal</option>
+            <option value="low"    ${issue.priority==='low'   ?'selected':''}>⬇️ Low</option>
+          </select>
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Assignee</span>
+          <input class="so-input" data-field="assignee"
+                 value="${issue.assignee || ''}"
+                 placeholder="Unassigned"
+                 onblur="GRAFT._soSave()">
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Milestone</span>
+          <select class="so-select" data-field="milestone_id" onchange="GRAFT._soSave()">
+            <option value="">None</option>
+            ${msOptions}
+          </select>
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Labels</span>
+          <input class="so-input" data-field="labels"
+                 value="${(issue.labels||[]).join(', ')}"
+                 placeholder="bug, frontend…"
+                 onblur="GRAFT._soSave()">
+        </div>
+      </div>
+
+      <div class="so-footer">
+        <button class="btn btn-ghost btn-danger btn-sm" onclick="GRAFT._deleteIssueFromSlideover('${id}')">Delete issue</button>
       </div>
     `;
     document.getElementById('slideover-overlay').style.display = 'block';
@@ -316,7 +377,44 @@
     document.body.style.overflow = 'hidden';
   }
 
+  async function _soSave() {
+    const id = _slideoverIssueId;
+    if (!id) return;
+    const body = document.getElementById('slideover-body');
+
+    const title = body.querySelector('[data-field="title"]')?.innerText?.trim();
+    const description = body.querySelector('[data-field="description"]')?.innerText?.trim();
+    const status = body.querySelector('[data-field="status"]')?.value;
+    const priority = body.querySelector('[data-field="priority"]')?.value;
+    const assignee = body.querySelector('[data-field="assignee"]')?.value?.trim();
+    const milestone_id = body.querySelector('[data-field="milestone_id"]')?.value || null;
+    const labelsRaw = body.querySelector('[data-field="labels"]')?.value || '';
+    const labels = labelsRaw.split(',').map(l => l.trim()).filter(Boolean);
+
+    if (!title) return;
+
+    // Update local cache immediately
+    const issue = _allIssues.find(i => i.id === id);
+    if (issue) {
+      Object.assign(issue, { title, description, status, priority, assignee, milestone_id, labels });
+      // Update milestone_name for display
+      const ms = _allMilestones.find(m => m.id === milestone_id);
+      issue.milestone_name = ms?.name || null;
+    }
+
+    // Refresh board/list behind the slideover quietly
+    if (_currentView === 'board') renderBoard();
+    else renderList();
+
+    try {
+      await api('PUT', `/api/issues/${id}`, { title, description, status, priority, assignee, milestone_id, labels });
+    } catch {
+      toast('Save failed');
+    }
+  }
+
   function closeSlideover() {
+    _slideoverIssueId = null;
     document.getElementById('slideover-overlay').style.display = 'none';
     document.getElementById('issue-slideover').style.display = 'none';
     document.body.style.overflow = '';
@@ -328,6 +426,7 @@
       await api('DELETE', `/api/issues/${id}`);
       toast('Issue deleted');
       closeSlideover();
+      _allIssues = _allIssues.filter(i => i.id !== id);
       if (typeof reloadPage === 'function') reloadPage();
     } catch { toast('Error deleting issue'); }
   }
@@ -340,7 +439,9 @@
   let _projectFilter = 'all';
 
   async function init() {
+    initTheme();
     initColourPicker('colour-picker', 'project-colour');
+    initIconPicker('icon-picker', 'project-icon');
     renderSidebarProjects();
     loadProjects();
   }
@@ -383,6 +484,7 @@
           <div class="project-card-stripe" style="background:${p.colour}"></div>
           <div class="project-card-body">
             <div class="project-card-header">
+              ${p.icon ? `<span class="project-icon">${p.icon}</span>` : ''}
               <span class="project-card-name">${p.name}</span>
               <span class="project-card-status status-${p.status}">${p.status}</span>
             </div>
@@ -401,7 +503,9 @@
     document.getElementById('project-name').value = '';
     document.getElementById('project-description').value = '';
     document.getElementById('project-status').value = 'active';
+    document.getElementById('project-icon').value = '';
     setColour('colour-picker', 'project-colour', '#6366f1');
+    initIconPicker('icon-picker', 'project-icon');
     document.getElementById('modal-project-title').textContent = 'New project';
     openModal('modal-new-project');
   }
@@ -414,6 +518,7 @@
       description: document.getElementById('project-description').value.trim(),
       status: document.getElementById('project-status').value,
       colour: document.getElementById('project-colour').value,
+      icon: document.getElementById('project-icon').value,
     };
     try {
       if (editId) {
@@ -450,6 +555,7 @@
   //  PAGE: issues.html  (All issues)
   // ══════════════════════════════════════════════════════════════
   async function initIssues() {
+    initTheme();
     renderSidebarProjects();
     try {
       [_allProjects, _allIssues, _allMilestones] = await Promise.all([
@@ -531,6 +637,7 @@
 
   async function initProject() {
     window._pageMode = 'project';
+    initTheme();
     const id = new URLSearchParams(window.location.search).get('id');
     if (!id) { window.location.href = 'index.html'; return; }
     _currentProjectId = id;
@@ -548,7 +655,7 @@
       ]);
       document.title = `${_currentProject.name} — Graft`;
       document.getElementById('project-name-breadcrumb').textContent = _currentProject.name;
-      document.getElementById('project-name-title').textContent = _currentProject.name;
+      document.getElementById('project-name-title').textContent = (_currentProject.icon ? _currentProject.icon + ' ' : '') + _currentProject.name;
       document.getElementById('project-description-text').textContent = _currentProject.description || '';
       renderMilestoneFilterBar();
       renderView();
@@ -610,7 +717,12 @@
       const col = issues.filter(i => i.status === status);
       const dotColor = STATUS_COL_COLORS[status];
       return `
-        <div class="kanban-col">
+        <div class="kanban-col"
+             data-status="${status}"
+             ondragover="GRAFT._dragOver(event)"
+             ondragenter="GRAFT._dragEnter(event)"
+             ondragleave="GRAFT._dragLeave(event)"
+             ondrop="GRAFT._drop(event)">
           <div class="kanban-col-header">
             <span class="col-status-dot" style="background:${dotColor}"></span>
             <span class="col-name">${STATUS_LABELS[status]}</span>
@@ -623,6 +735,112 @@
           </button>
         </div>`;
     }).join('');
+  }
+
+  // ── Drag and drop ────────────────────────────────────────────────
+  let _dragId = null;
+  let _dragSourceStatus = null;
+
+  function _dragStart(e) {
+    const card = e.currentTarget;
+    _dragId = card.dataset.id;
+    _dragSourceStatus = card.closest('.kanban-col')?.dataset.status;
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', _dragId);
+    // Slight delay so the drag ghost renders before we dim the card
+    setTimeout(() => card.classList.add('drag-ghost'), 0);
+  }
+
+  function _dragEnd(e) {
+    e.currentTarget.classList.remove('dragging', 'drag-ghost');
+    document.querySelectorAll('.kanban-col').forEach(c => c.classList.remove('drop-target'));
+    _dragId = null;
+    _dragSourceStatus = null;
+  }
+
+  function _dragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    // Show insertion indicator: find card we're hovering over
+    const col = e.currentTarget;
+    const afterCard = _getDragAfterCard(col, e.clientY);
+    const placeholder = col.querySelector('.drag-placeholder');
+    if (placeholder) placeholder.remove();
+    const ph = document.createElement('div');
+    ph.className = 'drag-placeholder';
+    if (afterCard) {
+      col.insertBefore(ph, afterCard);
+    } else {
+      const addBtn = col.querySelector('.kanban-add-btn');
+      col.insertBefore(ph, addBtn);
+    }
+  }
+
+  function _dragEnter(e) {
+    e.preventDefault();
+    e.currentTarget.classList.add('drop-target');
+  }
+
+  function _dragLeave(e) {
+    // Only remove if leaving the column itself, not a child
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('drop-target');
+      const ph = e.currentTarget.querySelector('.drag-placeholder');
+      if (ph) ph.remove();
+    }
+  }
+
+  async function _drop(e) {
+    e.preventDefault();
+    const col = e.currentTarget;
+    col.classList.remove('drop-target');
+    const ph = col.querySelector('.drag-placeholder');
+    if (ph) ph.remove();
+
+    const newStatus = col.dataset.status;
+    if (!_dragId) return;
+
+    // Find new sort_order: cards currently in this col, figure out where placeholder landed
+    const cards = [...col.querySelectorAll('.kanban-card[data-id]')];
+    const afterCard = _getDragAfterCard(col, e.clientY);
+    let newOrder;
+    if (afterCard) {
+      const idx = cards.indexOf(afterCard);
+      newOrder = idx;
+    } else {
+      newOrder = cards.length;
+    }
+
+    // Optimistically update local data
+    const issue = _allIssues.find(i => i.id === _dragId);
+    if (!issue) return;
+    const statusChanged = issue.status !== newStatus;
+    issue.status = newStatus;
+    issue.sort_order = newOrder;
+
+    // Re-render immediately (snappy feel)
+    renderBoard();
+
+    // Persist to API
+    try {
+      await api('PUT', `/api/issues/${_dragId}`, { status: newStatus, sort_order: newOrder });
+    } catch {
+      toast('Failed to save — refreshing');
+      await loadProjectPage();
+    }
+  }
+
+  function _getDragAfterCard(col, y) {
+    const cards = [...col.querySelectorAll('.kanban-card[data-id]:not(.dragging)')];
+    return cards.reduce((closest, card) => {
+      const box = card.getBoundingClientRect();
+      const offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > (closest.offset ?? -Infinity)) {
+        return { offset, element: card };
+      }
+      return closest;
+    }, {}).element ?? null;
   }
 
   function renderList() {
@@ -647,7 +865,9 @@
     document.getElementById('project-name').value = _currentProject.name;
     document.getElementById('project-description').value = _currentProject.description || '';
     document.getElementById('project-status').value = _currentProject.status;
+    document.getElementById('project-icon').value = _currentProject.icon || '';
     setColour('colour-picker', 'project-colour', _currentProject.colour);
+    initIconPicker('icon-picker', 'project-icon');
     openModal('modal-edit-project');
   }
 
@@ -737,6 +957,60 @@
     } catch { toast('Error deleting milestone'); }
   }
 
+  // ── Theme toggle ─────────────────────────────────────────────────
+  const THEME_KEY = 'graft_theme';
+
+  function initTheme() {
+    const saved = localStorage.getItem(THEME_KEY) || 'dark';
+    applyTheme(saved);
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.classList.toggle('light', theme === 'light');
+    localStorage.setItem(THEME_KEY, theme);
+    document.querySelectorAll('.theme-toggle-btn').forEach(btn => {
+      btn.innerHTML = theme === 'light'
+        ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> Dark mode`
+        : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> Light mode`;
+    });
+  }
+
+  function toggleTheme() {
+    const current = document.documentElement.classList.contains('light') ? 'light' : 'dark';
+    applyTheme(current === 'light' ? 'dark' : 'light');
+  }
+
+  // ── Icon picker ───────────────────────────────────────────────────
+  const PROJECT_ICONS = [
+    '🌱','🌿','🍃','🌲','🌳','🌾','🌊','⚡','🔥','❄️',
+    '🏔️','🏝️','🏙️','🚀','🛸','⚙️','🔧','🔨','🛠️','💡',
+    '🎯','🎮','🎲','🎨','🎭','🎬','🎵','📚','📖','📝',
+    '📊','📈','💰','💳','🏦','🏗️','🏠','🏡','🏢','🏋️',
+    '🚗','✈️','🚢','🌍','🔬','🧬','🧪','💊','🩺','🤖',
+    '👾','🕹️','🏆','🥇','⭐','✨','💫','🌟','☀️','🌙',
+  ];
+
+  function initIconPicker(containerId, inputId) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const current = document.getElementById(inputId)?.value || '';
+    container.innerHTML = `
+      ${PROJECT_ICONS.map(icon => `
+        <button type="button" class="icon-btn-pick ${icon === current ? 'selected' : ''}"
+                data-icon="${icon}"
+                onclick="GRAFT._pickIcon('${containerId}','${inputId}','${icon}')">${icon}</button>
+      `).join('')}
+      <button type="button" class="icon-clear" onclick="GRAFT._pickIcon('${containerId}','${inputId}','')">None</button>
+    `;
+  }
+
+  function _pickIcon(containerId, inputId, icon) {
+    document.getElementById(inputId).value = icon;
+    document.querySelectorAll(`#${containerId} .icon-btn-pick`).forEach(b => {
+      b.classList.toggle('selected', b.dataset.icon === icon);
+    });
+  }
+
   // ── Public API ──────────────────────────────────────────────────
   window.GRAFT = {
     init, initIssues, initProject,
@@ -751,5 +1025,8 @@
     closeModal, openModal,
     _issue, _deleteIssueFromSlideover,
     _addIssueInStatus, _editMilestone, _deleteMilestone,
+    _dragStart, _dragEnd, _dragOver, _dragEnter, _dragLeave, _drop,
+    _soSave,
+    toggleTheme, initIconPicker, _pickIcon,
   };
 })();

@@ -64,6 +64,7 @@ def init_db():
             description TEXT DEFAULT '',
             status      TEXT DEFAULT 'active',
             colour      TEXT DEFAULT '#6366f1',
+            icon        TEXT DEFAULT '',
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
@@ -94,6 +95,16 @@ def init_db():
         );
     """)
     db.commit()
+    db.close()
+
+
+def _migrate_db():
+    """Add columns that didn't exist in earlier schema versions."""
+    db = sqlite3.connect(DB_PATH)
+    cols = {r[1] for r in db.execute("PRAGMA table_info(projects)")}
+    if "icon" not in cols:
+        db.execute("ALTER TABLE projects ADD COLUMN icon TEXT DEFAULT ''")
+        db.commit()
     db.close()
 
 
@@ -186,7 +197,7 @@ def update_project(pid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["name", "description", "status", "colour"]
+    fields = ["name", "description", "status", "colour", "icon"]
     updates = {f: data[f] for f in fields if f in data}
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)
@@ -482,5 +493,6 @@ def serve_static(filename):
 
 if __name__ == "__main__":
     init_db()
+    _migrate_db()
     app.run(host="0.0.0.0", port=8911, debug=False)
 

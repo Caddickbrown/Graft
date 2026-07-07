@@ -24,6 +24,9 @@
       </a>
     </div>
     <div class="nav-section nav-projects" id="sidebar-projects"></div>
+    <div class="theme-toggle">
+      <button class="theme-toggle-btn" onclick="GRAFT.toggleTheme()"></button>
+    </div>
   </nav>
 
   <main class="main">
@@ -95,6 +98,11 @@
           </div>
           <input type="hidden" id="project-colour" value="#6366f1">
         </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Icon</label>
+        <div class="icon-picker" id="icon-picker"></div>
+        <input type="hidden" id="project-icon" value="">
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-new-project')">Cancel</button>
