@@ -371,6 +371,16 @@
       <div class="so-footer">
         <button class="btn btn-ghost btn-danger btn-sm" onclick="GRAFT._deleteIssueFromSlideover('${id}')">Delete issue</button>
       </div>
+
+      <div class="so-project-section">
+        <div class="so-project-header" onclick="GRAFT._toggleProjectSection()" id="so-project-toggle">
+          <span class="so-project-label">Project — ${_allProjects.find(p=>p.id===issue.project_id)?.name || ''}</span>
+          <svg class="so-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="so-project-body" id="so-project-body" style="display:none">
+          ${_renderProjectSection(issue.project_id)}
+        </div>
+      </div>
     `;
     document.getElementById('slideover-overlay').style.display = 'block';
     document.getElementById('issue-slideover').style.display = 'flex';
@@ -432,6 +442,64 @@
   }
 
   function _issue(id) { return _allIssues.find(i => i.id === id); }
+
+  function _renderProjectSection(pid) {
+    const p = _allProjects.find(proj => proj.id === pid);
+    if (!p) return '<div class="so-empty">No project</div>';
+    return `
+      <div class="so-meta" style="margin-top:10px">
+        <div class="so-meta-row">
+          <span class="so-label">Name</span>
+          <input class="so-input" data-pfield="name" value="${p.name}" onblur="GRAFT._soProjectSave('${pid}')">
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Status</span>
+          <select class="so-select" data-pfield="status" onchange="GRAFT._soProjectSave('${pid}')">
+            <option value="active"  ${p.status==='active' ?'selected':''}>Active</option>
+            <option value="paused"  ${p.status==='paused' ?'selected':''}>Paused</option>
+            <option value="done"    ${p.status==='done'   ?'selected':''}>Done</option>
+          </select>
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Icon</span>
+          <input class="so-input" data-pfield="icon" value="${p.icon||''}" placeholder="Paste emoji…" onblur="GRAFT._soProjectSave('${pid}')">
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Description</span>
+          <input class="so-input" data-pfield="description" value="${p.description||''}" placeholder="Add description…" onblur="GRAFT._soProjectSave('${pid}')">
+        </div>
+      </div>
+    `;
+  }
+
+  function _toggleProjectSection() {
+    const body = document.getElementById('so-project-body');
+    const chevron = document.querySelector('.so-chevron');
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : 'block';
+    if (chevron) chevron.style.transform = open ? '' : 'rotate(180deg)';
+  }
+
+  async function _soProjectSave(pid) {
+    const body = document.getElementById('so-project-body');
+    if (!body) return;
+    const name = body.querySelector('[data-pfield="name"]')?.value?.trim();
+    const status = body.querySelector('[data-pfield="status"]')?.value;
+    const icon = body.querySelector('[data-pfield="icon"]')?.value?.trim();
+    const description = body.querySelector('[data-pfield="description"]')?.value?.trim();
+    if (!name) return;
+    // Update local cache
+    const proj = _allProjects.find(p => p.id === pid);
+    if (proj) Object.assign(proj, { name, status, icon, description });
+    // Update project toggle label
+    const label = document.querySelector('.so-project-label');
+    if (label) label.textContent = `Project — ${name}`;
+    try {
+      await api('PUT', `/api/projects/${pid}`, { name, status, icon, description });
+      // Refresh sidebar in case name/icon changed
+      renderSidebarProjects();
+    } catch { toast('Failed to save project'); }
+  }
 
   // ══════════════════════════════════════════════════════════════
   //  PAGE: index.html  (Projects)
@@ -1028,5 +1096,6 @@
     _dragStart, _dragEnd, _dragOver, _dragEnter, _dragLeave, _drop,
     _soSave,
     toggleTheme, initIconPicker, _pickIcon,
+    _renderProjectSection, _toggleProjectSection, _soProjectSave,
   };
 })();

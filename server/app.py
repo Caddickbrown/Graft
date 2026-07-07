@@ -166,13 +166,14 @@ def create_project():
     ts = now()
     db = get_db()
     db.execute(
-        "INSERT INTO projects (id,name,description,status,colour,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO projects (id,name,description,status,colour,icon,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
         (
             pid,
             data.get("name", "Untitled"),
             data.get("description", ""),
             data.get("status", "active"),
             data.get("colour", "#6366f1"),
+            data.get("icon", ""),
             ts, ts,
         ),
     )

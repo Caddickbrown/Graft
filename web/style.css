@@ -670,6 +670,7 @@ option { background: var(--surface); }
 .modal-close:hover { color: var(--ink); background: var(--surface2); }
 
 .modal form { padding: 0 22px 22px; display: flex; flex-direction: column; gap: 14px; }
+.modal-body { padding: 0 22px 22px; display: flex; flex-direction: column; gap: 14px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 
 /* ── Toast ──────────────────────────────────────────── */
@@ -959,4 +960,38 @@ option { background: var(--surface); }
   align-self: flex-start;
 }
 .icon-clear:hover { color: var(--ink); border-color: var(--muted); }
+
+/* ── Slideover project section ───────────────────────── */
+.so-project-section {
+  margin-top: 20px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.so-project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background .12s;
+}
+.so-project-header:hover { background: var(--surface2); }
+
+.so-project-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.so-chevron { color: var(--muted); transition: transform .2s; flex-shrink: 0; }
+
+.so-project-body { border-top: 1px solid var(--hairline); }
+.so-project-body .so-meta { margin: 0; border: none; border-radius: 0; }
+
+.so-empty { font-size: 13px; color: var(--muted); padding: 12px 14px; }
 
