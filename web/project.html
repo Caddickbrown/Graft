@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project — Graft</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <a href="index.html" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit">
+        <span class="brand-mark">G</span>
+        <span class="brand-name">Graft</span>
+      </a>
+    </div>
+    <div class="nav-section">
+      <a href="index.html" class="nav-item" data-page="projects">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="9" height="9" rx="1"/><rect x="13" y="3" width="9" height="9" rx="1"/><rect x="2" y="13" width="9" height="9" rx="1"/><rect x="13" y="13" width="9" height="9" rx="1"/></svg>
+        Projects
+      </a>
+      <a href="issues.html" class="nav-item" data-page="issues">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        All issues
+      </a>
+    </div>
+    <div class="nav-section nav-projects" id="sidebar-projects"></div>
+  </nav>
+
+  <main class="main">
+    <header class="page-header" id="project-header">
+      <div>
+        <div class="breadcrumb"><a href="index.html">Projects</a> <span>/</span> <span id="project-name-breadcrumb">…</span></div>
+        <h1 class="page-title" id="project-name-title">Loading…</h1>
+        <p class="page-subtitle" id="project-description-text"></p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-ghost" onclick="GRAFT.openMilestones()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          Milestones
+        </button>
+        <button class="btn btn-ghost" onclick="GRAFT.editCurrentProject()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Edit
+        </button>
+        <button class="btn btn-primary" onclick="GRAFT.openNewIssue()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New issue
+        </button>
+      </div>
+    </header>
+
+    <div class="view-toggle">
+      <button class="view-btn active" id="btn-board" onclick="GRAFT.setView('board', this)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="5" height="18" rx="1"/><rect x="9.5" y="3" width="5" height="18" rx="1"/><rect x="17" y="3" width="5" height="18" rx="1"/></svg>
+        Board
+      </button>
+      <button class="view-btn" id="btn-list" onclick="GRAFT.setView('list', this)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        List
+      </button>
+    </div>
+
+    <div class="milestone-filter" id="milestone-filter-bar" style="display:none">
+      <span class="filter-label">Milestone:</span>
+      <div id="milestone-filter-buttons"></div>
+    </div>
+
+    <!-- Board view -->
+    <div id="view-board" class="kanban-board">
+      <div class="loading-state">Loading…</div>
+    </div>
+
+    <!-- List view -->
+    <div id="view-list" class="issue-list" style="display:none">
+      <div class="loading-state">Loading…</div>
+    </div>
+  </main>
+</div>
+
+<!-- Issue detail slide-over -->
+<div class="slideover-overlay" id="slideover-overlay" onclick="GRAFT.closeSlideover()" style="display:none"></div>
+<aside class="slideover" id="issue-slideover" style="display:none">
+  <div class="slideover-header">
+    <span class="issue-id-badge" id="detail-id"></span>
+    <button class="modal-close" onclick="GRAFT.closeSlideover()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="slideover-body" id="slideover-body">
+    <!-- Populated by JS -->
+  </div>
+</aside>
+
+<!-- New/Edit Issue Modal -->
+<div class="modal-overlay" id="modal-new-issue" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-issue-title">New issue</h2>
+      <button class="modal-close" onclick="GRAFT.closeModal('modal-new-issue')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form onsubmit="GRAFT.submitIssue(event)">
+      <input type="hidden" id="issue-edit-id" value="">
+      <input type="hidden" id="issue-project-prefill" value="">
+      <div class="form-group">
+        <label class="form-label">Title</label>
+        <input type="text" class="form-input" id="issue-title" placeholder="Short description of the issue" required autofocus>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea class="form-input form-textarea" id="issue-description" placeholder="More detail, steps to reproduce, etc."></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Project</label>
+          <select class="form-input" id="issue-project" onchange="GRAFT.loadMilestonesForProject()" required>
+            <option value="">Select project</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Milestone</label>
+          <select class="form-input" id="issue-milestone">
+            <option value="">No milestone</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-input" id="issue-status">
+            <option value="backlog">Backlog</option>
+            <option value="todo">Todo</option>
+            <option value="in-progress">In progress</option>
+            <option value="review">Review</option>
+            <option value="done">Done</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Priority</label>
+          <select class="form-input" id="issue-priority">
+            <option value="urgent">🔴 Urgent</option>
+            <option value="high">🟠 High</option>
+            <option value="normal" selected>⚪ Normal</option>
+            <option value="low">⬇️ Low</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Assignee</label>
+          <input type="text" class="form-input" id="issue-assignee" placeholder="e.g. Dan, Hermes, Tom…">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Labels <span class="form-hint">(comma separated)</span></label>
+          <input type="text" class="form-input" id="issue-labels" placeholder="e.g. bug, frontend, api">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost btn-danger" id="issue-delete-btn" style="display:none" onclick="GRAFT.deleteIssue()">Delete</button>
+        <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-new-issue')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save issue</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Project Modal -->
+<div class="modal-overlay" id="modal-edit-project" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Edit project</h2>
+      <button class="modal-close" onclick="GRAFT.closeModal('modal-edit-project')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form onsubmit="GRAFT.submitProject(event)">
+      <input type="hidden" id="project-edit-id" value="">
+      <div class="form-group">
+        <label class="form-label">Name</label>
+        <input type="text" class="form-input" id="project-name" required autofocus>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea class="form-input form-textarea" id="project-description"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-input" id="project-status">
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="done">Done</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Colour</label>
+          <div class="colour-picker" id="colour-picker">
+            <div class="colour-swatch selected" data-colour="#6366f1" style="background:#6366f1"></div>
+            <div class="colour-swatch" data-colour="#8b5cf6" style="background:#8b5cf6"></div>
+            <div class="colour-swatch" data-colour="#ec4899" style="background:#ec4899"></div>
+            <div class="colour-swatch" data-colour="#ef4444" style="background:#ef4444"></div>
+            <div class="colour-swatch" data-colour="#f97316" style="background:#f97316"></div>
+            <div class="colour-swatch" data-colour="#eab308" style="background:#eab308"></div>
+            <div class="colour-swatch" data-colour="#22c55e" style="background:#22c55e"></div>
+            <div class="colour-swatch" data-colour="#06b6d4" style="background:#06b6d4"></div>
+            <div class="colour-swatch" data-colour="#3b82f6" style="background:#3b82f6"></div>
+            <div class="colour-swatch" data-colour="#64748b" style="background:#64748b"></div>
+          </div>
+          <input type="hidden" id="project-colour" value="#6366f1">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost btn-danger" onclick="GRAFT.deleteProject()">Delete project</button>
+        <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-edit-project')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Milestones Modal -->
+<div class="modal-overlay" id="modal-milestones" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Milestones</h2>
+      <button class="modal-close" onclick="GRAFT.closeModal('modal-milestones')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="milestones-list" class="milestones-list"></div>
+    <div class="milestone-form" id="milestone-form">
+      <input type="hidden" id="milestone-edit-id" value="">
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <input type="text" class="form-input" id="milestone-name" placeholder="Milestone name, e.g. v2">
+        </div>
+        <div class="form-group">
+          <input type="date" class="form-input" id="milestone-due">
+        </div>
+      </div>
+      <div class="form-group">
+        <textarea class="form-input" id="milestone-description" placeholder="Optional description" rows="2"></textarea>
+      </div>
+      <div class="modal-footer" style="padding:0;margin-top:8px">
+        <button type="button" class="btn btn-ghost" id="milestone-cancel-btn" style="display:none" onclick="GRAFT.cancelMilestone()">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="GRAFT.submitMilestone()">Add milestone</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+<script>GRAFT.initProject();</script>
+</body>
+</html>

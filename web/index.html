@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graft</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">G</span>
+      <span class="brand-name">Graft</span>
+    </div>
+    <div class="nav-section">
+      <a href="index.html" class="nav-item active" data-page="projects">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="9" height="9" rx="1"/><rect x="13" y="3" width="9" height="9" rx="1"/><rect x="2" y="13" width="9" height="9" rx="1"/><rect x="13" y="13" width="9" height="9" rx="1"/></svg>
+        Projects
+      </a>
+      <a href="issues.html" class="nav-item" data-page="issues">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        All issues
+      </a>
+    </div>
+    <div class="nav-section nav-projects" id="sidebar-projects"></div>
+  </nav>
+
+  <main class="main">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">Projects</h1>
+        <p class="page-subtitle" id="projects-subtitle">Loading…</p>
+      </div>
+      <button class="btn btn-primary" onclick="GRAFT.openNewProject()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New project
+      </button>
+    </header>
+
+    <div class="filter-bar">
+      <button class="filter-btn active" data-status="all" onclick="GRAFT.filterProjects('all', this)">All</button>
+      <button class="filter-btn" data-status="active" onclick="GRAFT.filterProjects('active', this)">Active</button>
+      <button class="filter-btn" data-status="paused" onclick="GRAFT.filterProjects('paused', this)">Paused</button>
+      <button class="filter-btn" data-status="done" onclick="GRAFT.filterProjects('done', this)">Done</button>
+    </div>
+
+    <div class="projects-grid" id="projects-grid">
+      <div class="loading-state">Loading projects…</div>
+    </div>
+  </main>
+</div>
+
+<!-- New Project Modal -->
+<div class="modal-overlay" id="modal-new-project" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-project-title">New project</h2>
+      <button class="modal-close" onclick="GRAFT.closeModal('modal-new-project')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form onsubmit="GRAFT.submitProject(event)">
+      <input type="hidden" id="project-edit-id" value="">
+      <div class="form-group">
+        <label class="form-label">Name</label>
+        <input type="text" class="form-input" id="project-name" placeholder="e.g. Patchwork v2" required autofocus>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea class="form-input form-textarea" id="project-description" placeholder="What's this project about?"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-input" id="project-status">
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="done">Done</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Colour</label>
+          <div class="colour-picker" id="colour-picker">
+            <div class="colour-swatch selected" data-colour="#6366f1" style="background:#6366f1"></div>
+            <div class="colour-swatch" data-colour="#8b5cf6" style="background:#8b5cf6"></div>
+            <div class="colour-swatch" data-colour="#ec4899" style="background:#ec4899"></div>
+            <div class="colour-swatch" data-colour="#ef4444" style="background:#ef4444"></div>
+            <div class="colour-swatch" data-colour="#f97316" style="background:#f97316"></div>
+            <div class="colour-swatch" data-colour="#eab308" style="background:#eab308"></div>
+            <div class="colour-swatch" data-colour="#22c55e" style="background:#22c55e"></div>
+            <div class="colour-swatch" data-colour="#06b6d4" style="background:#06b6d4"></div>
+            <div class="colour-swatch" data-colour="#3b82f6" style="background:#3b82f6"></div>
+            <div class="colour-swatch" data-colour="#64748b" style="background:#64748b"></div>
+          </div>
+          <input type="hidden" id="project-colour" value="#6366f1">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-new-project')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save project</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+<script>GRAFT.init();</script>
+</body>
+</html>

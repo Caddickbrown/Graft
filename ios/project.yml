@@ -1,0 +1,48 @@
+name: Graft
+options:
+  bundleIdPrefix: com.caddickbrown
+  deploymentTarget:
+    iOS: '18.0'
+  developmentLanguage: en
+  xcodeVersion: '16.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    MARKETING_VERSION: '1.0'
+    CURRENT_PROJECT_VERSION: '1'
+    IPHONEOS_DEPLOYMENT_TARGET: '18.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    DEVELOPMENT_TEAM: 52W73J6V95
+    CODE_SIGN_STYLE: Automatic
+targets:
+  Graft:
+    type: application
+    platform: iOS
+    sources:
+      - path: .
+        excludes:
+          - '*.md'
+          - 'project.yml'
+          - '.git'
+          - '.gitignore'
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.caddickbrown.graft
+        INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_EMIT_LOC_STRINGS: YES
+        DEVELOPMENT_TEAM: 52W73J6V95
+        CODE_SIGN_STYLE: Automatic
+    scheme:
+      testTargets: []
+    dependencies: []
+schemes:
+  Graft:
+    build:
+      targets:
+        Graft: all
+    run:
+      config: Debug
+    archive:
+      config: Release
