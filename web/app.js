@@ -74,11 +74,15 @@
   };
 
   function statusIcon(status) {
-    const c = STATUS_COLORS[status] || '#9ca3af';
-    if (status === 'done') {
-      return `<svg class="status-icon" viewBox="0 0 16 16" fill="none" stroke="${c}" stroke-width="2"><circle cx="8" cy="8" r="6.5"/><polyline points="5,8 7,10 11,6"/></svg>`;
-    }
-    return `<svg class="status-icon" viewBox="0 0 16 16" fill="none" stroke="${c}" stroke-width="1.8"><circle cx="8" cy="8" r="6.5"/></svg>`;
+    const icons = {
+      backlog:       { sym: '○', cls: 'status-backlog' },
+      todo:          { sym: '◌', cls: 'status-todo' },
+      'in-progress': { sym: '◑', cls: 'status-in-progress' },
+      review:        { sym: '✦', cls: 'status-review' },
+      done:          { sym: '●', cls: 'status-done' },
+    };
+    const i = icons[status] || icons.backlog;
+    return `<span class="status-icon ${i.cls}" title="${STATUS_LABELS[status] || status}" style="font-size:15px;line-height:1">${i.sym}</span>`;
   }
 
   function priorityDot(priority) {
@@ -87,7 +91,7 @@
 
   function milestoneTag(name) {
     if (!name) return '';
-    return `<span class="milestone-tag">⬡ ${name}</span>`;
+    return `<span class="milestone-tag">${name}</span>`;
   }
 
   function assigneeChip(name) {
@@ -121,7 +125,7 @@
     const showProject = opts.showProject && issue.project_name
       ? `<span class="assignee-chip">${issue.project_name}</span>` : '';
     return `
-      <div class="kanban-card" onclick="GRAFT.openIssueSlideover('${issue.id}')">
+      <div class="kanban-card" data-priority="${issue.priority}" onclick="GRAFT.openIssueSlideover('${issue.id}')">
         <div class="kanban-card-title">${issue.title}</div>
         <div class="kanban-card-meta">
           ${priorityDot(issue.priority)}
@@ -138,7 +142,7 @@
       ? `<span class="issue-row-project">${issue.project_name}</span>` : '';
     const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${l}</span>`).join('');
     return `
-      <div class="issue-row" onclick="GRAFT.openIssueSlideover('${issue.id}')">
+      <div class="issue-row" data-priority="${issue.priority}" onclick="GRAFT.openIssueSlideover('${issue.id}')">
         <div class="issue-row-status">${statusIcon(issue.status)}</div>
         <div class="issue-row-title ${issue.status === 'done' ? 'done-title' : ''}">${issue.title}</div>
         <div class="issue-row-meta">
@@ -368,7 +372,7 @@
     if (!grid) return;
     const visible = _projectFilter === 'all' ? _allProjects : _allProjects.filter(p => p.status === _projectFilter);
     if (!visible.length) {
-      grid.innerHTML = `<div class="empty-state"><div class="empty-state-title">No projects</div><div>Create one to get started.</div></div>`;
+      grid.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🌱</div><div class="empty-state-title">No projects yet</div><div>Time to get grafting.</div></div>`;
       return;
     }
     grid.innerHTML = visible.map(p => {
@@ -376,15 +380,17 @@
       const open = (c.backlog||0) + (c.todo||0) + (c['in_progress']||0) + (c.review||0);
       return `
         <div class="project-card" onclick="window.location.href='project.html?id=${p.id}'">
-          <div class="project-card-header">
-            <span class="project-colour-dot" style="background:${p.colour}"></span>
-            <span class="project-card-name">${p.name}</span>
-            <span class="project-card-status status-${p.status}">${p.status}</span>
-          </div>
-          ${p.description ? `<div class="project-card-desc">${p.description}</div>` : ''}
-          <div class="issue-counts">
-            <span class="count-pill"><span class="count-dot" style="background:${STATUS_COLORS.todo}"></span>${open} open</span>
-            <span class="count-pill"><span class="count-dot" style="background:${STATUS_COLORS.done}"></span>${c.done||0} done</span>
+          <div class="project-card-stripe" style="background:${p.colour}"></div>
+          <div class="project-card-body">
+            <div class="project-card-header">
+              <span class="project-card-name">${p.name}</span>
+              <span class="project-card-status status-${p.status}">${p.status}</span>
+            </div>
+            ${p.description ? `<div class="project-card-desc">${p.description}</div>` : ''}
+            <div class="issue-counts">
+              <span class="count-pill"><span class="count-dot" style="background:var(--sage)"></span>${open} open</span>
+              <span class="count-pill"><span class="count-dot" style="background:var(--teal)"></span>${c.done||0} done</span>
+            </div>
           </div>
         </div>`;
     }).join('');
@@ -590,6 +596,11 @@
     else renderList();
   }
 
+  const STATUS_COL_COLORS = {
+    backlog: '#4a5a49', todo: '#96b86e', 'in-progress': '#c8903f',
+    review: '#9b7fc9', done: '#5eaa8e',
+  };
+
   function renderBoard() {
     const board = document.getElementById('view-board');
     if (!board) return;
@@ -597,15 +608,17 @@
     const statuses = ['backlog', 'todo', 'in-progress', 'review', 'done'];
     board.innerHTML = statuses.map(status => {
       const col = issues.filter(i => i.status === status);
+      const dotColor = STATUS_COL_COLORS[status];
       return `
         <div class="kanban-col">
           <div class="kanban-col-header">
+            <span class="col-status-dot" style="background:${dotColor}"></span>
             <span class="col-name">${STATUS_LABELS[status]}</span>
             <span class="col-count">${col.length}</span>
           </div>
           ${col.map(i => renderKanbanCard(i)).join('')}
           <button class="kanban-add-btn" onclick="GRAFT._addIssueInStatus('${status}')">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Add issue
           </button>
         </div>`;
