@@ -200,8 +200,8 @@ struct IssueDetailView: View {
 
     private func priorityColor(_ p: String) -> Color {
         switch p {
-        case "urgent": return Color(hex: "#ef4444") ?? .red
-        case "high": return Color(hex: "#f97316") ?? .orange
+        case "urgent": return Color(hex: "#ef4444")
+        case "high": return Color(hex: "#f97316")
         case "normal": return .secondary
         case "low": return .gray.opacity(0.4)
         default: return .secondary

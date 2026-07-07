@@ -55,7 +55,7 @@ struct NewProjectView: View {
     private func save() async {
         isSaving = true
         defer { isSaving = false }
-        let hex = selectedColour.toHex() ?? "#6366f1"
+        let hex = selectedColour.toHex()
         try? await store.createProject(name: name, description: description, colour: hex, status: status)
         dismiss()
     }
@@ -114,7 +114,7 @@ struct EditProjectView: View {
                 name = project.name
                 description = project.description
                 status = project.status
-                selectedColour = Color(hex: project.colour) ?? .indigo
+                selectedColour = Color(hex: project.colour)
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -139,7 +139,7 @@ struct EditProjectView: View {
         updated.name = name
         updated.description = description
         updated.status = status
-        updated.colour = selectedColour.toHex() ?? project.colour
+        updated.colour = selectedColour.toHex()
         try? await store.updateProject(updated)
         dismiss()
     }
@@ -154,13 +154,4 @@ struct EditProjectView: View {
     }
 }
 
-// MARK: - Color to Hex
-
-extension Color {
-    func toHex() -> String? {
-        let uiColor = UIColor(self)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        uiColor.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return String(format: "#%02x%02x%02x", Int(r * 255), Int(g * 255), Int(b * 255))
-    }
-}
+// Color(hex:) and toHex() are defined in DesignSystem.swift
