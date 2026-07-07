@@ -98,7 +98,7 @@ final class GraftStore {
 
     func createProject(name: String, description: String, colour: String, status: String = "active") async throws {
         let base = activeBase
-        var body: [String: String] = [
+        let body: [String: String] = [
             "name": name,
             "description": description,
             "colour": colour,

@@ -327,7 +327,6 @@ struct IssueRowView: View {
 
     var body: some View {
         let priority = IssuePriority(rawValue: issue.priority) ?? .normal
-        let status = IssueStatus(rawValue: issue.status) ?? .backlog
 
         HStack(spacing: 0) {
             // Priority colour border

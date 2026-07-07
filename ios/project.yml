@@ -23,6 +23,7 @@ targets:
         excludes:
           - '*.md'
           - 'project.yml'
+          - 'make_icon.swift'
           - '.git'
           - '.gitignore'
     settings:
