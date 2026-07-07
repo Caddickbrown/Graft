@@ -63,6 +63,9 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
         List
       </button>
+      <button class="view-btn" id="btn-archived" onclick="GRAFT.toggleArchivedIssues(this)">
+        ⊘ Archived
+      </button>
     </div>
 
     <div class="milestone-filter" id="milestone-filter-bar" style="display:none">
@@ -222,6 +225,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-ghost btn-danger" onclick="GRAFT.deleteProject()">Delete project</button>
+        <button type="button" class="btn btn-ghost" onclick="GRAFT.archiveCurrentProject()" id="archive-project-btn">Archive</button>
         <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-edit-project')">Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
       </div>

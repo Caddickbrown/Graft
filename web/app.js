@@ -147,8 +147,9 @@
     const showProject = opts.showProject && issue.project_name
       ? `<span class="issue-row-project">${issue.project_name}</span>` : '';
     const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${l}</span>`).join('');
+    const archivedClass = issue.archived ? ' issue-row-archived' : '';
     return `
-      <div class="issue-row" data-priority="${issue.priority}" onclick="GRAFT.openIssueSlideover('${issue.id}')">
+      <div class="issue-row${archivedClass}" data-priority="${issue.priority}" onclick="GRAFT.openIssueSlideover('${issue.id}')">
         <div class="issue-row-status">${statusIcon(issue.status)}</div>
         <div class="issue-row-title ${issue.status === 'done' ? 'done-title' : ''}">${issue.title}</div>
         <div class="issue-row-meta">
@@ -369,6 +370,9 @@
       </div>
 
       <div class="so-footer">
+        <button class="btn btn-ghost btn-sm" onclick="GRAFT._archiveIssueFromSlideover('${id}')" title="${issue.archived ? 'Unarchive' : 'Archive'}">
+          ${issue.archived ? '↩ Unarchive' : '⊘ Archive'}
+        </button>
         <button class="btn btn-ghost btn-danger btn-sm" onclick="GRAFT._deleteIssueFromSlideover('${id}')">Delete issue</button>
       </div>
 
@@ -439,6 +443,16 @@
       _allIssues = _allIssues.filter(i => i.id !== id);
       if (typeof reloadPage === 'function') reloadPage();
     } catch { toast('Error deleting issue'); }
+  }
+
+  async function _archiveIssueFromSlideover(id) {
+    try {
+      const updated = await api('PATCH', `/api/issues/${id}/archive`);
+      toast(updated.archived ? 'Issue archived' : 'Issue unarchived');
+      closeSlideover();
+      _allIssues = _allIssues.filter(i => i.id !== id);
+      if (typeof reloadPage === 'function') reloadPage();
+    } catch { toast('Error archiving issue'); }
   }
 
   function _issue(id) { return _allIssues.find(i => i.id === id); }
@@ -516,12 +530,15 @@
 
   async function loadProjects() {
     try {
-      _allProjects = await api('GET', '/api/projects');
+      // Fetch both normal and archived in parallel when needed
+      const showArchived = _projectFilter === 'archived';
+      const url = showArchived ? '/api/projects?archived=1' : '/api/projects';
+      _allProjects = await api('GET', url);
       _allMilestones = await api('GET', '/api/milestones');
       renderProjects();
       const sub = document.getElementById('projects-subtitle');
       if (sub) {
-        const active = _allProjects.filter(p => p.status === 'active').length;
+        const active = _allProjects.filter(p => p.status === 'active' && !p.archived).length;
         sub.textContent = `${_allProjects.length} project${_allProjects.length !== 1 ? 's' : ''} · ${active} active`;
       }
     } catch (err) {
@@ -533,28 +550,38 @@
     _projectFilter = status;
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    renderProjects();
+    loadProjects(); // reload — archived needs a different API call
   }
 
   function renderProjects() {
     const grid = document.getElementById('projects-grid');
     if (!grid) return;
-    const visible = _projectFilter === 'all' ? _allProjects : _allProjects.filter(p => p.status === _projectFilter);
+    let visible;
+    if (_projectFilter === 'archived') {
+      visible = _allProjects.filter(p => p.archived);
+    } else if (_projectFilter === 'all') {
+      visible = _allProjects.filter(p => !p.archived);
+    } else {
+      visible = _allProjects.filter(p => !p.archived && p.status === _projectFilter);
+    }
     if (!visible.length) {
-      grid.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🌱</div><div class="empty-state-title">No projects yet</div><div>Time to get grafting.</div></div>`;
+      const msg = _projectFilter === 'archived' ? 'No archived projects.' : 'No projects yet';
+      grid.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🌱</div><div class="empty-state-title">${msg}</div></div>`;
       return;
     }
     grid.innerHTML = visible.map(p => {
       const c = p.issue_counts || {};
       const open = (c.backlog||0) + (c.todo||0) + (c['in_progress']||0) + (c.review||0);
       return `
-        <div class="project-card" onclick="window.location.href='project.html?id=${p.id}'">
+        <div class="project-card ${p.archived ? 'project-card-archived' : ''}" onclick="window.location.href='project.html?id=${p.id}'">
           <div class="project-card-stripe" style="background:${p.colour}"></div>
           <div class="project-card-body">
             <div class="project-card-header">
               ${p.icon ? `<span class="project-icon">${p.icon}</span>` : ''}
               <span class="project-card-name">${p.name}</span>
-              <span class="project-card-status status-${p.status}">${p.status}</span>
+              ${p.archived
+                ? `<span class="project-card-status" style="background:rgba(100,100,100,.15);color:var(--muted)">archived</span>`
+                : `<span class="project-card-status status-${p.status}">${p.status}</span>`}
             </div>
             ${p.description ? `<div class="project-card-desc">${p.description}</div>` : ''}
             <div class="issue-counts">
@@ -696,6 +723,7 @@
   let _currentView = 'board';
   let _activeMilestoneFilter = null;
   let _currentProject = null;
+  let _showArchivedIssues = false;
 
   window.reloadPage = async function () {
     if (window._pageMode === 'project') await loadProjectPage();
@@ -715,21 +743,41 @@
 
   async function loadProjectPage() {
     try {
+      const issuesUrl = _showArchivedIssues
+        ? `/api/issues?project_id=${_currentProjectId}&archived=1`
+        : `/api/issues?project_id=${_currentProjectId}`;
       [_allProjects, _currentProject, _allIssues, _allMilestones] = await Promise.all([
         api('GET', '/api/projects'),
         api('GET', `/api/projects/${_currentProjectId}`),
-        api('GET', `/api/issues?project_id=${_currentProjectId}`),
+        api('GET', issuesUrl),
         api('GET', `/api/milestones?project_id=${_currentProjectId}`),
       ]);
       document.title = `${_currentProject.name} — Graft`;
       document.getElementById('project-name-breadcrumb').textContent = _currentProject.name;
       document.getElementById('project-name-title').textContent = (_currentProject.icon ? _currentProject.icon + ' ' : '') + _currentProject.name;
       document.getElementById('project-description-text').textContent = _currentProject.description || '';
+      // Show archived badge if project is archived
+      const hdr = document.getElementById('project-header');
+      if (hdr) hdr.dataset.archived = _currentProject.archived ? '1' : '0';
       renderMilestoneFilterBar();
       renderView();
     } catch (err) {
       document.getElementById('project-name-title').textContent = 'Project not found';
     }
+  }
+
+  function toggleArchivedIssues(btn) {
+    _showArchivedIssues = !_showArchivedIssues;
+    btn.classList.toggle('active', _showArchivedIssues);
+    // Switch to list view — archived issues make more sense there
+    if (_showArchivedIssues) {
+      _currentView = 'list';
+      document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('btn-list').classList.add('active');
+      document.getElementById('view-board').style.display = 'none';
+      document.getElementById('view-list').style.display = 'flex';
+    }
+    loadProjectPage();
   }
 
   function renderMilestoneFilterBar() {
@@ -936,7 +984,24 @@
     document.getElementById('project-icon').value = _currentProject.icon || '';
     setColour('colour-picker', 'project-colour', _currentProject.colour);
     initIconPicker('icon-picker', 'project-icon');
+    // Update archive button label
+    const archBtn = document.getElementById('archive-project-btn');
+    if (archBtn) archBtn.textContent = _currentProject.archived ? 'Unarchive' : 'Archive';
     openModal('modal-edit-project');
+  }
+
+  async function archiveCurrentProject() {
+    if (!_currentProject) return;
+    const action = _currentProject.archived ? 'Unarchive' : 'Archive';
+    if (!confirm(`${action} this project?`)) return;
+    try {
+      const updated = await api('PATCH', `/api/projects/${_currentProject.id}/archive`);
+      _currentProject = updated;
+      toast(`Project ${updated.archived ? 'archived' : 'unarchived'}`);
+      closeModal('modal-edit-project');
+      if (updated.archived) window.location.href = 'index.html';
+      else if (typeof reloadPage === 'function') reloadPage();
+    } catch { toast('Error archiving project'); }
   }
 
   // ── Milestones CRUD ─────────────────────────────────────────────
@@ -1085,13 +1150,14 @@
     filterProjects, applyFilters,
     openNewProject, openNewIssue, openEditIssue,
     submitProject, deleteProject, submitIssue, deleteIssue,
-    setView, setMilestoneFilter,
+    archiveCurrentProject,
+    setView, setMilestoneFilter, toggleArchivedIssues,
     openMilestones, submitMilestone, cancelMilestone,
     openIssueSlideover, closeSlideover,
     editCurrentProject,
     loadMilestonesForProject,
     closeModal, openModal,
-    _issue, _deleteIssueFromSlideover,
+    _issue, _deleteIssueFromSlideover, _archiveIssueFromSlideover,
     _addIssueInStatus, _editMilestone, _deleteMilestone,
     _dragStart, _dragEnd, _dragOver, _dragEnter, _dragLeave, _drop,
     _soSave,

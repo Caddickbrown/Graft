@@ -65,6 +65,7 @@ def init_db():
             status      TEXT DEFAULT 'active',
             colour      TEXT DEFAULT '#6366f1',
             icon        TEXT DEFAULT '',
+            archived    INTEGER DEFAULT 0,
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
@@ -90,6 +91,7 @@ def init_db():
             labels       TEXT DEFAULT '[]',
             assignee     TEXT DEFAULT '',
             sort_order   INTEGER DEFAULT 0,
+            archived     INTEGER DEFAULT 0,
             created_at   TEXT NOT NULL,
             updated_at   TEXT NOT NULL
         );
@@ -101,10 +103,15 @@ def init_db():
 def _migrate_db():
     """Add columns that didn't exist in earlier schema versions."""
     db = sqlite3.connect(DB_PATH)
-    cols = {r[1] for r in db.execute("PRAGMA table_info(projects)")}
-    if "icon" not in cols:
+    proj_cols = {r[1] for r in db.execute("PRAGMA table_info(projects)")}
+    issue_cols = {r[1] for r in db.execute("PRAGMA table_info(issues)")}
+    if "icon" not in proj_cols:
         db.execute("ALTER TABLE projects ADD COLUMN icon TEXT DEFAULT ''")
-        db.commit()
+    if "archived" not in proj_cols:
+        db.execute("ALTER TABLE projects ADD COLUMN archived INTEGER DEFAULT 0")
+    if "archived" not in issue_cols:
+        db.execute("ALTER TABLE issues ADD COLUMN archived INTEGER DEFAULT 0")
+    db.commit()
     db.close()
 
 
@@ -155,7 +162,11 @@ def _project_with_counts(db, proj_row):
 @app.get("/api/projects")
 def list_projects():
     db = get_db()
-    rows = db.execute("SELECT * FROM projects ORDER BY created_at ASC").fetchall()
+    show_archived = request.args.get("archived", "0") == "1"
+    if show_archived:
+        rows = db.execute("SELECT * FROM projects ORDER BY created_at ASC").fetchall()
+    else:
+        rows = db.execute("SELECT * FROM projects WHERE archived=0 ORDER BY created_at ASC").fetchall()
     return jsonify([_project_with_counts(db, r) for r in rows])
 
 
@@ -198,7 +209,7 @@ def update_project(pid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["name", "description", "status", "colour", "icon"]
+    fields = ["name", "description", "status", "colour", "icon", "archived"]
     updates = {f: data[f] for f in fields if f in data}
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)
@@ -219,6 +230,19 @@ def delete_project(pid):
     db.execute("DELETE FROM projects WHERE id=?", (pid,))
     db.commit()
     return jsonify({"deleted": pid})
+
+
+@app.patch("/api/projects/<pid>/archive")
+def toggle_project_archive(pid):
+    db = get_db()
+    row = db.execute("SELECT id, archived FROM projects WHERE id=?", (pid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    new_val = 0 if row["archived"] else 1
+    db.execute("UPDATE projects SET archived=?, updated_at=? WHERE id=?", (new_val, now(), pid))
+    db.commit()
+    row = db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
+    return jsonify(_project_with_counts(db, row))
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +338,10 @@ def list_issues():
     query = "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE 1=1"
     params = []
 
+    show_archived = request.args.get("archived", "0") == "1"
+    if not show_archived:
+        query += " AND i.archived=0"
+
     project_id = request.args.get("project_id")
     if project_id:
         query += " AND i.project_id=?"
@@ -387,7 +415,7 @@ def update_issue(iid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["title", "description", "status", "priority", "assignee", "milestone_id", "sort_order"]
+    fields = ["title", "description", "status", "priority", "assignee", "milestone_id", "sort_order", "archived"]
     updates = {f: data[f] for f in fields if f in data}
     if "labels" in data:
         updates["labels"] = json.dumps(data["labels"])
@@ -411,6 +439,22 @@ def delete_issue(iid):
     db.execute("DELETE FROM issues WHERE id=?", (iid,))
     db.commit()
     return jsonify({"deleted": iid})
+
+
+@app.patch("/api/issues/<iid>/archive")
+def toggle_issue_archive(iid):
+    db = get_db()
+    row = db.execute("SELECT id, archived FROM issues WHERE id=?", (iid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    new_val = 0 if row["archived"] else 1
+    db.execute("UPDATE issues SET archived=?, updated_at=? WHERE id=?", (new_val, now(), iid))
+    db.commit()
+    row = db.execute(
+        "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE i.id=?",
+        (iid,),
+    ).fetchone()
+    return jsonify(_issue_row_to_dict(row))
 
 
 @app.patch("/api/issues/reorder")

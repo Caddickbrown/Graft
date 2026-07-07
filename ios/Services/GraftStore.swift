@@ -128,6 +128,26 @@ final class GraftStore {
         await sync()
     }
 
+    func archiveProject(id: String) async throws {
+        let base = activeBase
+        guard let url = URL(string: "\(base)/api/projects/\(id)/archive") else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PATCH"
+        req.timeoutInterval = 10
+        let (_, _) = try await session.data(for: req)
+        await sync()
+    }
+
+    func archiveIssue(id: String) async throws {
+        let base = activeBase
+        guard let url = URL(string: "\(base)/api/issues/\(id)/archive") else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PATCH"
+        req.timeoutInterval = 10
+        let (_, _) = try await session.data(for: req)
+        await sync()
+    }
+
     // MARK: - Issues CRUD
 
     func createIssue(
@@ -281,7 +301,11 @@ final class GraftStore {
     // MARK: - Convenience
 
     func issues(for projectId: String) -> [GraftIssue] {
-        issues.filter { $0.projectId == projectId }.sorted { $0.sortOrder < $1.sortOrder }
+        issues.filter { $0.projectId == projectId && !$0.archived }.sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    func archivedIssues(for projectId: String) -> [GraftIssue] {
+        issues.filter { $0.projectId == projectId && $0.archived }
     }
 
     func milestones(for projectId: String) -> [GraftMilestone] {

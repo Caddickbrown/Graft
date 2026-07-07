@@ -9,6 +9,7 @@ struct GraftProject: Codable, Identifiable {
     var status: String // active/paused/done
     var colour: String // hex string
     var icon: String
+    var archived: Bool
     var createdAt: String
     var updatedAt: String
     var issueCounts: IssueCounts?
@@ -28,7 +29,7 @@ struct GraftProject: Codable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, description, status, colour, icon
+        case id, name, description, status, colour, icon, archived
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case issueCounts = "issue_counts"
@@ -74,11 +75,12 @@ struct GraftIssue: Codable, Identifiable {
     var labels: [String]
     var assignee: String
     var sortOrder: Int
+    var archived: Bool
     var createdAt: String
     var updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title, description, status, priority, labels, assignee
+        case id, title, description, status, priority, labels, assignee, archived
         case projectId = "project_id"
         case milestoneId = "milestone_id"
         case milestoneName = "milestone_name"

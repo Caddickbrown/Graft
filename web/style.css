@@ -995,3 +995,20 @@ option { background: var(--surface); }
 
 .so-empty { font-size: 13px; color: var(--muted); padding: 12px 14px; }
 
+/* ── Archived states ─────────────────────────────────── */
+.project-card-archived {
+  opacity: 0.6;
+  filter: grayscale(30%);
+}
+.project-card-archived:hover {
+  opacity: 0.85;
+}
+
+.issue-row-archived {
+  opacity: 0.5;
+}
+.issue-row-archived .issue-row-title {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+

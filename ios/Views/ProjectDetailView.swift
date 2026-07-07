@@ -211,6 +211,12 @@ struct ProjectDetailView: View {
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
+                            Button {
+                                Task { try? await store.archiveIssue(id: issue.id) }
+                            } label: {
+                                Label("Archive", systemImage: "archivebox")
+                            }
+                            .tint(.gray)
                         }
                     }
                 } header: {
