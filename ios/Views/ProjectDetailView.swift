@@ -5,14 +5,15 @@ struct ProjectDetailView: View {
     let project: GraftProject
 
     @State private var showNewIssue = false
+    @State private var showNewIssueInStatus: String? = nil
     @State private var showMilestones = false
     @State private var showEditProject = false
     @State private var selectedMilestoneId: String? = nil
-    @State private var viewMode: ViewMode = .list
+    @State private var viewMode: ViewMode = .board
 
     enum ViewMode: String, CaseIterable {
-        case list = "List"
         case board = "Board"
+        case list = "List"
     }
 
     var currentProject: GraftProject {
@@ -33,9 +34,8 @@ struct ProjectDetailView: View {
 
     var issuesByStatus: [(String, [GraftIssue])] {
         let order = ["backlog", "todo", "in-progress", "review", "done"]
-        return order.compactMap { status in
-            let filtered = projectIssues.filter { $0.status == status }
-            return (status, filtered)  // always show all columns, even empty
+        return order.map { status in
+            (status, projectIssues.filter { $0.status == status })
         }
     }
 
@@ -110,8 +110,7 @@ struct ProjectDetailView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
                         }
-                        Divider()
-                            .background(Color.gHairline)
+                        Divider().background(Color.gHairline)
                     }
 
                     // View mode toggle
@@ -125,8 +124,7 @@ struct ProjectDetailView: View {
                     .padding(.vertical, 10)
                     .colorScheme(.dark)
 
-                    Divider()
-                        .background(Color.gHairline)
+                    Divider().background(Color.gHairline)
 
                     // Issues content
                     if projectIssues.isEmpty {
@@ -181,6 +179,9 @@ struct ProjectDetailView: View {
         }
         .sheet(isPresented: $showNewIssue) {
             NewIssueView(projectId: project.id)
+        }
+        .sheet(item: $showNewIssueInStatus) { status in
+            NewIssueView(projectId: project.id, defaultStatus: status)
         }
         .sheet(isPresented: $showMilestones) {
             MilestonesView(projectId: project.id)
@@ -249,45 +250,13 @@ struct ProjectDetailView: View {
     @ViewBuilder
     var boardView: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
                 ForEach(issuesByStatus, id: \.0) { (status, statusIssues) in
-                    VStack(alignment: .leading, spacing: 8) {
-                        let s = IssueStatus(rawValue: status) ?? .backlog
-
-                        // Column header
-                        HStack(spacing: 6) {
-                            Image(systemName: s.icon)
-                                .font(.system(size: 11))
-                                .foregroundStyle(s.color)
-                            Text(s.label)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(Color.gMuted)
-                            Spacer()
-                            Text("\(statusIssues.count)")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Color.gMuted)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.gSurface2)
-                                .clipShape(Capsule())
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.top, 10)
-
-                        // Issues
-                        ForEach(statusIssues) { issue in
-                            NavigationLink(destination: IssueDetailView(issue: issue)) {
-                                BoardIssueCard(issue: issue)
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        Spacer(minLength: 0)
-                    }
-                    .frame(width: 230)
-                    .background(Color.gSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gHairline, lineWidth: 0.5))
+                    KanbanColumn(
+                        status: status,
+                        issues: statusIssues,
+                        onAddIssue: { showNewIssueInStatus = status }
+                    )
                 }
             }
             .padding(.horizontal, 16)
@@ -308,21 +277,156 @@ struct ProjectDetailView: View {
             default: return .gMuted
             }
         }()
-        let label: String = {
-            switch status {
-            case "active": return "active"
-            case "paused": return "paused"
-            case "done": return "done"
-            default: return status
-            }
-        }()
-        Text(label)
+        Text(status)
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(color.opacity(0.12))
             .clipShape(Capsule())
+    }
+}
+
+// MARK: - Kanban Column
+
+struct KanbanColumn: View {
+    @Environment(GraftStore.self) private var store
+    let status: String
+    let issues: [GraftIssue]
+    let onAddIssue: () -> Void
+
+    var statusInfo: IssueStatus { IssueStatus(rawValue: status) ?? .backlog }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Column header
+            HStack(spacing: 6) {
+                Image(systemName: statusInfo.icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(statusInfo.color)
+                Text(statusInfo.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.gMuted)
+                Spacer()
+                Text("\(issues.count)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.gMuted)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.gSurface2)
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+
+            // Cards
+            VStack(spacing: 6) {
+                ForEach(issues) { issue in
+                    KanbanCard(issue: issue)
+                        .padding(.horizontal, 8)
+                }
+
+                // Add button
+                Button(action: onAddIssue) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Add issue")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundStyle(Color.gMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 10)
+
+            Spacer(minLength: 0)
+        }
+        .frame(width: 220)
+        .background(Color.gSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gHairline, lineWidth: 0.5))
+    }
+}
+
+// MARK: - Kanban Card
+
+struct KanbanCard: View {
+    @Environment(GraftStore.self) private var store
+    let issue: GraftIssue
+
+    @State private var showStatusPicker = false
+    @State private var navigateToDetail = false
+
+    let allStatuses = ["backlog", "todo", "in-progress", "review", "done"]
+
+    var body: some View {
+        let priority = IssuePriority(rawValue: issue.priority) ?? .normal
+
+        NavigationLink(destination: IssueDetailView(issue: issue)) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(priority.color)
+                        .frame(width: 3, height: 14)
+                        .padding(.trailing, 6)
+                    Text(issue.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.gInk)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                }
+
+                HStack(spacing: 6) {
+                    if let milestone = issue.milestoneName {
+                        MilestoneTag(name: milestone)
+                    }
+                    if !issue.assignee.isEmpty {
+                        Text("@\(issue.assignee)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.gMuted)
+                    }
+                }
+
+                // Status pill — tap to change without opening detail
+                Button {
+                    showStatusPicker = true
+                } label: {
+                    HStack(spacing: 4) {
+                        let s = IssueStatus(rawValue: issue.status) ?? .backlog
+                        Image(systemName: s.icon)
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(s.label)
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(statusColor(issue.status))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(statusColor(issue.status).opacity(0.12))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .confirmationDialog("Move to…", isPresented: $showStatusPicker, titleVisibility: .visible) {
+                    ForEach(allStatuses.filter { $0 != issue.status }, id: \.self) { s in
+                        let label = IssueStatus(rawValue: s)?.label ?? s
+                        Button(label) {
+                            Task { try? await store.updateIssueStatus(id: issue.id, status: s) }
+                        }
+                    }
+                }
+            }
+            .padding(10)
+            .background(Color.gSurface2)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    func statusColor(_ status: String) -> Color {
+        IssueStatus(rawValue: status)?.color ?? Color.gMuted
     }
 }
 
@@ -335,7 +439,6 @@ struct IssueRowView: View {
         let priority = IssuePriority(rawValue: issue.priority) ?? .normal
 
         HStack(spacing: 0) {
-            // Priority colour border
             RoundedRectangle(cornerRadius: 2)
                 .fill(priority.color)
                 .frame(width: 3)
@@ -383,45 +486,6 @@ struct IssueRowView: View {
         .background(Color.gSurface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gHairline, lineWidth: 0.5))
-    }
-}
-
-// MARK: - Board Issue Card
-
-struct BoardIssueCard: View {
-    let issue: GraftIssue
-
-    var body: some View {
-        let priority = IssuePriority(rawValue: issue.priority) ?? .normal
-
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 0) {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(priority.color)
-                    .frame(width: 3, height: 14)
-                    .padding(.trailing, 6)
-                Text(issue.title)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.gInk)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-            }
-
-            HStack(spacing: 6) {
-                if let milestone = issue.milestoneName {
-                    MilestoneTag(name: milestone)
-                }
-                if !issue.assignee.isEmpty {
-                    Text("@\(issue.assignee)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.gMuted)
-                }
-            }
-        }
-        .padding(10)
-        .background(Color.gSurface2)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(.horizontal, 8)
     }
 }
 

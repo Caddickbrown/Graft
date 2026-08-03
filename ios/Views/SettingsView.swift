@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var serverURL = ""
     @State private var fallbackURL = ""
     @State private var isSyncing = false
+    @State private var piEnabled = false
 
     var lastSyncedString: String {
         guard let date = store.lastSynced else { return "Never" }
@@ -19,6 +20,8 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
 
+    var pendingCount: Int { store.syncEngine.pendingCount }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -27,119 +30,171 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
 
-                        // Server section
-                        SettingsSection(title: "Server") {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("The primary URL is tried first. If unreachable, the fallback is used.")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Color.gMuted)
-                                    .padding(.bottom, 8)
-
-                                SettingsURLField(
-                                    label: "Primary",
-                                    icon: "server.rack",
-                                    placeholder: "http://raspberrypi.local:8911",
-                                    text: $serverURL
-                                )
-
-                                Divider().background(Color.gHairline)
-
-                                SettingsURLField(
-                                    label: "Fallback",
-                                    icon: "arrow.triangle.2.circlepath",
-                                    placeholder: "Optional fallback URL",
-                                    text: $fallbackURL
-                                )
+                        // Pending ops indicator
+                        if pendingCount > 0 {
+                            SettingsSection(title: "Pending") {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "arrow.up.circle")
+                                        .font(.system(size: 15))
+                                        .foregroundStyle(Color.gAmber)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(pendingCount) change\(pendingCount == 1 ? "" : "s") waiting to sync")
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(Color.gInk)
+                                        Text(piEnabled ? "Will sync when Pi is reachable" : "Link a Pi server below to sync")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(Color.gMuted)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(14)
+                                .background(Color.gAmber.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gAmber.opacity(0.2), lineWidth: 0.5))
                             }
                         }
 
-                        // Sync section
-                        SettingsSection(title: "Sync") {
-                            VStack(alignment: .leading, spacing: 12) {
-                                // Last synced row
-                                HStack(spacing: 8) {
-                                    Image(systemName: "clock")
+                        // Pi server section
+                        SettingsSection(title: "Pi Server") {
+                            VStack(alignment: .leading, spacing: 0) {
+                                // Toggle
+                                HStack(spacing: 10) {
+                                    Image(systemName: "server.rack")
                                         .font(.system(size: 13))
                                         .foregroundStyle(Color.gMuted)
-                                    Text("Last synced")
+                                        .frame(width: 18)
+                                    Text("Link to Pi server")
                                         .font(.system(size: 14))
                                         .foregroundStyle(Color.gInk)
                                     Spacer()
-                                    Text(lastSyncedString)
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(Color.gMuted)
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(Color.gSurface2)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                                // Sync now button
-                                Button {
-                                    Task {
-                                        isSyncing = true
-                                        applySettings()
-                                        await store.sync()
-                                        isSyncing = false
-                                    }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        if isSyncing {
-                                            ProgressView()
-                                                .tint(.white)
-                                                .scaleEffect(0.85)
-                                        } else {
-                                            Image(systemName: "arrow.clockwise")
-                                                .font(.system(size: 14, weight: .medium))
+                                    Toggle("", isOn: $piEnabled)
+                                        .tint(Color.gSage)
+                                        .labelsHidden()
+                                        .onChange(of: piEnabled) { _, enabled in
+                                            if !enabled {
+                                                serverURL = ""
+                                                fallbackURL = ""
+                                            }
                                         }
-                                        Text(isSyncing ? "Syncing…" : "Sync now")
-                                            .font(.system(size: 14, weight: .semibold))
-                                    }
-                                    .foregroundStyle(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .background(isSyncing ? Color.gAmber.opacity(0.6) : Color.gAmber)
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
                                 }
-                                .disabled(isSyncing)
-                                .buttonStyle(.plain)
+                                .padding(.vertical, 10)
+
+                                if piEnabled {
+                                    Divider().background(Color.gHairline)
+
+                                    Text("Data is stored locally. The Pi syncs changes when reachable.")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Color.gMuted)
+                                        .padding(.top, 10)
+                                        .padding(.bottom, 6)
+
+                                    SettingsURLField(
+                                        label: "Primary",
+                                        icon: "server.rack",
+                                        placeholder: "http://raspberrypi.local:8911",
+                                        text: $serverURL
+                                    )
+
+                                    Divider().background(Color.gHairline)
+
+                                    SettingsURLField(
+                                        label: "Fallback",
+                                        icon: "arrow.triangle.2.circlepath",
+                                        placeholder: "Optional (e.g. external URL)",
+                                        text: $fallbackURL
+                                    )
+                                }
+                            }
+                        }
+
+                        // Sync section — only shown when Pi linked
+                        if piEnabled {
+                            SettingsSection(title: "Sync") {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "clock")
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Color.gMuted)
+                                        Text("Last synced")
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(Color.gInk)
+                                        Spacer()
+                                        Text(lastSyncedString)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Color.gMuted)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .background(Color.gSurface2)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                                    Button {
+                                        Task {
+                                            isSyncing = true
+                                            applySettings()
+                                            await store.sync()
+                                            isSyncing = false
+                                        }
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            if isSyncing {
+                                                ProgressView().tint(.white).scaleEffect(0.85)
+                                            } else {
+                                                Image(systemName: "arrow.clockwise")
+                                                    .font(.system(size: 14, weight: .medium))
+                                            }
+                                            Text(isSyncing ? "Syncing…" : "Sync now")
+                                                .font(.system(size: 14, weight: .semibold))
+                                        }
+                                        .foregroundStyle(.white)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                        .background(isSyncing ? Color.gAmber.opacity(0.6) : Color.gAmber)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    }
+                                    .disabled(isSyncing)
+                                    .buttonStyle(.plain)
+
+                                    if let err = store.syncEngine.lastFlushError {
+                                        Text("⚠ \(err)")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(Color.gRed)
+                                    }
+                                }
                             }
                         }
 
                         // About section
                         SettingsSection(title: "About Graft") {
-                            VStack(spacing: 0) {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "leaf.fill")
-                                        .font(.system(size: 20))
-                                        .foregroundStyle(Color.gSage)
+                            HStack(spacing: 12) {
+                                Image(systemName: "leaf.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(Color.gSage)
 
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Graft")
-                                            .font(.system(size: 15, weight: .semibold))
-                                            .foregroundStyle(Color.gInk)
-                                        Text("Tend your work. Watch it grow.")
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(Color.gMuted)
-                                    }
-
-                                    Spacer()
-
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text("v\(appVersion)")
-                                            .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(Color.gMuted)
-                                        Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(Color.gMuted.opacity(0.6))
-                                    }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Graft")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Color.gInk)
+                                    Text("Tend your work. Watch it grow.")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Color.gMuted)
                                 }
-                                .padding(14)
+
+                                Spacer()
+
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text("v\(appVersion)")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(Color.gMuted)
+                                    Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Color.gMuted.opacity(0.6))
+                                }
                             }
+                            .padding(14)
                             .background(Color.gSurface2)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
-
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 20)
@@ -163,14 +218,15 @@ struct SettingsView: View {
             .onAppear {
                 serverURL = store.serverURL
                 fallbackURL = store.fallbackURL
+                piEnabled = !store.serverURL.isEmpty
             }
         }
         .preferredColorScheme(.dark)
     }
 
     private func applySettings() {
-        store.serverURL = serverURL.isEmpty ? "http://raspberrypi.local:8911" : serverURL
-        store.fallbackURL = fallbackURL
+        store.serverURL = piEnabled ? serverURL : ""
+        store.fallbackURL = piEnabled ? fallbackURL : ""
     }
 }
 
