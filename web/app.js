@@ -1163,11 +1163,13 @@
            onkeydown="if(event.key==='Enter'){GRAFT._goToIssue('${id}')}">
         ${statusIcon(issue.status, 18)}
         <span class="today-row-title">${esc(issue.title)}</span>
-        ${issue.priority === 'urgent' || issue.priority === 'high' ? priorityBadge(issue.priority) : ''}
-        ${flag}
-        ${milestoneTag(issue.milestone_name)}
-        <span class="today-project">${issue.project_icon ? esc(issue.project_icon) : ''} ${esc(issue.project_name || '')}</span>
-        ${avatar(issue.assignee)}
+        <span class="issue-row-meta">
+          ${issue.priority === 'urgent' || issue.priority === 'high' ? priorityBadge(issue.priority) : ''}
+          ${flag}
+          ${milestoneTag(issue.milestone_name)}
+          <span class="today-project">${issue.project_icon ? esc(issue.project_icon) : ''} ${esc(issue.project_name || '')}</span>
+          ${avatar(issue.assignee)}
+        </span>
       </div>`;
   }
 

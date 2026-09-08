@@ -236,7 +236,11 @@ struct ProjectDetailView: View {
                 Section {
                     ForEach(statusIssues) { issue in
                         NavigationLink(destination: IssueDetailView(issue: issue)) {
-                            IssueRowView(issue: issue)
+                            GraftIssueRow(
+                                issue: issue,
+                                due: GraftDate.dueLabel(store.milestone(issue.milestoneId)?.dueDate),
+                                showProject: false
+                            )
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 16)
@@ -362,67 +366,6 @@ struct ProjectDetailView: View {
     }
 }
 
-// MARK: - Issue Row
-
-struct IssueRowView: View {
-    let issue: GraftIssue
-
-    var body: some View {
-        let priority = IssuePriority(rawValue: issue.priority) ?? .normal
-
-        HStack(spacing: 0) {
-            // Priority colour border
-            RoundedRectangle(cornerRadius: 2)
-                .fill(priority.color)
-                .frame(width: 3)
-                .padding(.vertical, 2)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(issue.title)
-                        .font(.system(size: GraftType.title, weight: .medium))
-                        .foregroundStyle(Color.gInk)
-                        .lineLimit(2)
-                    Spacer()
-                    PriorityBadge(priority: issue.priority)
-                    StatusBadge(status: issue.status)
-                }
-
-                HStack(spacing: 8) {
-                    if let milestone = issue.milestoneName {
-                        MilestoneTag(name: milestone)
-                    }
-                    if !issue.assignee.isEmpty {
-                        HStack(spacing: 3) {
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 10))
-                            Text(issue.assignee)
-                                .font(.system(size: GraftType.caption))
-                        }
-                        .foregroundStyle(Color.gMuted)
-                    }
-                    if !issue.labels.isEmpty {
-                        ForEach(issue.labels.prefix(2), id: \.self) { label in
-                            Text(label)
-                                .font(.system(size: 10))
-                                .foregroundStyle(Color.gMuted)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.gSurface2)
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 10)
-        }
-        .background(Color.gSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.gHairline, lineWidth: 0.5))
-    }
-}
-
 // MARK: - Board Issue Card
 
 struct BoardIssueCard: View {
@@ -438,7 +381,7 @@ struct BoardIssueCard: View {
                     .frame(width: 3, height: 14)
                     .padding(.trailing, 6)
                 Text(issue.title)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: GraftType.body, weight: .medium))
                     .foregroundStyle(Color.gInk)
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)
@@ -449,9 +392,8 @@ struct BoardIssueCard: View {
                     MilestoneTag(name: milestone)
                 }
                 if !issue.assignee.isEmpty {
-                    Text("@\(issue.assignee)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.gMuted)
+                    Spacer(minLength: 0)
+                    GraftAvatar(name: issue.assignee, size: 20)
                 }
             }
         }

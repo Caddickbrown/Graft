@@ -151,9 +151,9 @@ struct InboxView: View {
 
             ForEach(issues) { issue in
                 NavigationLink(destination: IssueDetailView(issue: issue)) {
-                    InboxRow(issue: issue,
-                             project: store.project(issue.projectId),
-                             due: GraftDate.dueLabel(store.milestone(issue.milestoneId)?.dueDate))
+                    GraftIssueRow(issue: issue,
+                                  project: store.project(issue.projectId),
+                                  due: GraftDate.dueLabel(store.milestone(issue.milestoneId)?.dueDate))
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, GraftMetrics.gutter)
@@ -177,69 +177,5 @@ struct InboxView: View {
                 try? await store.archiveIssue(id: issue.id)
             }
         }
-    }
-}
-
-// MARK: - Row
-
-struct InboxRow: View {
-    let issue: GraftIssue
-    let project: GraftProject?
-    let due: String?
-
-    var body: some View {
-        let status = IssueStatus(rawValue: issue.status) ?? .backlog
-        let priority = IssuePriority(rawValue: issue.priority) ?? .normal
-        let overdue = (due?.contains("overdue")) == true
-
-        HStack(spacing: 0) {
-            if priority == .urgent || priority == .high {
-                Rectangle()
-                    .fill(priority.color)
-                    .frame(width: 3)
-            }
-
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: status.icon)
-                    .font(.system(size: 17))
-                    .foregroundStyle(status.color)
-                    .padding(.top, 1)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(issue.title)
-                        .font(.system(size: GraftType.title, weight: .medium))
-                        .foregroundStyle(Color.gInk)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
-
-                    HStack(spacing: 8) {
-                        PriorityBadge(priority: issue.priority)
-                        if let due {
-                            Text(due)
-                                .font(.system(size: GraftType.caption))
-                                .foregroundStyle(overdue ? Color.gRed : Color.gMuted)
-                        }
-                        if let milestone = issue.milestoneName {
-                            MilestoneTag(name: milestone)
-                        }
-                        if let project {
-                            Text(project.name)
-                                .font(.system(size: GraftType.caption))
-                                .foregroundStyle(Color.gMuted)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        GraftAvatar(name: issue.assignee, size: 24)
-                    }
-                }
-            }
-            .padding(12)
-        }
-        .background(Color.gSurface)
-        .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radius))
-        .overlay(
-            RoundedRectangle(cornerRadius: GraftMetrics.radius)
-                .strokeBorder(Color.gHairline, lineWidth: 0.5)
-        )
     }
 }

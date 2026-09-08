@@ -328,6 +328,82 @@ extension View {
     }
 }
 
+// MARK: - Issue row
+//
+// One row shared by the Inbox and the project list. They had drifted into two
+// different treatments — one put the status glyph on the left, the other made
+// it a badge on the right — so the same issue looked different depending on
+// which screen you reached it from. This matches the web client's card:
+// priority as a left edge, status glyph beside the title, metadata beneath.
+
+struct GraftIssueRow: View {
+    let issue: GraftIssue
+    var project: GraftProject? = nil
+    var due: String? = nil
+    var showProject: Bool = true
+
+    var body: some View {
+        let status = IssueStatus(rawValue: issue.status) ?? .backlog
+        let priority = IssuePriority(rawValue: issue.priority) ?? .normal
+        let flagged = priority == .urgent || priority == .high
+        let overdue = (due?.contains("overdue")) == true
+        let done = issue.status == "done"
+
+        HStack(spacing: 0) {
+            if flagged {
+                Rectangle()
+                    .fill(priority.color)
+                    .frame(width: 3)
+            }
+
+            HStack(spacing: 11) {
+                Image(systemName: status.icon)
+                    .font(.system(size: 18))
+                    .foregroundStyle(status.color)
+                    .frame(width: 22)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(issue.title)
+                        .font(.system(size: GraftType.title, weight: .medium))
+                        .foregroundStyle(done ? Color.gMuted : Color.gInk)
+                        .strikethrough(done, color: Color.gMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+
+                    HStack(spacing: 8) {
+                        PriorityBadge(priority: issue.priority)
+                        if let due {
+                            Text(due)
+                                .font(.system(size: GraftType.caption))
+                                .foregroundStyle(overdue ? Color.gRed : Color.gMuted)
+                        }
+                        if let milestone = issue.milestoneName {
+                            MilestoneTag(name: milestone)
+                        }
+                        if showProject, let project {
+                            Text(project.name)
+                                .font(.system(size: GraftType.caption))
+                                .foregroundStyle(Color.gMuted)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        GraftAvatar(name: issue.assignee, size: 24)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+        }
+        .opacity(issue.archived ? 0.55 : 1)
+        .background(Color.gSurface)
+        .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: GraftMetrics.radius)
+                .strokeBorder(Color.gHairline, lineWidth: 0.5)
+        )
+    }
+}
+
 // MARK: - Relative dates
 
 enum GraftDate {
