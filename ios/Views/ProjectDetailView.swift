@@ -9,6 +9,18 @@ struct ProjectDetailView: View {
     @State private var showEditProject = false
     @State private var selectedMilestoneId: String? = nil
     @State private var viewMode: ViewMode = .list
+    @State private var showArchived = false
+    @State private var pendingDelete: GraftIssue?
+    @State private var undo: UndoAction?
+
+    private func archive(_ issue: GraftIssue) {
+        Task {
+            try? await store.archiveIssue(id: issue.id)
+            undo = UndoAction(message: issue.archived ? "Issue unarchived" : "Issue archived") {
+                try? await store.archiveIssue(id: issue.id)
+            }
+        }
+    }
 
     enum ViewMode: String, CaseIterable {
         case list = "List"
@@ -24,7 +36,9 @@ struct ProjectDetailView: View {
     }
 
     var projectIssues: [GraftIssue] {
-        var all = store.issues(for: project.id)
+        var all = showArchived
+            ? store.issues.filter { $0.projectId == project.id }.sorted { $0.sortOrder < $1.sortOrder }
+            : store.issues(for: project.id)
         if let mid = selectedMilestoneId {
             all = all.filter { $0.milestoneId == mid }
         }
@@ -61,7 +75,7 @@ struct ProjectDetailView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             if !currentProject.description.isEmpty {
                                 Text(currentProject.description)
-                                    .font(.system(size: 14))
+                                    .font(.system(size: GraftType.body))
                                     .foregroundStyle(Color.gMuted)
                             }
                             HStack(spacing: 8) {
@@ -123,7 +137,16 @@ struct ProjectDetailView: View {
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .colorScheme(.dark)
+
+                    Toggle(isOn: $showArchived) {
+                        Text("Show archived")
+                            .font(.system(size: GraftType.secondary))
+                            .foregroundStyle(Color.gMuted)
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Color.gSage)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
 
                     Divider()
                         .background(Color.gHairline)
@@ -150,25 +173,20 @@ struct ProjectDetailView: View {
             Button {
                 showNewIssue = true
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "leaf")
-                        .font(.system(size: 13, weight: .semibold))
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .bold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
-                .background(Color.gAmber, in: Capsule())
-                .shadow(color: Color.gAmber.opacity(0.4), radius: 8, x: 0, y: 4)
+                Image(systemName: "plus")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Color.gOnAccent)
+                    .frame(width: 56, height: 56)
+                    .background(Color.gAmber, in: Circle())
+                    .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
             }
+            .accessibilityLabel("New issue")
             .padding(.trailing, 20)
-            .padding(.bottom, 28)
+            .padding(.bottom, 20)
         }
         .navigationTitle(currentProject.name)
         .navigationBarTitleDisplayMode(.large)
         .toolbarBackground(Color.gBg, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -185,10 +203,28 @@ struct ProjectDetailView: View {
         .sheet(isPresented: $showMilestones) {
             MilestonesView(projectId: project.id)
         }
+        .confirmationDialog("Delete this issue?",
+                            isPresented: Binding(get: { pendingDelete != nil },
+                                                 set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible) {
+            if let issue = pendingDelete {
+                Button("Delete permanently", role: .destructive) {
+                    Task { try? await store.deleteIssue(id: issue.id) }
+                    pendingDelete = nil
+                }
+                Button("Archive instead") {
+                    archive(issue)
+                    pendingDelete = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("Archiving keeps the issue and can be undone. Deleting cannot.")
+        }
+        .undoBanner($undo)
         .sheet(isPresented: $showEditProject) {
             EditProjectView(project: currentProject)
         }
-        .preferredColorScheme(.dark)
     }
 
     // MARK: - List view
@@ -205,18 +241,18 @@ struct ProjectDetailView: View {
                         .buttonStyle(.plain)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 4)
-                        .swipeActions(edge: .trailing) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button(role: .destructive) {
-                                Task { try? await store.deleteIssue(id: issue.id) }
+                                pendingDelete = issue
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                             Button {
-                                Task { try? await store.archiveIssue(id: issue.id) }
+                                archive(issue)
                             } label: {
                                 Label("Archive", systemImage: "archivebox")
                             }
-                            .tint(.gray)
+                            .tint(Color.gSage)
                         }
                     }
                 } header: {
@@ -344,10 +380,11 @@ struct IssueRowView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(issue.title)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: GraftType.title, weight: .medium))
                         .foregroundStyle(Color.gInk)
                         .lineLimit(2)
                     Spacer()
+                    PriorityBadge(priority: issue.priority)
                     StatusBadge(status: issue.status)
                 }
 
@@ -360,7 +397,7 @@ struct IssueRowView: View {
                             Image(systemName: "person.fill")
                                 .font(.system(size: 10))
                             Text(issue.assignee)
-                                .font(.system(size: 11))
+                                .font(.system(size: GraftType.caption))
                         }
                         .foregroundStyle(Color.gMuted)
                     }
@@ -401,7 +438,7 @@ struct BoardIssueCard: View {
                     .frame(width: 3, height: 14)
                     .padding(.trailing, 6)
                 Text(issue.title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Color.gInk)
                     .lineLimit(3)
                     .multilineTextAlignment(.leading)

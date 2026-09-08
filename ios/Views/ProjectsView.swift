@@ -3,8 +3,23 @@ import SwiftUI
 struct ProjectsView: View {
     @Environment(GraftStore.self) private var store
     @State private var showNewProject = false
-    @State private var showSettings = false
     @State private var searchText = ""
+    @State private var pendingDelete: GraftProject?
+    @State private var undo: UndoAction?
+
+    /// Issues that would go with a project, so the confirmation can say so.
+    private func issueCount(_ project: GraftProject) -> Int {
+        store.issues.filter { $0.projectId == project.id }.count
+    }
+
+    private func archive(_ project: GraftProject) {
+        Task {
+            try? await store.archiveProject(id: project.id)
+            undo = UndoAction(message: project.archived ? "Project unarchived" : "Project archived") {
+                try? await store.archiveProject(id: project.id)
+            }
+        }
+    }
 
     var filteredProjects: [GraftProject] {
         if searchText.isEmpty { return store.projects }
@@ -40,15 +55,26 @@ struct ProjectsView: View {
                                 .listRowBackground(Color.clear)
                                 .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                                 .listRowSeparator(.hidden)
-                            }
-                            .onDelete { indexSet in
-                                Task {
-                                    for index in indexSet {
-                                        let project = filteredProjects[index]
-                                        try? await store.deleteProject(id: project.id)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        pendingDelete = project
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
                                     }
+                                    Button {
+                                        archive(project)
+                                    } label: {
+                                        Label(project.archived ? "Unarchive" : "Archive",
+                                              systemImage: "archivebox")
+                                    }
+                                    .tint(Color.gSage)
                                 }
                             }
+                            // No .onDelete here on purpose. A left swipe used to
+                            // call deleteProject directly, destroying the project
+                            // and cascading every issue in it with no confirmation
+                            // and no way back.
+                            .onDelete { _ in }
                         }
                         .listStyle(.plain)
                         .scrollContentBackground(.hidden)
@@ -63,34 +89,21 @@ struct ProjectsView: View {
                 Button {
                     showNewProject = true
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "leaf")
-                            .font(.system(size: 14, weight: .semibold))
-                        Image(systemName: "plus")
-                            .font(.system(size: 14, weight: .bold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 14)
-                    .background(Color.gAmber, in: Capsule())
-                    .shadow(color: Color.gAmber.opacity(0.4), radius: 8, x: 0, y: 4)
+                    Image(systemName: "plus")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(Color.gOnAccent)
+                        .frame(width: 56, height: 56)
+                        .background(Color.gAmber, in: Circle())
+                        .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
                 }
+                .accessibilityLabel("New project")
                 .padding(.trailing, 20)
-                .padding(.bottom, 28)
+                .padding(.bottom, 20)
             }
             .navigationTitle("Graft")
             .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(Color.gBg, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gear")
-                            .foregroundStyle(Color.gMuted)
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     if store.isLoading {
                         ProgressView()
@@ -108,9 +121,29 @@ struct ProjectsView: View {
             .sheet(isPresented: $showNewProject) {
                 NewProjectView()
             }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
+            .confirmationDialog(
+                pendingDelete.map { "Delete \($0.name)?" } ?? "Delete project?",
+                isPresented: Binding(get: { pendingDelete != nil },
+                                     set: { if !$0 { pendingDelete = nil } }),
+                titleVisibility: .visible
+            ) {
+                if let project = pendingDelete {
+                    Button("Delete project and \(issueCount(project)) issues", role: .destructive) {
+                        Task { try? await store.deleteProject(id: project.id) }
+                        pendingDelete = nil
+                    }
+                    Button("Archive instead") {
+                        archive(project)
+                        pendingDelete = nil
+                    }
+                }
+                Button("Cancel", role: .cancel) { pendingDelete = nil }
+            } message: {
+                if let project = pendingDelete {
+                    Text("This cannot be undone. Archiving keeps \(project.name) and its \(issueCount(project)) issues, just out of the way.")
+                }
             }
+            .undoBanner($undo)
             .overlay(alignment: .bottom) {
                 if let error = store.errorMessage {
                     Text(error)
@@ -126,7 +159,6 @@ struct ProjectsView: View {
             }
             .animation(.easeInOut, value: store.errorMessage)
         }
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -169,11 +201,11 @@ struct ProjectCardView: View {
                             .font(.system(size: 18))
                     }
                     Text(project.name)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: GraftType.title, weight: .semibold))
                         .foregroundStyle(Color.gInk)
                     Spacer()
                     Text(projectStatusLabel)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: GraftType.caption, weight: .medium))
                         .foregroundStyle(projectStatusColor)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -184,39 +216,36 @@ struct ProjectCardView: View {
                 // Description
                 if !project.description.isEmpty {
                     Text(project.description)
-                        .font(.system(size: 13))
+                        .font(.system(size: GraftType.secondary))
                         .foregroundStyle(Color.gMuted)
                         .lineLimit(2)
                 }
 
-                // Issue counts
+                // Progress — "how far along" rather than two raw numbers
                 if let counts = project.issueCounts {
                     let open = counts.backlog + counts.todo + counts.inProgress + counts.review
-                    HStack(spacing: 10) {
-                        if open > 0 {
-                            HStack(spacing: 4) {
-                                Image(systemName: "circle.dotted")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color.gSage)
-                                Text("\(open) open")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(Color.gSage)
+                    let total = open + counts.done
+                    if total > 0 {
+                        HStack(spacing: 10) {
+                            GeometryReader { geo in
+                                HStack(spacing: 0) {
+                                    Rectangle().fill(Color.gTeal)
+                                        .frame(width: geo.size.width * CGFloat(counts.done) / CGFloat(total))
+                                    Rectangle().fill(Color.gAmber)
+                                        .frame(width: geo.size.width * CGFloat(counts.inProgress) / CGFloat(total))
+                                    Rectangle().fill(Color.gSurface2)
+                                }
                             }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.gSage.opacity(0.10))
+                            .frame(height: 6)
                             .clipShape(Capsule())
+
+                            Text("\(open) open · \(counts.done) done")
+                                .font(.system(size: GraftType.caption))
+                                .foregroundStyle(Color.gMuted)
+                                .fixedSize()
                         }
-                        if counts.done > 0 {
-                            HStack(spacing: 4) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color.gTeal)
-                                Text("\(counts.done) done")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(Color.gMuted)
-                            }
-                        }
+                        .accessibilityElement()
+                        .accessibilityLabel("\(counts.done) of \(total) done")
                     }
                 }
             }

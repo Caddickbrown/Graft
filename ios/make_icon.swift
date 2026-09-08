@@ -1,5 +1,5 @@
 // Generates the Graft app icon (1024x1024 PNG) using CoreGraphics.
-// Motif: two stems grafted into a single trunk — indigo brand gradient, white mark.
+// Motif: two stems grafted into a single trunk — Botanical Night ground, amber mark.
 import CoreGraphics
 import ImageIO
 import Foundation
@@ -20,15 +20,17 @@ func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor 
     CGColor(colorSpace: cs, components: [r, g, b, a])!
 }
 
-// Background gradient: brand indigo, lighter top-left to deeper bottom-right.
-let top = rgb(0.451, 0.463, 0.988)   // #7376FC
-let bot = rgb(0.310, 0.275, 0.898)   // #4F46E5
+// Background gradient: the app's own forest ground, lighter top-left to
+// deeper bottom-right. The old indigo (#7376FC → #4F46E5) was left over from
+// a palette the app no longer uses — it appeared nowhere on screen.
+let top = rgb(0.110, 0.165, 0.110)   // #1C2A1C
+let bot = rgb(0.051, 0.071, 0.051)   // #0D120D
 let grad = CGGradient(colorsSpace: cs, colors: [top, bot] as CFArray, locations: [0, 1])!
 ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: 0), end: CGPoint(x: S, y: S), options: [])
 
-// Soft top-left sheen.
+// Soft top-left sheen, warm rather than white so it reads as light on foliage.
 let sheen = CGGradient(colorsSpace: cs,
-                       colors: [rgb(1, 1, 1, 0.18), rgb(1, 1, 1, 0)] as CFArray,
+                       colors: [rgb(0.784, 0.565, 0.247, 0.14), rgb(0.784, 0.565, 0.247, 0)] as CFArray,
                        locations: [0, 1])!
 ctx.drawRadialGradient(sheen, startCenter: CGPoint(x: 300, y: 260), startRadius: 0,
                        endCenter: CGPoint(x: 300, y: 260), endRadius: 720, options: [])
@@ -53,7 +55,8 @@ mark.addQuadCurve(to: branchA, control: CGPoint(x: 590, y: 520))
 mark.move(to: joinB)
 mark.addQuadCurve(to: branchB, control: CGPoint(x: 372, y: 400))
 
-ctx.setStrokeColor(rgb(1, 1, 1, 1))
+let mark_amber = rgb(0.784, 0.565, 0.247, 1)   // #C8903F
+ctx.setStrokeColor(mark_amber)
 ctx.setLineWidth(60)
 ctx.setLineCap(.round)
 ctx.setLineJoin(.round)
@@ -62,7 +65,7 @@ ctx.strokePath()
 
 // Bud / leaf nodes at each tip.
 func node(_ p: CGPoint, r: CGFloat) {
-    ctx.setFillColor(rgb(1, 1, 1, 1))
+    ctx.setFillColor(mark_amber)
     ctx.fillEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2))
 }
 node(stemTop, r: 66)

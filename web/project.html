@@ -16,7 +16,11 @@
       </a>
     </div>
     <div class="nav-section">
-      <a href="index.html" class="nav-item" data-page="projects">
+      <a href="today.html" class="nav-item" data-page="today">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        Today
+      </a>
+      <a href="index.html" class="nav-item active" data-page="projects">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="9" height="9" rx="1"/><rect x="13" y="3" width="9" height="9" rx="1"/><rect x="2" y="13" width="9" height="9" rx="1"/><rect x="13" y="13" width="9" height="9" rx="1"/></svg>
         Projects
       </a>
@@ -37,6 +41,7 @@
         <div class="breadcrumb"><a href="index.html">Projects</a> <span>/</span> <span id="project-name-breadcrumb">…</span></div>
         <h1 class="page-title" id="project-name-title">Loading…</h1>
         <p class="page-subtitle" id="project-description-text"></p>
+        <div class="progress-row" id="project-progress" style="margin-top:10px"></div>
       </div>
       <div class="header-actions">
         <button class="btn btn-ghost" onclick="GRAFT.openMilestones()">
@@ -54,17 +59,20 @@
       </div>
     </header>
 
-    <div class="view-toggle">
-      <button class="view-btn active" id="btn-board" onclick="GRAFT.setView('board', this)">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap">
+    <div class="view-toggle" role="tablist" aria-label="View" style="margin-bottom:0">
+      <button class="view-btn active" id="btn-board" role="tab" aria-selected="true" onclick="GRAFT.setView('board', this)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="5" height="18" rx="1"/><rect x="9.5" y="3" width="5" height="18" rx="1"/><rect x="17" y="3" width="5" height="18" rx="1"/></svg>
         Board
       </button>
-      <button class="view-btn" id="btn-list" onclick="GRAFT.setView('list', this)">
+      <button class="view-btn" id="btn-list" role="tab" aria-selected="false" onclick="GRAFT.setView('list', this)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
         List
       </button>
-      <button class="view-btn" id="btn-archived" onclick="GRAFT.toggleArchivedIssues(this)">
-        ⊘ Archived
+    </div>
+      <button class="switch-btn" id="btn-archived" type="button" aria-pressed="false"
+              onclick="GRAFT.toggleArchivedIssues(this)">
+        <span class="switch-track"><span class="switch-knob"></span></span> Show archived
       </button>
     </div>
 
@@ -147,10 +155,10 @@
         <div class="form-group">
           <label class="form-label">Priority</label>
           <select class="form-input" id="issue-priority">
-            <option value="urgent">🔴 Urgent</option>
-            <option value="high">🟠 High</option>
-            <option value="normal" selected>⚪ Normal</option>
-            <option value="low">⬇️ Low</option>
+            <option value="urgent">Urgent</option>
+            <option value="high">High</option>
+            <option value="normal" selected>Normal</option>
+            <option value="low">Low</option>
           </select>
         </div>
       </div>

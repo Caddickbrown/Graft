@@ -1,5 +1,33 @@
 import Foundation
 
+// MARK: - Flexible Bool
+
+/// Decodes a boolean from either a JSON bool (`true`/`false`) or an integer
+/// (`0`/`1`). The Graft backend stores flags in SQLite and serialises them as
+/// integers, so a plain `Bool` would fail to decode.
+@propertyWrapper
+struct FlexibleBool: Codable, Hashable {
+    var wrappedValue: Bool
+
+    init(wrappedValue: Bool) { self.wrappedValue = wrappedValue }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let bool = try? container.decode(Bool.self) {
+            wrappedValue = bool
+        } else if let int = try? container.decode(Int.self) {
+            wrappedValue = int != 0
+        } else {
+            wrappedValue = false
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(wrappedValue)
+    }
+}
+
 // MARK: - GraftProject
 
 struct GraftProject: Codable, Identifiable {
@@ -9,7 +37,7 @@ struct GraftProject: Codable, Identifiable {
     var status: String // active/paused/done
     var colour: String // hex string
     var icon: String
-    var archived: Bool
+    @FlexibleBool var archived: Bool
     var createdAt: String
     var updatedAt: String
     var issueCounts: IssueCounts?
@@ -75,7 +103,7 @@ struct GraftIssue: Codable, Identifiable {
     var labels: [String]
     var assignee: String
     var sortOrder: Int
-    var archived: Bool
+    @FlexibleBool var archived: Bool
     var createdAt: String
     var updatedAt: String
 

@@ -85,7 +85,9 @@ final class GraftStore {
 
     private func fetchAll(from base: String) async throws {
         async let fetchedProjects: [GraftProject] = api.get("\(base)/api/projects")
-        async let fetchedIssues: [GraftIssue] = api.get("\(base)/api/issues")
+        // archived=1 returns archived AND live issues, so the client can offer a
+        // "show archived" filter instead of hiding them for good.
+        async let fetchedIssues: [GraftIssue] = api.get("\(base)/api/issues?archived=1")
         async let fetchedMilestones: [GraftMilestone] = api.get("\(base)/api/milestones")
 
         let (p, i, m) = try await (fetchedProjects, fetchedIssues, fetchedMilestones)
@@ -138,6 +140,8 @@ final class GraftStore {
         await sync()
     }
 
+    /// Archive is a toggle on the server, so calling it twice puts things back —
+    /// which is what the undo action does.
     func archiveIssue(id: String) async throws {
         let base = activeBase
         guard let url = URL(string: "\(base)/api/issues/\(id)/archive") else { throw URLError(.badURL) }
@@ -176,7 +180,23 @@ final class GraftStore {
         await sync()
     }
 
-    func updateIssue(_ issue: GraftIssue) async throws {
+    /// Applies the change locally first, then persists. On failure it puts the
+    /// previous value back and surfaces the error rather than swallowing it.
+    func updateIssue(_ issue: GraftIssue, optimistic: Bool = true) async throws {
+        guard optimistic else { try await pushIssue(issue); return }
+        let index = issues.firstIndex { $0.id == issue.id }
+        let previous = index.map { issues[$0] }
+        if let index { issues[index] = issue }
+        do {
+            try await pushIssue(issue)
+        } catch {
+            if let index, let previous { issues[index] = previous }
+            errorMessage = "Could not save that change."
+            throw error
+        }
+    }
+
+    private func pushIssue(_ issue: GraftIssue) async throws {
         let base = activeBase
         var body: [String: Any] = [
             "title": issue.title,
@@ -186,7 +206,8 @@ final class GraftStore {
             "assignee": issue.assignee,
             "labels": issue.labels
         ]
-        if let mid = issue.milestoneId { body["milestone_id"] = mid }
+        // Send an explicit null so a milestone can be removed, not just changed.
+        body["milestone_id"] = issue.milestoneId ?? NSNull()
         let data = try JSONSerialization.data(withJSONObject: body)
         let _: GraftIssue = try await putRaw("\(base)/api/issues/\(issue.id)", data: data)
         await sync()
@@ -299,6 +320,33 @@ final class GraftStore {
     }
 
     // MARK: - Convenience
+
+    /// Issues that still want attention, newest signal first. Backs the Inbox.
+    func inbox(assignee: String? = nil) -> [GraftIssue] {
+        issues
+            .filter { !$0.archived && $0.status != "done" }
+            .filter { assignee == nil || $0.assignee == assignee }
+            .sorted { a, b in
+                let rank = ["urgent": 0, "high": 1, "normal": 2, "low": 3]
+                let ra = rank[a.priority] ?? 2, rb = rank[b.priority] ?? 2
+                if ra != rb { return ra < rb }
+                return a.updatedAt > b.updatedAt
+            }
+    }
+
+    func project(_ id: String) -> GraftProject? {
+        projects.first { $0.id == id }
+    }
+
+    func milestone(_ id: String?) -> GraftMilestone? {
+        guard let id else { return nil }
+        return milestones.first { $0.id == id }
+    }
+
+    /// Everyone who has something assigned to them, for the Inbox scope picker.
+    var assignees: [String] {
+        Array(Set(issues.filter { !$0.assignee.isEmpty }.map(\.assignee))).sorted()
+    }
 
     func issues(for projectId: String) -> [GraftIssue] {
         issues.filter { $0.projectId == projectId && !$0.archived }.sorted { $0.sortOrder < $1.sortOrder }

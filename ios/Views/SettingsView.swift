@@ -149,7 +149,6 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color.gBg, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
@@ -165,7 +164,6 @@ struct SettingsView: View {
                 fallbackURL = store.fallbackURL
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private func applySettings() {

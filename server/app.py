@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from flask import Flask, g, jsonify, request, send_from_directory
 
-DB_PATH = "/home/dcb/graft/graft.db"
+DB_PATH = os.environ.get("GRAFT_DB", "/home/dcb/graft/graft.db")
 WEB_DIR = Path(__file__).parent.parent / "web"
 
 app = Flask(__name__, static_folder=None)
@@ -520,7 +520,8 @@ def overview():
 
 @app.get("/")
 def serve_index():
-    return send_from_directory(WEB_DIR, "index.html")
+    # Today answers "what needs me" — the project grid is one tab away.
+    return send_from_directory(WEB_DIR, "today.html")
 
 
 @app.get("/<path:filename>")

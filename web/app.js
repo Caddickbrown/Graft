@@ -2,7 +2,13 @@
 (function () {
   'use strict';
 
-  const API = window.GRAFT_API || 'http://raspberrypi.local:8911';
+  // Served by the Flask app itself, so talk to the same origin. Only fall
+  // back to the Pi when the pages are opened from disk or a static server.
+  const API = window.GRAFT_API !== undefined
+    ? window.GRAFT_API
+    : (location.protocol === 'http:' || location.protocol === 'https:'
+        ? ''
+        : 'http://raspberrypi.local:8911');
 
   // ── Core API ────────────────────────────────────────────────────
   async function api(method, path, body) {
@@ -21,6 +27,190 @@
     el.textContent = msg;
     el.classList.add('show');
     setTimeout(() => el.classList.remove('show'), duration);
+  }
+
+  // ── Escaping ────────────────────────────────────────────────────
+  // Everything below interpolates user text into HTML strings, so it all
+  // goes through here. Titles containing < or " used to break the markup.
+  function esc(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  // ── Icons ───────────────────────────────────────────────────────
+  // One drawn set, shared by the board, the list and every menu, so a
+  // status looks the same everywhere and recolours with the theme.
+  const ICON = {
+    backlog: '<circle cx="12" cy="12" r="9"/>',
+    todo: '<circle cx="12" cy="12" r="9" stroke-dasharray="3.2 3.2"/>',
+    'in-progress': '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/>',
+    review: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>',
+    done: '<circle cx="12" cy="12" r="9" fill="currentColor" stroke="none"/><path d="m8 12 2.5 2.5L16 9" stroke="var(--bg)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  };
+
+  const PRIORITY_ICON = {
+    urgent: '<circle cx="12" cy="12" r="10"/><path d="M12 8v5"/><path d="M12 17h.01"/>',
+    high:   '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
+    normal: '<line x1="6" y1="12" x2="18" y2="12"/>',
+    low:    '<path d="M12 5v14"/><path d="m5 12 7 7 7-7"/>',
+  };
+
+  const PRIORITY_LABELS = { urgent: 'Urgent', high: 'High', normal: 'Normal', low: 'Low' };
+  const PRIORITIES = ['urgent', 'high', 'normal', 'low'];
+  const STATUSES = ['backlog', 'todo', 'in-progress', 'review', 'done'];
+
+  function svg(paths, size = 16, extra = '') {
+    return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" ${extra}>${paths}</svg>`;
+  }
+
+  function statusIcon(status, size = 16) {
+    const key = ICON[status] ? status : 'backlog';
+    return `<span class="status-icon status-${key}" style="display:inline-flex;color:var(--s-${key})"
+      >${svg(ICON[key], size)}</span>`;
+  }
+
+  // Normal is the default, so it says nothing — only what stands out shows.
+  function priorityBadge(priority) {
+    const key = PRIORITY_ICON[priority] ? priority : 'normal';
+    if (key === 'normal') return '';
+    if (key === 'low') {
+      return `<span class="priority-badge low" title="Low priority"
+        >${svg(PRIORITY_ICON.low, 12)}<span class="sr-only">Low priority</span></span>`;
+    }
+    return `<span class="priority-badge ${key}">${svg(PRIORITY_ICON[key], 12)}${PRIORITY_LABELS[key]}</span>`;
+  }
+
+  function initials(name) {
+    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '';
+    return (parts[0][0] + (parts[1]?.[0] || '')).toUpperCase();
+  }
+
+  function avatar(name) {
+    if (!name) return `<span class="avatar avatar-none" title="Unassigned">+</span>`;
+    return `<span class="avatar" title="${esc(name)}">${esc(initials(name))}</span>`;
+  }
+
+  // ── Relative time ───────────────────────────────────────────────
+  function relTime(iso) {
+    if (!iso) return '';
+    const then = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+    if (isNaN(then)) return '';
+    const mins = Math.round((Date.now() - then.getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.round(hrs / 24);
+    if (days < 30) return `${days}d ago`;
+    return then.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  }
+
+  // Days until a yyyy-mm-dd date, parsed as local midnight so a due date
+  // never slips a day depending on the timezone.
+  function daysUntil(dateStr) {
+    if (!dateStr) return null;
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+    if (!m) return null;
+    const due = new Date(+m[1], +m[2] - 1, +m[3]);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return Math.round((due - today) / 86400000);
+  }
+
+  function dueLabel(dateStr) {
+    const d = daysUntil(dateStr);
+    if (d === null) return '';
+    if (d < 0) return `${Math.abs(d)}d overdue`;
+    if (d === 0) return 'due today';
+    if (d === 1) return 'due tomorrow';
+    return `in ${d} days`;
+  }
+
+  // ── Undo toast ──────────────────────────────────────────────────
+  // Destructive actions apply immediately and offer a way back, instead of
+  // asking a browser dialog to guess your intent up front.
+  let _undoTimer = null;
+
+  function undoToast(message, onUndo, duration = 7000) {
+    let el = document.getElementById('undo-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'undo-toast';
+      el.className = 'undo-toast';
+      el.setAttribute('role', 'status');
+      document.body.appendChild(el);
+    }
+    clearTimeout(_undoTimer);
+    el.innerHTML = `<span>${esc(message)}</span><button class="undo-btn" type="button">Undo</button>`;
+    el.querySelector('.undo-btn').onclick = async () => {
+      clearTimeout(_undoTimer);
+      el.classList.remove('show');
+      try { await onUndo(); } catch { toast('Could not undo'); }
+    };
+    requestAnimationFrame(() => el.classList.add('show'));
+    _undoTimer = setTimeout(() => el.classList.remove('show'), duration);
+  }
+
+  // ── Confirm dialog ──────────────────────────────────────────────
+  // Replaces window.confirm(): says what will be destroyed, and for the
+  // irreversible cases asks you to type the name.
+  function confirmDialog({ title, body = '', confirmLabel = 'Confirm', danger = false, requireText = null }) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.style.display = 'flex';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}" style="max-width:420px">
+          <div class="modal-header">
+            <h2 class="modal-title">${esc(title)}</h2>
+          </div>
+          <div class="modal-body">
+            ${body ? `<div class="confirm-text">${body}</div>` : ''}
+            ${requireText ? `
+              <div class="form-group">
+                <label class="form-label" for="confirm-typed">Type <span class="confirm-strong">${esc(requireText)}</span> to confirm</label>
+                <input class="form-input" id="confirm-typed" autocomplete="off" spellcheck="false">
+              </div>` : ''}
+            <div class="modal-footer">
+              <button type="button" class="btn btn-ghost" data-act="cancel">Cancel</button>
+              <button type="button" class="btn ${danger ? 'btn-ghost btn-danger' : 'btn-primary'}" data-act="ok">${esc(confirmLabel)}</button>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      document.body.style.overflow = 'hidden';
+
+      const okBtn = overlay.querySelector('[data-act="ok"]');
+      const typed = overlay.querySelector('#confirm-typed');
+      if (typed) {
+        okBtn.disabled = true;
+        okBtn.style.opacity = '.45';
+        typed.addEventListener('input', () => {
+          const ok = typed.value.trim() === requireText;
+          okBtn.disabled = !ok;
+          okBtn.style.opacity = ok ? '' : '.45';
+        });
+      }
+
+      function close(result) {
+        document.removeEventListener('keydown', onKey, true);
+        overlay.remove();
+        document.body.style.overflow = '';
+        resolve(result);
+      }
+      function onKey(e) {
+        if (e.key === 'Escape') { e.stopPropagation(); close(false); }
+        if (e.key === 'Enter' && !okBtn.disabled) { e.stopPropagation(); close(true); }
+      }
+      document.addEventListener('keydown', onKey, true);
+      overlay.addEventListener('click', e => { if (e.target === overlay) close(false); });
+      overlay.querySelector('[data-act="cancel"]').onclick = () => close(false);
+      okBtn.onclick = () => { if (!okBtn.disabled) close(true); };
+      setTimeout(() => (typed || okBtn).focus(), 30);
+    });
   }
 
   // ── Modal helpers ───────────────────────────────────────────────
@@ -68,35 +258,14 @@
     backlog: 'Backlog', todo: 'Todo', 'in-progress': 'In progress',
     review: 'Review', done: 'Done',
   };
-  const STATUS_COLORS = {
-    backlog: '#9ca3af', todo: '#6366f1', 'in-progress': '#f59e0b',
-    review: '#8b5cf6', done: '#22c55e',
-  };
-
-  function statusIcon(status) {
-    const icons = {
-      backlog:       { sym: '○', cls: 'status-backlog' },
-      todo:          { sym: '◌', cls: 'status-todo' },
-      'in-progress': { sym: '◑', cls: 'status-in-progress' },
-      review:        { sym: '✦', cls: 'status-review' },
-      done:          { sym: '●', cls: 'status-done' },
-    };
-    const i = icons[status] || icons.backlog;
-    return `<span class="status-icon ${i.cls}" title="${STATUS_LABELS[status] || status}" style="font-size:15px;line-height:1">${i.sym}</span>`;
-  }
-
-  function priorityDot(priority) {
-    return `<span class="priority-dot priority-${priority}" title="${priority}"></span>`;
-  }
-
   function milestoneTag(name) {
     if (!name) return '';
-    return `<span class="milestone-tag">${name}</span>`;
+    return `<span class="milestone-tag">${esc(name)}</span>`;
   }
 
   function assigneeChip(name) {
     if (!name) return '';
-    return `<span class="assignee-chip">${name}</span>`;
+    return `<span class="assignee-chip">${esc(name)}</span>`;
   }
 
   // ── Sidebar project list ────────────────────────────────────────
@@ -105,61 +274,291 @@
     if (!el) return;
     try {
       const projects = await api('GET', '/api/projects');
-      const active = projects.filter(p => p.status === 'active');
+      // Paused and done projects were invisible here — you could not navigate
+      // to a project you had paused. Archived ones stay out.
+      const rank = { active: 0, paused: 1, done: 2 };
+      const active = projects
+        .filter(p => !p.archived)
+        .sort((a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3));
       if (!active.length) { el.innerHTML = ''; return; }
       const current = new URLSearchParams(window.location.search).get('id');
       el.innerHTML = `
         <div class="nav-section-label">Projects</div>
-        ${active.map(p => `
-          <a href="project.html?id=${p.id}" class="nav-item${p.id === current ? ' active' : ''}">
-            ${p.icon ? `<span class="nav-project-icon">${p.icon}</span>` : `<span class="nav-project-dot" style="background:${p.colour}"></span>`}
-            ${p.name}
-          </a>`).join('')}
+        ${active.map(p => {
+          const c = p.issue_counts || {};
+          const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
+          return `
+          <a href="project.html?id=${esc(p.id)}" class="nav-item${p.id === current ? ' active' : ''}"
+             ${p.status !== 'active' ? `title="${esc(p.name)} — ${esc(p.status)}" style="opacity:.7"` : ''}>
+            ${p.icon ? `<span class="nav-project-icon">${esc(p.icon)}</span>` : `<span class="nav-project-dot" style="background:${esc(p.colour)}"></span>`}
+            ${esc(p.name)}
+            ${open ? `<span style="margin-left:auto;font-size:11.5px;color:var(--dim)">${open}</span>` : ''}
+          </a>`;
+        }).join('')}
       `;
+      syncDrawer();
     } catch { el.innerHTML = ''; }
   }
 
   // ── Issue card / row rendering ──────────────────────────────────
   function renderKanbanCard(issue, opts = {}) {
-    const labels = (issue.labels || []).map(l => `<span class="label-chip">${l}</span>`).join('');
+    const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${esc(l)}</span>`).join('');
     const showProject = opts.showProject && issue.project_name
-      ? `<span class="assignee-chip">${issue.project_name}</span>` : '';
+      ? `<span class="assignee-chip">${esc(issue.project_name)}</span>` : '';
+    const urgent = issue.priority === 'urgent' || issue.priority === 'high';
     return `
       <div class="kanban-card"
-           data-priority="${issue.priority}"
-           data-id="${issue.id}"
+           data-priority="${esc(issue.priority)}"
+           data-id="${esc(issue.id)}"
            draggable="true"
-           onclick="GRAFT.openIssueSlideover('${issue.id}')"
+           tabindex="0"
+           role="button"
+           aria-label="${esc(issue.title)}"
+           onclick="GRAFT.openIssueSlideover('${esc(issue.id)}')"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();GRAFT.openIssueSlideover('${esc(issue.id)}')}"
            ondragstart="GRAFT._dragStart(event)"
            ondragend="GRAFT._dragEnd(event)">
-        <div class="kanban-card-title">${issue.title}</div>
+        <div class="kanban-card-title">${esc(issue.title)}</div>
         <div class="kanban-card-meta">
-          ${priorityDot(issue.priority)}
+          ${urgent ? priorityBadge(issue.priority) : ''}
           ${milestoneTag(issue.milestone_name)}
-          ${assigneeChip(issue.assignee)}
           ${labels}
           ${showProject}
+          <span style="margin-left:auto">${avatar(issue.assignee)}</span>
         </div>
       </div>`;
   }
 
   function renderIssueRow(issue, opts = {}) {
+    const id = esc(issue.id);
     const showProject = opts.showProject && issue.project_name
-      ? `<span class="issue-row-project">${issue.project_name}</span>` : '';
-    const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${l}</span>`).join('');
+      ? `<span class="issue-row-project">${esc(issue.project_name)}</span>` : '';
+    const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${esc(l)}</span>`).join('');
     const archivedClass = issue.archived ? ' issue-row-archived' : '';
+    const selected = _selection.has(issue.id) ? ' selected' : '';
+    const check = opts.selectable === false ? '' : `
+      <input type="checkbox" class="row-check" ${_selection.has(issue.id) ? 'checked' : ''}
+             aria-label="Select ${esc(issue.title)}"
+             onclick="event.stopPropagation();GRAFT._toggleSelect('${id}',this.checked)">`;
     return `
-      <div class="issue-row${archivedClass}" data-priority="${issue.priority}" onclick="GRAFT.openIssueSlideover('${issue.id}')">
-        <div class="issue-row-status">${statusIcon(issue.status)}</div>
-        <div class="issue-row-title ${issue.status === 'done' ? 'done-title' : ''}">${issue.title}</div>
+      <div class="issue-row${archivedClass}${selected}" data-priority="${esc(issue.priority)}" data-id="${id}"
+           tabindex="0" role="button" aria-label="${esc(issue.title)}"
+           onclick="GRAFT.openIssueSlideover('${id}')"
+           onkeydown="if(event.key==='Enter'){GRAFT.openIssueSlideover('${id}')}">
+        ${check}
+        <button class="status-btn" type="button"
+                aria-label="Change status — currently ${esc(STATUS_LABELS[issue.status] || issue.status)}"
+                onclick="event.stopPropagation();GRAFT._openStatusMenu(event,'${id}')">${statusIcon(issue.status)}</button>
+        <div class="issue-row-title ${issue.status === 'done' ? 'done-title' : ''}">${esc(issue.title)}</div>
+        <div class="issue-row-actions">
+          <button class="icon-btn" type="button" title="Edit" aria-label="Edit issue"
+                  onclick="event.stopPropagation();GRAFT.openEditIssue(GRAFT._issue('${id}'))">${svg(NAV_ICONS.edit, 15)}</button>
+          <button class="icon-btn" type="button" title="${issue.archived ? 'Unarchive' : 'Archive'}"
+                  aria-label="${issue.archived ? 'Unarchive issue' : 'Archive issue'}"
+                  onclick="event.stopPropagation();GRAFT.archiveIssue('${id}')">${svg(NAV_ICONS.archive, 15)}</button>
+        </div>
         <div class="issue-row-meta">
           ${milestoneTag(issue.milestone_name)}
           ${labels}
-          ${assigneeChip(issue.assignee)}
-          ${priorityDot(issue.priority)}
+          ${priorityBadge(issue.priority)}
           ${showProject}
+          ${avatar(issue.assignee)}
         </div>
       </div>`;
+  }
+
+  // ── Inline status menu ──────────────────────────────────────────
+  function _openStatusMenu(event, id) {
+    document.querySelector('.popover')?.remove();
+    const issue = _issue(id);
+    if (!issue) return;
+    const pop = document.createElement('div');
+    pop.className = 'popover';
+    pop.innerHTML = `<div class="popover-label">Move to</div>` + STATUSES.map(st => `
+      <button class="popover-item" type="button" role="menuitemradio"
+              aria-checked="${issue.status === st}" data-status="${st}">
+        ${statusIcon(st, 15)}<span>${STATUS_LABELS[st]}</span>
+        <span class="popover-check">${svg('<path d="m5 12 5 5 9-10"/>', 14)}</span>
+      </button>`).join('');
+    document.body.appendChild(pop);
+
+    const r = event.currentTarget.getBoundingClientRect();
+    pop.style.top = `${Math.min(r.bottom + 6, window.innerHeight - pop.offsetHeight - 12) + window.scrollY}px`;
+    pop.style.left = `${Math.min(r.left, window.innerWidth - pop.offsetWidth - 12)}px`;
+
+    pop.querySelectorAll('[data-status]').forEach(b => {
+      b.onclick = async () => {
+        pop.remove();
+        await setIssueStatus(id, b.dataset.status);
+      };
+    });
+    setTimeout(() => {
+      document.addEventListener('click', function off() {
+        pop.remove();
+        document.removeEventListener('click', off);
+      }, { once: true });
+    }, 0);
+  }
+
+  async function setIssueStatus(id, status) {
+    const issue = _issue(id);
+    if (!issue || issue.status === status) return;
+    const previous = issue.status;
+    issue.status = status;
+    rerenderCurrentView();
+    try {
+      await api('PUT', `/api/issues/${id}`, { status });
+      undoToast(`Moved to ${STATUS_LABELS[status]}`, async () => {
+        issue.status = previous;
+        rerenderCurrentView();
+        await api('PUT', `/api/issues/${id}`, { status: previous });
+      });
+    } catch {
+      issue.status = previous;
+      rerenderCurrentView();
+      toast('Could not change status');
+    }
+  }
+
+  // ── Selection ───────────────────────────────────────────────────
+  const _selection = new Set();
+
+  function _toggleSelect(id, on) {
+    if (on) _selection.add(id); else _selection.delete(id);
+    document.querySelector(`.issue-row[data-id="${CSS.escape(id)}"]`)?.classList.toggle('selected', on);
+    renderBulkBar();
+  }
+
+  function clearSelection() {
+    _selection.clear();
+    document.querySelectorAll('.issue-row.selected').forEach(r => r.classList.remove('selected'));
+    document.querySelectorAll('.row-check').forEach(c => { c.checked = false; });
+    renderBulkBar();
+  }
+
+  function renderBulkBar() {
+    let bar = document.getElementById('bulk-bar');
+    if (!_selection.size) { bar?.remove(); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'bulk-bar';
+      bar.className = 'bulk-bar';
+      bar.setAttribute('role', 'toolbar');
+      document.body.appendChild(bar);
+    }
+    const n = _selection.size;
+    bar.innerHTML = `
+      <span class="bulk-count">${n} selected</span>
+      <span class="bulk-sep"></span>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="status">${svg(ICON.backlog, 14)} Status</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="assign">${svg('<circle cx="12" cy="8" r="3.5"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/>', 14)} Assign</button>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="archive">${svg(NAV_ICONS.archive, 14)} Archive</button>
+      <span class="bulk-sep"></span>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="done">Done</button>`;
+    bar.querySelector('[data-act="status"]').onclick = e => _bulkStatusMenu(e);
+    bar.querySelector('[data-act="assign"]').onclick = _bulkAssign;
+    bar.querySelector('[data-act="archive"]').onclick = _bulkArchive;
+    bar.querySelector('[data-act="done"]').onclick = clearSelection;
+  }
+
+  function _bulkStatusMenu(event) {
+    document.querySelector('.popover')?.remove();
+    const pop = document.createElement('div');
+    pop.className = 'popover';
+    pop.innerHTML = `<div class="popover-label">Move ${_selection.size} to</div>` + STATUSES.map(st => `
+      <button class="popover-item" type="button" data-status="${st}">
+        ${statusIcon(st, 15)}<span>${STATUS_LABELS[st]}</span>
+      </button>`).join('');
+    document.body.appendChild(pop);
+    const r = event.currentTarget.getBoundingClientRect();
+    pop.style.top = `${r.top + window.scrollY - pop.offsetHeight - 8}px`;
+    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - pop.offsetWidth - 12))}px`;
+    pop.querySelectorAll('[data-status]').forEach(b => {
+      b.onclick = async () => { pop.remove(); await _bulkSetStatus(b.dataset.status); };
+    });
+    setTimeout(() => document.addEventListener('click', function off() {
+      pop.remove(); document.removeEventListener('click', off);
+    }, { once: true }), 0);
+  }
+
+  async function _bulkSetStatus(status) {
+    const ids = [..._selection];
+    const previous = ids.map(id => ({ id, status: _issue(id)?.status }));
+    ids.forEach(id => { const i = _issue(id); if (i) i.status = status; });
+    clearSelection();
+    rerenderCurrentView();
+    try {
+      await Promise.all(ids.map(id => api('PUT', `/api/issues/${id}`, { status })));
+      undoToast(`${ids.length} moved to ${STATUS_LABELS[status]}`, async () => {
+        previous.forEach(p => { const i = _issue(p.id); if (i) i.status = p.status; });
+        rerenderCurrentView();
+        await Promise.all(previous.map(p => api('PUT', `/api/issues/${p.id}`, { status: p.status })));
+      });
+    } catch { toast('Some changes did not save'); reloadPage(); }
+  }
+
+  async function _bulkAssign() {
+    const ids = [..._selection];
+    const name = await promptDialog('Assign to', 'Name', '');
+    if (name === null) return;
+    clearSelection();
+    try {
+      await Promise.all(ids.map(id => api('PUT', `/api/issues/${id}`, { assignee: name })));
+      toast(name ? `Assigned ${ids.length} to ${name}` : `Unassigned ${ids.length}`);
+      reloadPage();
+    } catch { toast('Some changes did not save'); }
+  }
+
+  async function _bulkArchive() {
+    const ids = [..._selection];
+    clearSelection();
+    try {
+      await Promise.all(ids.map(id => api('PATCH', `/api/issues/${id}/archive`)));
+      undoToast(`${ids.length} issue${ids.length !== 1 ? 's' : ''} archived`, async () => {
+        await Promise.all(ids.map(id => api('PATCH', `/api/issues/${id}/archive`)));
+        reloadPage();
+      });
+      reloadPage();
+    } catch { toast('Could not archive'); }
+  }
+
+  function promptDialog(title, label, initial) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.style.display = 'flex';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" style="max-width:380px">
+          <div class="modal-header"><h2 class="modal-title">${esc(title)}</h2></div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label" for="prompt-input">${esc(label)}</label>
+              <input class="form-input" id="prompt-input" value="${esc(initial)}" autocomplete="off">
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-ghost" data-act="cancel">Cancel</button>
+              <button type="button" class="btn btn-primary" data-act="ok">Save</button>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      const input = overlay.querySelector('#prompt-input');
+      const done = v => { overlay.remove(); resolve(v); };
+      overlay.querySelector('[data-act="cancel"]').onclick = () => done(null);
+      overlay.querySelector('[data-act="ok"]').onclick = () => done(input.value.trim());
+      input.onkeydown = e => {
+        if (e.key === 'Enter') { e.preventDefault(); done(input.value.trim()); }
+        if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      };
+      overlay.addEventListener('click', e => { if (e.target === overlay) done(null); });
+      setTimeout(() => input.focus(), 30);
+    });
+  }
+
+  function rerenderCurrentView() {
+    if (window._pageMode === 'project') renderView();
+    else if (window._pageMode === 'issues') applyFilters();
+    else if (window._pageMode === 'today') renderToday();
   }
 
   // ── Issue modal population ──────────────────────────────────────
@@ -282,14 +681,43 @@
   async function deleteIssue() {
     const editId = document.getElementById('issue-edit-id').value;
     if (!editId) return;
-    if (!confirm('Delete this issue?')) return;
+    closeModal('modal-new-issue');
+    await deleteIssueById(editId);
+  }
+
+  // Deleting is permanent, so it says what goes and offers archiving instead.
+  async function deleteIssueById(id) {
+    const issue = _issue(id);
+    const ok = await confirmDialog({
+      title: 'Delete this issue?',
+      body: `<div class="confirm-text">“<span class="confirm-strong">${esc(issue?.title || 'This issue')}</span>” will be deleted permanently.</div>
+             <div class="confirm-detail">Archiving keeps it out of the way and can be undone — delete cannot.</div>`,
+      confirmLabel: 'Delete permanently',
+      danger: true,
+    });
+    if (!ok) return;
     try {
-      await api('DELETE', `/api/issues/${editId}`);
+      await api('DELETE', `/api/issues/${id}`);
       toast('Issue deleted');
-      closeModal('modal-new-issue');
+      closeSlideover();
+      _allIssues = _allIssues.filter(i => i.id !== id);
+      if (typeof reloadPage === 'function') reloadPage();
+    } catch { toast('Could not delete issue'); }
+  }
+
+  // Archive is the reversible one, so it just happens and offers a way back.
+  async function archiveIssue(id) {
+    const issue = _issue(id);
+    const wasArchived = !!issue?.archived;
+    try {
+      await api('PATCH', `/api/issues/${id}/archive`);
+      undoToast(wasArchived ? 'Issue unarchived' : 'Issue archived', async () => {
+        await api('PATCH', `/api/issues/${id}/archive`);
+        if (typeof reloadPage === 'function') reloadPage();
+      });
       closeSlideover();
       if (typeof reloadPage === 'function') reloadPage();
-    } catch { toast('Error deleting issue'); }
+    } catch { toast('Could not archive issue'); }
   }
 
   // ── Issue slide-over (inline editable) ──────────────────────────
@@ -304,7 +732,7 @@
     // Build milestone options for this issue's project
     const msOptions = _allMilestones
       .filter(m => m.project_id === issue.project_id)
-      .map(m => `<option value="${m.id}" ${issue.milestone_id === m.id ? 'selected' : ''}>${m.name}</option>`)
+      .map(m => `<option value="${esc(m.id)}" ${issue.milestone_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`)
       .join('');
 
     document.getElementById('slideover-body').innerHTML = `
@@ -314,7 +742,7 @@
              data-field="title"
              onblur="GRAFT._soSave()"
              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
-        >${issue.title}</div>
+        >${esc(issue.title)}</div>
       </div>
 
       <div class="so-field">
@@ -323,7 +751,7 @@
              data-field="description"
              onblur="GRAFT._soSave()"
              placeholder="Add a description…"
-        >${issue.description || ''}</div>
+        >${esc(issue.description || '')}</div>
       </div>
 
       <div class="so-meta">
@@ -340,16 +768,16 @@
         <div class="so-meta-row">
           <span class="so-label">Priority</span>
           <select class="so-select" data-field="priority" onchange="GRAFT._soSave()">
-            <option value="urgent" ${issue.priority==='urgent'?'selected':''}>🔴 Urgent</option>
-            <option value="high"   ${issue.priority==='high'  ?'selected':''}>🟠 High</option>
-            <option value="normal" ${issue.priority==='normal'?'selected':''}>⚪ Normal</option>
-            <option value="low"    ${issue.priority==='low'   ?'selected':''}>⬇️ Low</option>
+            <option value="urgent" ${issue.priority==='urgent'?'selected':''}>Urgent</option>
+            <option value="high"   ${issue.priority==='high'  ?'selected':''}>High</option>
+            <option value="normal" ${issue.priority==='normal'?'selected':''}>Normal</option>
+            <option value="low"    ${issue.priority==='low'   ?'selected':''}>Low</option>
           </select>
         </div>
         <div class="so-meta-row">
           <span class="so-label">Assignee</span>
           <input class="so-input" data-field="assignee"
-                 value="${issue.assignee || ''}"
+                 value="${esc(issue.assignee || '')}"
                  placeholder="Unassigned"
                  onblur="GRAFT._soSave()">
         </div>
@@ -363,7 +791,7 @@
         <div class="so-meta-row">
           <span class="so-label">Labels</span>
           <input class="so-input" data-field="labels"
-                 value="${(issue.labels||[]).join(', ')}"
+                 value="${esc((issue.labels||[]).join(', '))}"
                  placeholder="bug, frontend…"
                  onblur="GRAFT._soSave()">
         </div>
@@ -378,7 +806,7 @@
 
       <div class="so-project-section">
         <div class="so-project-header" onclick="GRAFT._toggleProjectSection()" id="so-project-toggle">
-          <span class="so-project-label">Project — ${_allProjects.find(p=>p.id===issue.project_id)?.name || ''}</span>
+          <span class="so-project-label">Project — ${esc(_allProjects.find(p=>p.id===issue.project_id)?.name || '')}</span>
           <svg class="so-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="so-project-body" id="so-project-body" style="display:none">
@@ -434,26 +862,9 @@
     document.body.style.overflow = '';
   }
 
-  async function _deleteIssueFromSlideover(id) {
-    if (!confirm('Delete this issue?')) return;
-    try {
-      await api('DELETE', `/api/issues/${id}`);
-      toast('Issue deleted');
-      closeSlideover();
-      _allIssues = _allIssues.filter(i => i.id !== id);
-      if (typeof reloadPage === 'function') reloadPage();
-    } catch { toast('Error deleting issue'); }
-  }
+  async function _deleteIssueFromSlideover(id) { await deleteIssueById(id); }
 
-  async function _archiveIssueFromSlideover(id) {
-    try {
-      const updated = await api('PATCH', `/api/issues/${id}/archive`);
-      toast(updated.archived ? 'Issue archived' : 'Issue unarchived');
-      closeSlideover();
-      _allIssues = _allIssues.filter(i => i.id !== id);
-      if (typeof reloadPage === 'function') reloadPage();
-    } catch { toast('Error archiving issue'); }
-  }
+  async function _archiveIssueFromSlideover(id) { await archiveIssue(id); }
 
   function _issue(id) { return _allIssues.find(i => i.id === id); }
 
@@ -464,7 +875,7 @@
       <div class="so-meta" style="margin-top:10px">
         <div class="so-meta-row">
           <span class="so-label">Name</span>
-          <input class="so-input" data-pfield="name" value="${p.name}" onblur="GRAFT._soProjectSave('${pid}')">
+          <input class="so-input" data-pfield="name" value="${esc(p.name)}" onblur="GRAFT._soProjectSave('${pid}')">
         </div>
         <div class="so-meta-row">
           <span class="so-label">Status</span>
@@ -476,11 +887,11 @@
         </div>
         <div class="so-meta-row">
           <span class="so-label">Icon</span>
-          <input class="so-input" data-pfield="icon" value="${p.icon||''}" placeholder="Paste emoji…" onblur="GRAFT._soProjectSave('${pid}')">
+          <input class="so-input" data-pfield="icon" value="${esc(p.icon||'')}" placeholder="Paste emoji…" onblur="GRAFT._soProjectSave('${pid}')">
         </div>
         <div class="so-meta-row">
           <span class="so-label">Description</span>
-          <input class="so-input" data-pfield="description" value="${p.description||''}" placeholder="Add description…" onblur="GRAFT._soProjectSave('${pid}')">
+          <input class="so-input" data-pfield="description" value="${esc(p.description||'')}" placeholder="Add description…" onblur="GRAFT._soProjectSave('${pid}')">
         </div>
       </div>
     `;
@@ -521,10 +932,12 @@
   let _projectFilter = 'all';
 
   async function init() {
+    window._pageMode = 'projects';
     initTheme();
+    initChrome('projects', { title: 'Projects', fab: { label: 'New project', action: openNewProject } });
     initColourPicker('colour-picker', 'project-colour');
     initIconPicker('icon-picker', 'project-icon');
-    renderSidebarProjects();
+    await renderSidebarProjects();
     loadProjects();
   }
 
@@ -565,32 +978,15 @@
       visible = _allProjects.filter(p => !p.archived && p.status === _projectFilter);
     }
     if (!visible.length) {
-      const msg = _projectFilter === 'archived' ? 'No archived projects.' : 'No projects yet';
-      grid.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🌱</div><div class="empty-state-title">${msg}</div></div>`;
+      const msg = _projectFilter === 'archived' ? 'No archived projects' : 'No projects yet';
+      const hint = _projectFilter === 'archived'
+        ? 'Archived projects are kept out of the way but never deleted.'
+        : 'Create one to start tracking issues.';
+      grid.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🌱</div>
+        <div class="empty-state-title">${msg}</div><div>${hint}</div></div>`;
       return;
     }
-    grid.innerHTML = visible.map(p => {
-      const c = p.issue_counts || {};
-      const open = (c.backlog||0) + (c.todo||0) + (c['in_progress']||0) + (c.review||0);
-      return `
-        <div class="project-card ${p.archived ? 'project-card-archived' : ''}" onclick="window.location.href='project.html?id=${p.id}'">
-          <div class="project-card-stripe" style="background:${p.colour}"></div>
-          <div class="project-card-body">
-            <div class="project-card-header">
-              ${p.icon ? `<span class="project-icon">${p.icon}</span>` : ''}
-              <span class="project-card-name">${p.name}</span>
-              ${p.archived
-                ? `<span class="project-card-status" style="background:rgba(100,100,100,.15);color:var(--muted)">archived</span>`
-                : `<span class="project-card-status status-${p.status}">${p.status}</span>`}
-            </div>
-            ${p.description ? `<div class="project-card-desc">${p.description}</div>` : ''}
-            <div class="issue-counts">
-              <span class="count-pill"><span class="count-dot" style="background:var(--sage)"></span>${open} open</span>
-              <span class="count-pill"><span class="count-dot" style="background:var(--teal)"></span>${c.done||0} done</span>
-            </div>
-          </div>
-        </div>`;
-    }).join('');
+    grid.innerHTML = visible.map(projectCard).join('');
   }
 
   function openNewProject() {
@@ -637,84 +1033,452 @@
   async function deleteProject() {
     const editId = document.getElementById('project-edit-id').value;
     if (!editId) return;
-    if (!confirm('Delete this project and all its issues?')) return;
+    const project = _allProjects.find(p => p.id === editId) || _currentProject;
+    const counts = project?.issue_counts || {};
+    const total = counts.total ?? Object.values(counts).reduce((a, b) => a + (b || 0), 0);
+    const ok = await confirmDialog({
+      title: 'Delete this project?',
+      body: `<div class="confirm-text">This deletes <span class="confirm-strong">${esc(project?.name || 'the project')}</span>${
+              total ? ` and all <span class="confirm-strong">${total}</span> of its issues` : ''}, permanently.</div>
+             <div class="confirm-detail">Archiving hides it from the project list and can be undone at any time.</div>`,
+      confirmLabel: 'Delete permanently',
+      danger: true,
+      requireText: project?.name || null,
+    });
+    if (!ok) return;
     try {
       await api('DELETE', `/api/projects/${editId}`);
       toast('Project deleted');
       closeModal('modal-edit-project');
       window.location.href = 'index.html';
-    } catch { toast('Error deleting project'); }
+    } catch { toast('Could not delete project'); }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  PAGE: today.html  (What needs you)
+  // ══════════════════════════════════════════════════════════════
+  let _overview = null;
+
+  async function initToday() {
+    window._pageMode = 'today';
+    initTheme();
+    initChrome('today', { title: 'Today', fab: { label: 'New issue', action: () => openNewIssue() } });
+    await renderSidebarProjects();
+    try {
+      const [projects, issues, milestones, overview] = await Promise.all([
+        api('GET', '/api/projects'),
+        api('GET', '/api/issues'),
+        api('GET', '/api/milestones'),
+        api('GET', '/api/overview').catch(() => null),
+      ]);
+      _allProjects = projects;
+      _allMilestones = milestones;
+      _overview = overview;
+      const byId = Object.fromEntries(projects.map(p => [p.id, p]));
+      _allIssues = issues.map(i => ({
+        ...i,
+        project_name: byId[i.project_id]?.name,
+        project_icon: byId[i.project_id]?.icon,
+      }));
+      renderToday();
+    } catch (err) {
+      document.getElementById('today-content').innerHTML =
+        `<div class="empty-state"><div class="empty-state-title">Can't reach the Graft server</div><div>${esc(err.message)}</div></div>`;
+    }
+  }
+
+  // A milestone's due date is the only real deadline in the data, so
+  // "overdue" means the issue is unfinished and its milestone has passed.
+  function milestoneDue(issue) {
+    if (!issue.milestone_id) return null;
+    return _allMilestones.find(m => m.id === issue.milestone_id)?.due_date || null;
+  }
+
+  function renderToday() {
+    const el = document.getElementById('today-content');
+    if (!el) return;
+
+    const open = _allIssues.filter(i => i.status !== 'done' && !i.archived);
+
+    const needsYou = open.filter(i => {
+      const d = daysUntil(milestoneDue(i));
+      return i.priority === 'urgent' || i.priority === 'high' || (d !== null && d <= 2);
+    }).sort((a, b) => {
+      const rank = { urgent: 0, high: 1, normal: 2, low: 3 };
+      const da = daysUntil(milestoneDue(a)), db = daysUntil(milestoneDue(b));
+      if ((da !== null && da < 0) !== (db !== null && db < 0)) return (da !== null && da < 0) ? -1 : 1;
+      return rank[a.priority] - rank[b.priority];
+    });
+
+    const inProgress = open.filter(i => i.status === 'in-progress' && !needsYou.includes(i));
+
+    const sub = document.getElementById('today-subtitle');
+    if (sub) {
+      const date = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+      const active = _allProjects.filter(p => p.status === 'active' && !p.archived).length;
+      sub.textContent = `${date} · ${needsYou.length} need${needsYou.length === 1 ? 's' : ''} you · ${open.length} open across ${active} project${active !== 1 ? 's' : ''}`;
+    }
+
+    el.innerHTML = `
+      ${todaySection('Needs you', needsYou, 'Nothing urgent or near a deadline. Enjoy it.')}
+      ${todaySection('In progress', inProgress, 'Nothing started yet.')}
+      <section class="section">
+        <div class="section-head">
+          <h2 class="section-title">Projects</h2>
+          <div class="section-rule"></div>
+          <a href="index.html" style="font-size:12.5px;color:var(--sage)">View all</a>
+        </div>
+        <div class="projects-grid">
+          ${_allProjects.filter(p => !p.archived).slice(0, 8).map(projectCard).join('') ||
+            '<div class="empty-state"><div class="empty-state-title">No projects yet</div></div>'}
+        </div>
+      </section>`;
+  }
+
+  function todaySection(title, issues, emptyText) {
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2 class="section-title">${esc(title)}</h2>
+          <span class="section-count">${issues.length}</span>
+          <div class="section-rule"></div>
+        </div>
+        ${issues.length
+          ? `<div class="issue-list">${issues.slice(0, 8).map(todayRow).join('')}</div>`
+          : `<div style="font-size:13px;color:var(--muted);padding:4px 2px">${esc(emptyText)}</div>`}
+      </section>`;
+  }
+
+  function todayRow(issue) {
+    const id = esc(issue.id);
+    const due = milestoneDue(issue);
+    const d = daysUntil(due);
+    const flag = d !== null && d <= 2
+      ? `<span class="${d < 0 ? 'due-flag' : 'age-flag'}">${esc(dueLabel(due))}</span>`
+      : `<span class="age-flag">${esc(relTime(issue.updated_at))}</span>`;
+    return `
+      <div class="today-row" data-priority="${esc(issue.priority)}" data-id="${id}"
+           tabindex="0" role="button" aria-label="${esc(issue.title)}"
+           onclick="GRAFT._goToIssue('${id}')"
+           onkeydown="if(event.key==='Enter'){GRAFT._goToIssue('${id}')}">
+        ${statusIcon(issue.status, 18)}
+        <span class="today-row-title">${esc(issue.title)}</span>
+        ${issue.priority === 'urgent' || issue.priority === 'high' ? priorityBadge(issue.priority) : ''}
+        ${flag}
+        ${milestoneTag(issue.milestone_name)}
+        <span class="today-project">${issue.project_icon ? esc(issue.project_icon) : ''} ${esc(issue.project_name || '')}</span>
+        ${avatar(issue.assignee)}
+      </div>`;
+  }
+
+  function _goToIssue(id) {
+    const issue = _issue(id);
+    if (!issue) return;
+    window.location.href = `project.html?id=${encodeURIComponent(issue.project_id)}&issue=${encodeURIComponent(id)}`;
+  }
+
+  // Shared project card — a progress bar answers "how far along" in a way
+  // two raw counts never did.
+  function projectCard(p) {
+    const c = p.issue_counts || {};
+    const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
+    const done = c.done || 0;
+    const total = open + done;
+    const donePct = total ? Math.round((done / total) * 100) : 0;
+    const doingPct = total ? Math.round(((c.in_progress || 0) / total) * 100) : 0;
+    const next = _allMilestones
+      .filter(m => m.project_id === p.id && m.due_date && daysUntil(m.due_date) !== null)
+      .sort((a, b) => a.due_date.localeCompare(b.due_date))[0];
+    return `
+      <div class="project-card ${p.archived ? 'project-card-archived' : ''}"
+           tabindex="0" role="link" aria-label="${esc(p.name)}"
+           onclick="window.location.href='project.html?id=${esc(p.id)}'"
+           onkeydown="if(event.key==='Enter'){window.location.href='project.html?id=${esc(p.id)}'}">
+        <div class="project-card-stripe" style="background:${esc(p.colour)}"></div>
+        <div class="project-card-body">
+          <div class="project-card-header">
+            ${p.icon ? `<span class="project-icon">${esc(p.icon)}</span>` : ''}
+            <span class="project-card-name">${esc(p.name)}</span>
+            ${p.archived
+              ? `<span class="project-card-status" style="background:var(--surface2);color:var(--muted)">archived</span>`
+              : `<span class="project-card-status status-${esc(p.status)}">${esc(p.status)}</span>`}
+          </div>
+          ${p.description ? `<div class="project-card-desc">${esc(p.description)}</div>` : ''}
+          <div class="progress-row">
+            <div class="progress" role="img" aria-label="${done} of ${total} done">
+              <span class="progress-done" style="width:${donePct}%"></span>
+              <span class="progress-doing" style="width:${doingPct}%"></span>
+            </div>
+            <span class="progress-label">${open} open · ${done} done</span>
+          </div>
+          ${next
+            ? `<div style="font-size:12px;color:var(--muted)">Next: <span style="color:var(--sage)">${esc(next.name)}</span> ${esc(dueLabel(next.due_date))}</div>`
+            : ''}
+        </div>
+      </div>`;
   }
 
   // ══════════════════════════════════════════════════════════════
   //  PAGE: issues.html  (All issues)
   // ══════════════════════════════════════════════════════════════
+  // Filters live in one object so the chips, the count and the list can
+  // never disagree about what is being shown.
+  let _filters = { project: null, milestone: null, status: [], priority: [], assignee: null, search: '' };
+
+  const FILTER_DEFS = {
+    project:   { label: 'Project',   multi: false },
+    milestone: { label: 'Milestone', multi: false },
+    status:    { label: 'Status',    multi: true  },
+    priority:  { label: 'Priority',  multi: true  },
+    assignee:  { label: 'Assignee',  multi: false },
+  };
+
   async function initIssues() {
+    window._pageMode = 'issues';
     initTheme();
-    renderSidebarProjects();
+    initChrome('issues', { title: 'All issues', fab: { label: 'New issue', action: () => openNewIssue() } });
+    await renderSidebarProjects();
     try {
-      [_allProjects, _allIssues, _allMilestones] = await Promise.all([
+      const [projects, issues, milestones] = await Promise.all([
         api('GET', '/api/projects'),
-        api('GET', '/api/issues'),
+        api('GET', '/api/issues?archived=1'),
         api('GET', '/api/milestones'),
       ]);
-      const projectSel = document.getElementById('filter-project');
-      _allProjects.forEach(p => {
-        const o = document.createElement('option'); o.value = p.id; o.textContent = p.name;
-        projectSel.appendChild(o);
-      });
-      const assignees = [...new Set(_allIssues.map(i => i.assignee).filter(Boolean))];
-      const aSel = document.getElementById('filter-assignee');
-      assignees.forEach(a => { const o = document.createElement('option'); o.value = a; o.textContent = a; aSel.appendChild(o); });
-      // Attach project_name to issues for display
-      const projMap = Object.fromEntries(_allProjects.map(p => [p.id, p.name]));
-      _allIssues = _allIssues.map(i => ({ ...i, project_name: projMap[i.project_id] }));
+      _allProjects = projects;
+      _allMilestones = milestones;
+      const byId = Object.fromEntries(projects.map(p => [p.id, p]));
+      _allIssues = issues.map(i => ({
+        ...i,
+        project_name: byId[i.project_id]?.name,
+        project_icon: byId[i.project_id]?.icon,
+      }));
+      readFiltersFromURL();
       applyFilters();
-      const sub = document.getElementById('issues-subtitle');
-      if (sub) sub.textContent = `${_allIssues.length} issue${_allIssues.length !== 1 ? 's' : ''}`;
-    } catch (err) {
-      document.getElementById('issue-list').innerHTML = `<div class="empty-state"><div class="empty-state-title">Can't reach server</div></div>`;
+    } catch {
+      document.getElementById('issue-list').innerHTML =
+        `<div class="empty-state"><div class="empty-state-title">Can't reach the Graft server</div>
+         <div>Check the server is running, then reload.</div></div>`;
     }
   }
 
+  // Filters survive a reload and can be shared as a link.
+  function readFiltersFromURL() {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('project')) _filters.project = q.get('project');
+    if (q.get('milestone')) _filters.milestone = q.get('milestone');
+    if (q.get('status')) _filters.status = q.get('status').split(',').filter(Boolean);
+    if (q.get('priority')) _filters.priority = q.get('priority').split(',').filter(Boolean);
+    if (q.get('assignee')) _filters.assignee = q.get('assignee');
+    if (q.get('q')) _filters.search = q.get('q');
+    if (q.get('archived') === '1') _filters.archived = true;
+  }
+
+  function writeFiltersToURL() {
+    const q = new URLSearchParams();
+    if (_filters.project) q.set('project', _filters.project);
+    if (_filters.milestone) q.set('milestone', _filters.milestone);
+    if (_filters.status.length) q.set('status', _filters.status.join(','));
+    if (_filters.priority.length) q.set('priority', _filters.priority.join(','));
+    if (_filters.assignee) q.set('assignee', _filters.assignee);
+    if (_filters.search) q.set('q', _filters.search);
+    if (_filters.archived) q.set('archived', '1');
+    const url = q.toString() ? `?${q}` : window.location.pathname;
+    history.replaceState(null, '', url);
+  }
+
+  function activeFilterCount() {
+    return (_filters.project ? 1 : 0) + (_filters.milestone ? 1 : 0) +
+           (_filters.status.length ? 1 : 0) + (_filters.priority.length ? 1 : 0) +
+           (_filters.assignee ? 1 : 0);
+  }
+
+  function filterValueLabel(key) {
+    const v = _filters[key];
+    if (key === 'project') return _allProjects.find(p => p.id === v)?.name || v;
+    if (key === 'milestone') return v === 'none' ? 'None' : (_allMilestones.find(m => m.id === v)?.name || v);
+    if (key === 'status') return v.map(x => STATUS_LABELS[x] || x).join(', ');
+    if (key === 'priority') return v.map(x => PRIORITY_LABELS[x] || x).join(', ');
+    return v;
+  }
+
+  function renderChips() {
+    const bar = document.getElementById('chip-bar');
+    if (!bar) return;
+    const chips = Object.keys(FILTER_DEFS)
+      .filter(k => Array.isArray(_filters[k]) ? _filters[k].length : _filters[k])
+      .map(k => `
+        <span class="chip">
+          <span class="chip-key">${FILTER_DEFS[k].label}</span> is
+          <span class="chip-val">${esc(filterValueLabel(k))}</span>
+          <button class="chip-x" type="button" aria-label="Remove ${FILTER_DEFS[k].label} filter"
+                  onclick="GRAFT._clearFilter('${k}')">${svg(NAV_ICONS.close, 11, 'stroke-width="2.5"')}</button>
+        </span>`).join('');
+
+    bar.innerHTML = `
+      <button class="chip-add" type="button" id="chip-add" aria-haspopup="menu">
+        ${svg(NAV_ICONS.plus, 13, 'stroke-width="2.5"')} Add filter
+      </button>
+      ${chips}
+      ${activeFilterCount() ? `<button class="chip-clear" type="button" onclick="GRAFT._clearAllFilters()">Clear all</button>` : ''}
+      <button class="switch-btn" type="button" aria-pressed="${!!_filters.archived}"
+              style="margin-left:auto" onclick="GRAFT._toggleArchivedFilter()">
+        <span class="switch-track"><span class="switch-knob"></span></span> Show archived
+      </button>`;
+    document.getElementById('chip-add').onclick = e => _openFilterMenu(e);
+  }
+
+  function _openFilterMenu(event) {
+    document.querySelector('.popover')?.remove();
+    const pop = document.createElement('div');
+    pop.className = 'popover';
+    pop.innerHTML = `<div class="popover-label">Filter by</div>` +
+      Object.entries(FILTER_DEFS).map(([k, d]) =>
+        `<button class="popover-item" type="button" data-key="${k}">${esc(d.label)}</button>`).join('');
+    document.body.appendChild(pop);
+    positionPopover(pop, event.currentTarget);
+    pop.querySelectorAll('[data-key]').forEach(b => {
+      b.onclick = e => { e.stopPropagation(); pop.remove(); _openFilterValues(event.currentTarget, b.dataset.key); };
+    });
+    dismissOnOutsideClick(pop);
+  }
+
+  function _openFilterValues(anchorEl, key) {
+    document.querySelector('.popover')?.remove();
+    let options = [];
+    if (key === 'project') options = _allProjects.map(p => ({ v: p.id, label: p.name }));
+    if (key === 'milestone') options = [{ v: 'none', label: 'No milestone' },
+      ..._allMilestones.map(m => ({ v: m.id, label: m.name }))];
+    if (key === 'status') options = STATUSES.map(x => ({ v: x, label: STATUS_LABELS[x] }));
+    if (key === 'priority') options = PRIORITIES.map(x => ({ v: x, label: PRIORITY_LABELS[x] }));
+    if (key === 'assignee') options = [...new Set(_allIssues.map(i => i.assignee).filter(Boolean))]
+      .map(a => ({ v: a, label: a }));
+
+    const pop = document.createElement('div');
+    pop.className = 'popover';
+    const multi = FILTER_DEFS[key].multi;
+    pop.innerHTML = `<div class="popover-label">${esc(FILTER_DEFS[key].label)}</div>` +
+      (options.length ? options.map(o => {
+        const on = multi ? _filters[key].includes(o.v) : _filters[key] === o.v;
+        return `<button class="popover-item" type="button" role="menuitemcheckbox" aria-checked="${on}" data-v="${esc(o.v)}">
+          ${key === 'status' ? statusIcon(o.v, 15) : ''}
+          <span>${esc(o.label)}</span>
+          <span class="popover-check">${svg('<path d="m5 12 5 5 9-10"/>', 14)}</span>
+        </button>`;
+      }).join('') : `<div class="palette-empty" style="padding:14px">Nothing to filter by yet</div>`);
+    document.body.appendChild(pop);
+    positionPopover(pop, anchorEl);
+    pop.querySelectorAll('[data-v]').forEach(b => {
+      b.onclick = e => {
+        e.stopPropagation();
+        const v = b.dataset.v;
+        if (multi) {
+          const list = _filters[key];
+          const at = list.indexOf(v);
+          if (at >= 0) list.splice(at, 1); else list.push(v);
+          b.setAttribute('aria-checked', String(list.includes(v)));
+        } else {
+          _filters[key] = _filters[key] === v ? null : v;
+          pop.remove();
+        }
+        applyFilters();
+      };
+    });
+    dismissOnOutsideClick(pop);
+  }
+
+  function positionPopover(pop, anchorEl) {
+    const r = anchorEl.getBoundingClientRect();
+    pop.style.top = `${r.bottom + 6 + window.scrollY}px`;
+    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - pop.offsetWidth - 12))}px`;
+  }
+
+  function dismissOnOutsideClick(pop) {
+    setTimeout(() => {
+      document.addEventListener('click', function off(ev) {
+        if (pop.contains(ev.target)) return;
+        pop.remove();
+        document.removeEventListener('click', off);
+      });
+    }, 0);
+  }
+
+  function _clearFilter(key) {
+    _filters[key] = FILTER_DEFS[key].multi ? [] : null;
+    applyFilters();
+  }
+
+  function _clearAllFilters() {
+    _filters = { project: null, milestone: null, status: [], priority: [], assignee: null,
+                 search: _filters.search, archived: _filters.archived };
+    applyFilters();
+  }
+
+  function _toggleArchivedFilter() {
+    _filters.archived = !_filters.archived;
+    applyFilters();
+  }
+
+  function _onSearchInput(value) {
+    _filters.search = value;
+    applyFilters();
+  }
+
   function applyFilters() {
-    const project = document.getElementById('filter-project')?.value;
-    const milestone = document.getElementById('filter-milestone')?.value;
-    const status = document.getElementById('filter-status')?.value;
-    const priority = document.getElementById('filter-priority')?.value;
-    const assignee = document.getElementById('filter-assignee')?.value;
-    const search = (document.getElementById('filter-search')?.value || '').toLowerCase();
-
-    // Update milestone filter options when project changes
-    if (project) {
-      const msSel = document.getElementById('filter-milestone');
-      if (msSel) {
-        const current = msSel.value;
-        msSel.innerHTML = '<option value="">All milestones</option><option value="none">No milestone</option>';
-        _allMilestones.filter(m => m.project_id === project).forEach(m => {
-          const o = document.createElement('option'); o.value = m.id; o.textContent = m.name;
-          msSel.appendChild(o);
-        });
-        msSel.value = current;
-      }
-    }
-
+    const search = (_filters.search || '').toLowerCase();
     let issues = _allIssues;
-    if (project) issues = issues.filter(i => i.project_id === project);
-    if (milestone === 'none') issues = issues.filter(i => !i.milestone_id);
-    else if (milestone) issues = issues.filter(i => i.milestone_id === milestone);
-    if (status) issues = issues.filter(i => i.status === status);
-    if (priority) issues = issues.filter(i => i.priority === priority);
-    if (assignee) issues = issues.filter(i => i.assignee === assignee);
-    if (search) issues = issues.filter(i => i.title.toLowerCase().includes(search) || (i.description||'').toLowerCase().includes(search));
+
+    if (!_filters.archived) issues = issues.filter(i => !i.archived);
+    if (_filters.project) issues = issues.filter(i => i.project_id === _filters.project);
+    if (_filters.milestone === 'none') issues = issues.filter(i => !i.milestone_id);
+    else if (_filters.milestone) issues = issues.filter(i => i.milestone_id === _filters.milestone);
+    if (_filters.status.length) issues = issues.filter(i => _filters.status.includes(i.status));
+    if (_filters.priority.length) issues = issues.filter(i => _filters.priority.includes(i.priority));
+    if (_filters.assignee) issues = issues.filter(i => i.assignee === _filters.assignee);
+    if (search) issues = issues.filter(i =>
+      i.title.toLowerCase().includes(search) || (i.description || '').toLowerCase().includes(search));
+
+    renderChips();
+    writeFiltersToURL();
+
+    const total = _allIssues.filter(i => _filters.archived || !i.archived).length;
+    const sub = document.getElementById('issues-subtitle');
+    if (sub) {
+      const n = activeFilterCount() + (search ? 1 : 0);
+      sub.innerHTML = issues.length === total
+        ? `<span class="result-count"><strong>${total}</strong> issue${total !== 1 ? 's' : ''}</span>`
+        : `<span class="result-count">Showing <strong>${issues.length}</strong> of ${total} · ${n} filter${n !== 1 ? 's' : ''} active</span>`;
+    }
 
     const el = document.getElementById('issue-list');
     if (!el) return;
     if (!issues.length) {
-      el.innerHTML = `<div class="empty-state"><div class="empty-state-title">No issues found</div></div>`;
+      el.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-title">No issues match these filters</div>
+          <div>${total} issue${total !== 1 ? 's' : ''} are hidden by the filters above.</div>
+          <button class="btn btn-ghost" type="button" style="margin-top:8px" onclick="GRAFT._clearAllFilters()">Clear filters</button>
+        </div>`;
       return;
     }
-    el.innerHTML = issues.map(i => renderIssueRow(i, { showProject: true })).join('');
+
+    // Grouped by project — the list reads as a set of projects, not 87 rows
+    const groups = new Map();
+    issues.forEach(i => {
+      const key = i.project_id;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(i);
+    });
+    el.innerHTML = [...groups.entries()].map(([pid, rows]) => {
+      const p = _allProjects.find(x => x.id === pid);
+      return `
+        <div class="section-head" style="margin:14px 0 8px">
+          <span style="font-size:12px">${esc(p?.icon || '')}</span>
+          <span style="font-size:12.5px;font-weight:600;color:var(--ink)">${esc(p?.name || 'Unknown project')}</span>
+          <span class="section-count">${rows.length}</span>
+          <div class="section-rule"></div>
+        </div>
+        ${rows.map(i => renderIssueRow(i)).join('')}`;
+    }).join('');
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -728,17 +1492,23 @@
   window.reloadPage = async function () {
     if (window._pageMode === 'project') await loadProjectPage();
     else if (window._pageMode === 'issues') await initIssues();
+    else if (window._pageMode === 'today') await initToday();
     else await loadProjects();
   };
 
   async function initProject() {
     window._pageMode = 'project';
     initTheme();
-    const id = new URLSearchParams(window.location.search).get('id');
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
     if (!id) { window.location.href = 'index.html'; return; }
     _currentProjectId = id;
-    renderSidebarProjects();
+    initChrome('project', { title: 'Project', fab: { label: 'New issue', action: () => openNewIssue(_currentProjectId) } });
+    await renderSidebarProjects();
     await loadProjectPage();
+    // Deep link from Today, search or a shared URL
+    const focus = params.get('issue');
+    if (focus && _issue(focus)) openIssueSlideover(focus);
   }
 
   async function loadProjectPage() {
@@ -756,27 +1526,52 @@
       document.getElementById('project-name-breadcrumb').textContent = _currentProject.name;
       document.getElementById('project-name-title').textContent = (_currentProject.icon ? _currentProject.icon + ' ' : '') + _currentProject.name;
       document.getElementById('project-description-text').textContent = _currentProject.description || '';
+      renderProjectProgress();
       // Show archived badge if project is archived
       const hdr = document.getElementById('project-header');
       if (hdr) hdr.dataset.archived = _currentProject.archived ? '1' : '0';
       renderMilestoneFilterBar();
+      const saved = localStorage.getItem('graft_view');
+      if (saved === 'list' && _currentView !== 'list') {
+        _currentView = 'list';
+        document.getElementById('btn-board')?.classList.remove('active');
+        document.getElementById('btn-list')?.classList.add('active');
+        document.getElementById('view-board').style.display = 'none';
+        document.getElementById('view-list').style.display = 'flex';
+      }
       renderView();
     } catch (err) {
       document.getElementById('project-name-title').textContent = 'Project not found';
     }
   }
 
+  // Board and List are ways of drawing the same issues; archived is a
+  // different set of issues. It stays a filter and keeps you in your view.
+  // "Are we going to make it" belongs in the header, not in two raw counts.
+  function renderProjectProgress() {
+    const el = document.getElementById('project-progress');
+    if (!el || !_currentProject) return;
+    const live = _allIssues.filter(i => !i.archived);
+    const done = live.filter(i => i.status === 'done').length;
+    const doing = live.filter(i => i.status === 'in-progress').length;
+    const total = live.length;
+    if (!total) { el.innerHTML = ''; return; }
+    const next = _allMilestones
+      .filter(m => m.due_date)
+      .sort((a, b) => a.due_date.localeCompare(b.due_date))
+      .find(m => daysUntil(m.due_date) !== null && daysUntil(m.due_date) >= 0);
+    el.innerHTML = `
+      <div class="progress" style="max-width:180px" role="img" aria-label="${done} of ${total} issues done">
+        <span class="progress-done" style="width:${Math.round(done / total * 100)}%"></span>
+        <span class="progress-doing" style="width:${Math.round(doing / total * 100)}%"></span>
+      </div>
+      <span class="progress-label">${done} of ${total} done${
+        next ? ` · <span style="color:var(--sage)">${esc(next.name)}</span> ${esc(dueLabel(next.due_date))}` : ''}</span>`;
+  }
+
   function toggleArchivedIssues(btn) {
     _showArchivedIssues = !_showArchivedIssues;
-    btn.classList.toggle('active', _showArchivedIssues);
-    // Switch to list view — archived issues make more sense there
-    if (_showArchivedIssues) {
-      _currentView = 'list';
-      document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
-      document.getElementById('btn-list').classList.add('active');
-      document.getElementById('view-board').style.display = 'none';
-      document.getElementById('view-list').style.display = 'flex';
-    }
+    btn.setAttribute('aria-pressed', String(_showArchivedIssues));
     loadProjectPage();
   }
 
@@ -800,8 +1595,13 @@
 
   function setView(view, btn) {
     _currentView = view;
-    document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.view-btn').forEach(b => {
+      b.classList.remove('active');
+      b.setAttribute('aria-selected', 'false');
+    });
     btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
+    localStorage.setItem('graft_view', view);
     document.getElementById('view-board').style.display = view === 'board' ? 'flex' : 'none';
     document.getElementById('view-list').style.display = view === 'list' ? 'flex' : 'none';
     renderView();
@@ -818,6 +1618,9 @@
     if (_currentView === 'board') renderBoard();
     else renderList();
   }
+
+  // Soft limit — the column colours itself when work in progress piles up.
+  const WIP_LIMIT = 3;
 
   const STATUS_COL_COLORS = {
     backlog: '#4a5a49', todo: '#96b86e', 'in-progress': '#c8903f',
@@ -842,9 +1645,13 @@
           <div class="kanban-col-header">
             <span class="col-status-dot" style="background:${dotColor}"></span>
             <span class="col-name">${STATUS_LABELS[status]}</span>
-            <span class="col-count">${col.length}</span>
+            <span class="col-count"${status === 'in-progress' && col.length > WIP_LIMIT
+              ? ' style="color:var(--amber);border-color:var(--amber);background:rgba(200,144,63,.12)" title="More work in progress than the limit of ' + WIP_LIMIT + '"'
+              : ''}>${col.length}${status === 'in-progress' ? ' / ' + WIP_LIMIT : ''}</span>
           </div>
-          ${col.map(i => renderKanbanCard(i)).join('')}
+          ${col.length
+            ? col.map(i => renderKanbanCard(i)).join('')
+            : `<div style="font-size:12.5px;color:var(--dim);padding:10px 4px 6px">Nothing here yet</div>`}
           <button class="kanban-add-btn" onclick="GRAFT._addIssueInStatus('${status}')">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             Add issue
@@ -964,7 +1771,12 @@
     if (!list) return;
     const issues = filteredIssues();
     if (!issues.length) {
-      list.innerHTML = `<div class="empty-state"><div class="empty-state-title">No issues</div><div>Add one with the button above.</div></div>`;
+      const filtered = _activeMilestoneFilter || _showArchivedIssues;
+      list.innerHTML = `<div class="empty-state">
+        <div class="empty-state-icon">🌱</div>
+        <div class="empty-state-title">${filtered ? 'Nothing matches this filter' : 'No issues yet'}</div>
+        <div>${filtered ? 'Try clearing the milestone filter.' : 'Press C, or use New issue, to add the first one.'}</div>
+      </div>`;
       return;
     }
     list.innerHTML = issues.map(i => renderIssueRow(i)).join('');
@@ -992,16 +1804,18 @@
 
   async function archiveCurrentProject() {
     if (!_currentProject) return;
-    const action = _currentProject.archived ? 'Unarchive' : 'Archive';
-    if (!confirm(`${action} this project?`)) return;
+    const id = _currentProject.id;
     try {
-      const updated = await api('PATCH', `/api/projects/${_currentProject.id}/archive`);
+      const updated = await api('PATCH', `/api/projects/${id}/archive`);
       _currentProject = updated;
-      toast(`Project ${updated.archived ? 'archived' : 'unarchived'}`);
       closeModal('modal-edit-project');
-      if (updated.archived) window.location.href = 'index.html';
+      undoToast(`Project ${updated.archived ? 'archived' : 'unarchived'}`, async () => {
+        await api('PATCH', `/api/projects/${id}/archive`);
+        window.location.href = `project.html?id=${id}`;
+      });
+      if (updated.archived) setTimeout(() => { window.location.href = 'index.html'; }, 600);
       else if (typeof reloadPage === 'function') reloadPage();
-    } catch { toast('Error archiving project'); }
+    } catch { toast('Could not archive project'); }
   }
 
   // ── Milestones CRUD ─────────────────────────────────────────────
@@ -1079,7 +1893,18 @@
   }
 
   async function _deleteMilestone(id) {
-    if (!confirm('Delete this milestone? Issues won\'t be deleted.')) return;
+    const m = _allMilestones.find(x => x.id === id);
+    const used = _allIssues.filter(i => i.milestone_id === id).length;
+    const ok = await confirmDialog({
+      title: 'Delete this milestone?',
+      body: `<div class="confirm-text">“<span class="confirm-strong">${esc(m?.name || '')}</span>” will be removed.</div>
+             <div class="confirm-detail">${used
+               ? `${used} issue${used !== 1 ? 's' : ''} will lose this milestone. The issues themselves are kept.`
+               : 'No issues are using it.'}</div>`,
+      confirmLabel: 'Delete milestone',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api('DELETE', `/api/milestones/${id}`);
       _allMilestones = await api('GET', `/api/milestones?project_id=${_currentProjectId}`);
@@ -1144,9 +1969,272 @@
     });
   }
 
+  // ══════════════════════════════════════════════════════════════
+  //  App chrome — mobile nav, command palette, shortcuts
+  // ══════════════════════════════════════════════════════════════
+
+  const NAV_ICONS = {
+    today: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+    projects: '<rect x="2" y="3" width="9" height="9" rx="1"/><rect x="13" y="3" width="9" height="9" rx="1"/><rect x="2" y="13" width="9" height="9" rx="1"/><rect x="13" y="13" width="9" height="9" rx="1"/>',
+    issues: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+    search: '<circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.5" y2="16.5"/>',
+    menu: '<line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>',
+    plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+    close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    archive: '<rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  };
+
+  let _page = 'projects';
+
+  // Builds the phone chrome the desktop sidebar can't provide: a top bar,
+  // a drawer holding the same navigation, a tab bar and one primary action.
+  function initChrome(page, opts = {}) {
+    _page = page;
+
+    const skip = document.createElement('a');
+    skip.className = 'skip-link';
+    skip.href = '#main';
+    skip.textContent = 'Skip to content';
+    document.body.prepend(skip);
+
+    const main = document.querySelector('.main');
+    if (main && !main.id) main.id = 'main';
+
+    // Top bar
+    if (main) {
+      const bar = document.createElement('div');
+      bar.className = 'mobile-topbar';
+      bar.innerHTML = `
+        <button class="topbar-btn" type="button" aria-label="Open navigation" data-act="menu">${svg(NAV_ICONS.menu, 20)}</button>
+        <span class="topbar-title" id="topbar-title">${esc(opts.title || 'Graft')}</span>
+        <button class="topbar-btn" type="button" aria-label="Search" data-act="search">${svg(NAV_ICONS.search, 20)}</button>`;
+      main.prepend(bar);
+      bar.querySelector('[data-act="menu"]').onclick = openDrawer;
+      bar.querySelector('[data-act="search"]').onclick = openPalette;
+    }
+
+    // Drawer — the same nav the sidebar shows, reachable on a phone
+    const scrim = document.createElement('div');
+    scrim.className = 'drawer-scrim';
+    scrim.id = 'drawer-scrim';
+    scrim.onclick = closeDrawer;
+    document.body.appendChild(scrim);
+
+    const drawer = document.createElement('nav');
+    drawer.className = 'drawer';
+    drawer.id = 'drawer';
+    drawer.setAttribute('aria-label', 'Main navigation');
+    document.body.appendChild(drawer);
+    syncDrawer();
+
+    // Tab bar
+    const tabs = document.createElement('nav');
+    tabs.className = 'tabbar';
+    tabs.setAttribute('aria-label', 'Sections');
+    tabs.innerHTML = [
+      ['today', 'today.html', 'Today'],
+      ['projects', 'index.html', 'Projects'],
+      ['issues', 'issues.html', 'Issues'],
+    ].map(([key, href, label]) => `
+      <a class="tab-item${page === key || (page === 'project' && key === 'projects') ? ' active' : ''}" href="${href}">
+        ${svg(NAV_ICONS[key], 22)}<span>${label}</span>
+      </a>`).join('');
+    document.body.appendChild(tabs);
+
+    // One primary action per page, thumb-reachable
+    if (opts.fab) {
+      const fab = document.createElement('button');
+      fab.className = 'fab';
+      fab.type = 'button';
+      fab.setAttribute('aria-label', opts.fab.label);
+      fab.innerHTML = svg(NAV_ICONS.plus, 24, 'stroke-width="2.5"');
+      fab.onclick = opts.fab.action;
+      document.body.appendChild(fab);
+    }
+
+    initShortcuts();
+  }
+
+  // Mirrors the sidebar into the drawer, so the project list added later
+  // by renderSidebarProjects() shows up in both.
+  function syncDrawer() {
+    const drawer = document.getElementById('drawer');
+    const sidebar = document.querySelector('.sidebar');
+    if (!drawer || !sidebar) return;
+    drawer.innerHTML = sidebar.innerHTML;
+    const brand = drawer.querySelector('.sidebar-brand');
+    if (brand) {
+      const close = document.createElement('button');
+      close.className = 'topbar-btn';
+      close.type = 'button';
+      close.setAttribute('aria-label', 'Close navigation');
+      close.style.marginLeft = 'auto';
+      close.innerHTML = svg(NAV_ICONS.close, 19);
+      close.onclick = closeDrawer;
+      brand.appendChild(close);
+    }
+    drawer.querySelectorAll('.theme-toggle-btn').forEach(b => { b.onclick = toggleTheme; });
+  }
+
+  function openDrawer() {
+    document.getElementById('drawer')?.classList.add('open');
+    document.getElementById('drawer-scrim')?.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeDrawer() {
+    document.getElementById('drawer')?.classList.remove('open');
+    document.getElementById('drawer-scrim')?.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+
+  // ── Command palette ─────────────────────────────────────────────
+  let _paletteData = null;
+  let _paletteIndex = 0;
+
+  async function openPalette() {
+    if (document.getElementById('palette')) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'palette-overlay';
+    overlay.style.display = 'block';
+    overlay.style.background = 'rgba(0,0,0,.5)';
+    overlay.onclick = closePalette;
+    document.body.appendChild(overlay);
+
+    const el = document.createElement('div');
+    el.className = 'palette';
+    el.id = 'palette';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', 'Search');
+    el.innerHTML = `
+      <input class="palette-input" id="palette-input" placeholder="Search issues and projects…"
+             autocomplete="off" spellcheck="false" aria-label="Search issues and projects">
+      <div class="palette-results" id="palette-results">
+        <div class="palette-empty">Loading…</div>
+      </div>`;
+    document.body.appendChild(el);
+    document.body.style.overflow = 'hidden';
+    document.getElementById('palette-input').focus();
+
+    if (!_paletteData) {
+      try {
+        const [projects, issues] = await Promise.all([
+          api('GET', '/api/projects'),
+          api('GET', '/api/issues'),
+        ]);
+        const names = Object.fromEntries(projects.map(p => [p.id, p.name]));
+        _paletteData = {
+          projects,
+          issues: issues.map(i => ({ ...i, project_name: names[i.project_id] })),
+        };
+      } catch {
+        _paletteData = { projects: [], issues: [] };
+      }
+    }
+    renderPalette('');
+    document.getElementById('palette-input').addEventListener('input', e => renderPalette(e.target.value));
+  }
+
+  function renderPalette(query) {
+    const box = document.getElementById('palette-results');
+    if (!box || !_paletteData) return;
+    const q = query.trim().toLowerCase();
+    const projects = _paletteData.projects
+      .filter(p => !q || p.name.toLowerCase().includes(q))
+      .slice(0, 4)
+      .map(p => ({ kind: 'project', id: p.id, label: p.name, sub: 'Project', icon: p.icon }));
+    const issues = _paletteData.issues
+      .filter(i => !q || i.title.toLowerCase().includes(q))
+      .slice(0, 8)
+      .map(i => ({ kind: 'issue', id: i.id, pid: i.project_id, label: i.title, sub: i.project_name || '', status: i.status }));
+    const items = [...projects, ...issues];
+    _paletteIndex = 0;
+
+    if (!items.length) {
+      box.innerHTML = `<div class="palette-empty">${q ? 'Nothing matches “' + esc(query) + '”' : 'Type to search'}</div>`;
+      return;
+    }
+    box.innerHTML = items.map((it, n) => `
+      <button class="palette-item${n === 0 ? ' active' : ''}" type="button" data-n="${n}"
+              data-kind="${it.kind}" data-id="${esc(it.id)}" data-pid="${esc(it.pid || '')}">
+        ${it.kind === 'issue' ? statusIcon(it.status, 15) : `<span style="font-size:15px">${esc(it.icon || '▪')}</span>`}
+        <span>${esc(it.label)}</span>
+        <span class="palette-item-sub">${esc(it.sub)}</span>
+      </button>`).join('');
+    box.querySelectorAll('.palette-item').forEach(b => { b.onclick = () => runPaletteItem(b); });
+  }
+
+  function runPaletteItem(btn) {
+    const kind = btn.dataset.kind;
+    closePalette();
+    if (kind === 'project') window.location.href = `project.html?id=${encodeURIComponent(btn.dataset.id)}`;
+    else window.location.href = `project.html?id=${encodeURIComponent(btn.dataset.pid)}&issue=${encodeURIComponent(btn.dataset.id)}`;
+  }
+
+  function closePalette() {
+    document.getElementById('palette')?.remove();
+    document.getElementById('palette-overlay')?.remove();
+    document.body.style.overflow = '';
+  }
+
+  function paletteMove(delta) {
+    const items = [...document.querySelectorAll('.palette-item')];
+    if (!items.length) return;
+    _paletteIndex = (_paletteIndex + delta + items.length) % items.length;
+    items.forEach((b, n) => b.classList.toggle('active', n === _paletteIndex));
+    items[_paletteIndex].scrollIntoView({ block: 'nearest' });
+  }
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────
+  function isTyping(e) {
+    const t = e.target;
+    return t instanceof HTMLElement &&
+      (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+  }
+
+  function initShortcuts() {
+    document.addEventListener('keydown', e => {
+      const palette = document.getElementById('palette');
+
+      if (palette) {
+        if (e.key === 'Escape') { e.preventDefault(); closePalette(); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); paletteMove(1); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); paletteMove(-1); return; }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const active = document.querySelector('.palette-item.active');
+          if (active) runPaletteItem(active);
+          return;
+        }
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault(); openPalette(); return;
+      }
+      if (e.key === 'Escape') {
+        if (document.getElementById('drawer')?.classList.contains('open')) { closeDrawer(); return; }
+        if (document.getElementById('issue-slideover')?.style.display === 'flex') { closeSlideover(); return; }
+        const open = [...document.querySelectorAll('.modal-overlay')].find(m => m.style.display === 'flex');
+        if (open?.id) closeModal(open.id);
+        return;
+      }
+      if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === '/') { e.preventDefault(); openPalette(); return; }
+      if (e.key.toLowerCase() === 'c') {
+        e.preventDefault();
+        if (_page === 'projects') openNewProject();
+        else openNewIssue(_currentProjectId || undefined);
+      }
+    });
+  }
+
   // ── Public API ──────────────────────────────────────────────────
   window.GRAFT = {
-    init, initIssues, initProject,
+    init, initIssues, initProject, initToday,
     filterProjects, applyFilters,
     openNewProject, openNewIssue, openEditIssue,
     submitProject, deleteProject, submitIssue, deleteIssue,
@@ -1163,5 +2251,12 @@
     _soSave,
     toggleTheme, initIconPicker, _pickIcon,
     _renderProjectSection, _toggleProjectSection, _soProjectSave,
+    // chrome
+    openDrawer, closeDrawer, openPalette, closePalette,
+    // issues page filters
+    _clearFilter, _clearAllFilters, _toggleArchivedFilter, _onSearchInput,
+    // rows, status, selection
+    _openStatusMenu, setIssueStatus, _toggleSelect, clearSelection,
+    archiveIssue, deleteIssueById, _goToIssue,
   };
 })();
