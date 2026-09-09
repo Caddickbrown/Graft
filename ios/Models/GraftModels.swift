@@ -133,7 +133,25 @@ struct GraftSettings: Codable {
     var fallbackURL: String
 }
 
-// MARK: - Helpers
+// MARK: - Pending Operation (offline queue)
+
+struct PendingOperation: Codable, Identifiable {
+    let id: String          // uuid
+    let method: String      // POST / PUT / DELETE / PATCH
+    let path: String        // e.g. /api/issues/iss_abc123
+    let body: Data?         // JSON-encoded body, nil for DELETE
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, method, path, body
+        case createdAt = "created_at"
+    }
+}
+
+// MARK: - String+Identifiable (used for sheet(item:) with status strings)
+extension String: @retroactive Identifiable {
+    public var id: String { self }
+}
 
 extension GraftIssue {
     var statusDisplayName: String {

@@ -5,6 +5,7 @@ struct NewIssueView: View {
     @Environment(\.dismiss) private var dismiss
 
     let projectId: String
+    var defaultStatus: String = "backlog"
 
     @State private var title = ""
     @State private var description = ""
@@ -78,6 +79,7 @@ struct NewIssueView: View {
             }
             .navigationTitle("New issue")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear { status = defaultStatus }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

@@ -173,11 +173,13 @@ def list_projects():
 @app.post("/api/projects")
 def create_project():
     data = request.get_json(force=True)
-    pid = "proj_" + str(uuid4())[:8]
+    pid = data.get("id") or "proj_" + str(uuid4())[:8]
     ts = now()
+    created_at = data.get("created_at") or ts
+    updated_at = data.get("updated_at") or ts
     db = get_db()
     db.execute(
-        "INSERT INTO projects (id,name,description,status,colour,icon,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO projects (id,name,description,status,colour,icon,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
         (
             pid,
             data.get("name", "Untitled"),
@@ -185,7 +187,7 @@ def create_project():
             data.get("status", "active"),
             data.get("colour", "#6366f1"),
             data.get("icon", ""),
-            ts, ts,
+            created_at, updated_at,
         ),
     )
     db.commit()
@@ -268,18 +270,20 @@ def list_milestones():
 @app.post("/api/milestones")
 def create_milestone():
     data = request.get_json(force=True)
-    mid = "ms_" + str(uuid4())[:8]
+    mid = data.get("id") or "ms_" + str(uuid4())[:8]
     ts = now()
+    created_at = data.get("created_at") or ts
+    updated_at = data.get("updated_at") or ts
     db = get_db()
     db.execute(
-        "INSERT INTO milestones (id,project_id,name,description,due_date,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO milestones (id,project_id,name,description,due_date,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
         (
             mid,
             data["project_id"],
             data.get("name", "Untitled"),
             data.get("description", ""),
             data.get("due_date"),
-            ts, ts,
+            created_at, updated_at,
         ),
     )
     db.commit()
@@ -378,12 +382,14 @@ def list_issues():
 @app.post("/api/issues")
 def create_issue():
     data = request.get_json(force=True)
-    iid = "iss_" + str(uuid4())[:8]
+    iid = data.get("id") or "iss_" + str(uuid4())[:8]
     ts = now()
+    created_at = data.get("created_at") or ts
+    updated_at = data.get("updated_at") or ts
     labels = json.dumps(data.get("labels", []))
     db = get_db()
     db.execute(
-        """INSERT INTO issues
+        """INSERT OR REPLACE INTO issues
            (id,project_id,milestone_id,title,description,status,priority,labels,assignee,sort_order,created_at,updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
@@ -397,7 +403,7 @@ def create_issue():
             labels,
             data.get("assignee", ""),
             data.get("sort_order", 0),
-            ts, ts,
+            created_at, updated_at,
         ),
     )
     db.commit()
