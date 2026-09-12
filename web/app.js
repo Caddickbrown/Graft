@@ -1390,7 +1390,11 @@
       </button>
       <button class="org-dir" type="button" id="org-dir"
               title="${_org.dir === 'asc' ? 'Ascending' : 'Descending'}"
-              aria-label="Sort direction: ${_org.dir === 'asc' ? 'ascending' : 'descending'}">${_org.dir === 'asc' ? '↑' : '↓'}</button>
+              aria-label="Sort direction: ${_org.dir === 'asc' ? 'ascending' : 'descending'}">${
+        _org.dir === 'asc'
+          ? svg('<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>', 14)
+          : svg('<path d="M12 5v14"/><path d="m5 12 7 7 7-7"/>', 14)
+      }</button>
       ${s.views.length > 1 ? `<div class="view-toggle" role="tablist" aria-label="View">
         ${s.views.map(([v, label]) => `
           <button class="view-btn${_viewMode === v ? ' active' : ''}" type="button" role="tab"

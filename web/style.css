@@ -355,28 +355,32 @@ select, input, textarea { font-family: inherit; font-size: 14px; }
 
 .view-toggle {
   display: flex;
-  gap: 2px;
-  margin-bottom: 18px;
-  background: var(--surface-2);
-  padding: 3px;
+  gap: 0;
+  background: var(--surface);
+  padding: 0;
   border-radius: var(--r-sm);
+  border: 1px solid var(--line);
   width: fit-content;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 
 .view-btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: var(--h-sm);
+  height: var(--h-md);
   padding: 0 12px;
-  border-radius: var(--r-xs);
+  border-radius: 0;
   color: var(--ink-2);
   font-size: 13px;
   font-weight: 500;
   transition: background .15s, color .15s;
+  border-right: 1px solid var(--line);
 }
-.view-btn:hover { color: var(--ink); }
-.view-btn.active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.view-btn:last-child { border-right: none; }
+.view-btn:hover { background: var(--surface-2); color: var(--ink); }
+.view-btn.active { background: var(--surface-2); color: var(--ink); box-shadow: none; }
 
 .milestone-filter {
   display: flex;
@@ -2049,7 +2053,7 @@ option { background: var(--surface); color: var(--ink); }
   .btn, .btn-sm, .btn-primary { min-height: var(--h-touch); padding: 0 16px; }
   .filter-btn { min-height: var(--h-touch); padding: 0 18px; font-size: 13.5px; }
   .icon-btn { width: var(--h-touch); height: var(--h-touch); }
-  .view-btn { min-height: var(--h-touch); padding: 0 16px; }
+  .view-btn { min-height: var(--h-touch); height: var(--h-touch); padding: 0 16px; }
   .search-input, .org-control { height: var(--h-touch); min-width: var(--h-touch); }
   .org-dir { width: var(--h-touch); height: var(--h-touch); }
   .form-input { min-height: var(--h-touch); padding: 11px 12px; }
