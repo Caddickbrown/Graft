@@ -2186,3 +2186,86 @@ option { background: var(--surface); color: var(--ink); }
     .undo-toast, .undo-toast.show { transform: none; }
   }
 }
+
+/* ── Tag pills on project cards ───────────────────────────────────── */
+.project-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--r-sm, 4px);
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  letter-spacing: .01em;
+  line-height: 18px;
+}
+
+/* ── Tag chip input in the project form ───────────────────────────── */
+.tag-input-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 4px);
+  background: var(--surface-1);
+  padding: 4px 6px;
+  min-height: 38px;
+  cursor: text;
+}
+.tag-input-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: var(--r-sm, 4px);
+  background: var(--accent, #7C7FC4);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.tag-chip-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  opacity: .7;
+  padding: 0 1px;
+  font-size: 14px;
+  line-height: 1;
+}
+.tag-chip-remove:hover { opacity: 1; }
+.tag-chip-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-1);
+  min-width: 90px;
+  flex: 1;
+  padding: 2px 2px;
+}
+.tag-chip-input::placeholder { color: var(--ink-3); }
+
+/* ── Drag-and-drop ────────────────────────────────────────────────── */
+.project-card[draggable="true"] { cursor: grab; }
+.project-card.dragging {
+  opacity: .45;
+  cursor: grabbing;
+}
+.area-section.drag-over {
+  outline: 2px dashed var(--accent, #7C7FC4);
+  outline-offset: 3px;
+  border-radius: var(--r-md, 6px);
+}

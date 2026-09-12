@@ -31,12 +31,17 @@ struct NewProjectView: View {
     @State private var colourHex = GraftPalette.fallback
     @State private var status = "active"
     @State private var areaId = ""
+    @State private var tagsText = ""
     @State private var isSaving = false
     @FocusState private var focus: GraftFormField?
 
     private var hasDraft: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty
             || !description.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var parsedTags: [String] {
+        tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     var body: some View {
@@ -61,6 +66,11 @@ struct NewProjectView: View {
                 AreaPicker(areaId: $areaId)
             }
 
+            GraftSection(title: "Tags", footnote: "Comma-separated, e.g. client, ios, mvp") {
+                GraftTextField(label: "Tags", placeholder: "e.g. client, ios, mvp",
+                               text: $tagsText, focused: $focus, field: .description)
+            }
+
             GraftSection(title: "Appearance") {
                 GraftColourPicker(hex: $colourHex)
             }
@@ -83,7 +93,8 @@ struct NewProjectView: View {
             description: description,
             colour: colourHex,
             status: status,
-            areaId: areaId
+            areaId: areaId,
+            tags: parsedTags
         )
         dismiss()
     }
@@ -103,6 +114,7 @@ struct EditProjectView: View {
     @State private var status = "active"
     @State private var icon = ""
     @State private var areaId = ""
+    @State private var tagsText = ""
     @State private var isSaving = false
     @State private var loaded = false
     @FocusState private var focus: GraftFormField?
@@ -114,7 +126,12 @@ struct EditProjectView: View {
             || status != project.status
             || icon != project.icon
             || areaId != project.areaKey
+            || tagsText != project.tagList.joined(separator: ", ")
             || colourHex.caseInsensitiveCompare(project.colour) != .orderedSame
+    }
+
+    private var parsedTags: [String] {
+        tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     var body: some View {
@@ -137,6 +154,11 @@ struct EditProjectView: View {
 
             GraftSection(title: "Area") {
                 AreaPicker(areaId: $areaId)
+            }
+
+            GraftSection(title: "Tags", footnote: "Comma-separated, e.g. client, ios, mvp") {
+                GraftTextField(label: "Tags", placeholder: "e.g. client, ios, mvp",
+                               text: $tagsText, focused: $focus, field: .description)
             }
 
             GraftSection(title: "Icon", footnote: "One emoji, shown beside the project everywhere.") {
@@ -206,6 +228,7 @@ struct EditProjectView: View {
             colourHex = GraftPalette.nearest(to: project.colour).hex
             icon = project.icon
             areaId = project.areaKey
+            tagsText = project.tagList.joined(separator: ", ")
         }
     }
 
@@ -219,6 +242,7 @@ struct EditProjectView: View {
         updated.colour = colourHex
         updated.icon = icon
         updated.areaId = areaId
+        updated.tags = parsedTags
         try? await store.updateProject(updated)
         dismiss()
     }

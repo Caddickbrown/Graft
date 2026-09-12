@@ -44,6 +44,7 @@ struct GraftProject: Codable, Identifiable {
     /// has not run the `area_id` migration yet would fail the *whole* projects
     /// array and empty the app. An optional simply decodes as `nil`.
     var areaId: String?
+    var tags: [String]?
     @FlexibleBool var archived: Bool
     var createdAt: String
     var updatedAt: String
@@ -64,12 +65,14 @@ struct GraftProject: Codable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, description, status, colour, icon, archived
+        case id, name, description, status, colour, icon, archived, tags
         case areaId = "area_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case issueCounts = "issue_counts"
     }
+
+    var tagList: [String] { tags ?? [] }
 
     var openIssueCount: Int {
         guard let counts = issueCounts else { return 0 }

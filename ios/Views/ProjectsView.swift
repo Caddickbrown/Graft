@@ -20,6 +20,7 @@ struct ProjectsView: View {
     @State private var searchText = ""
     @State private var pendingDelete: GraftProject?
     @State private var undo: UndoAction?
+    @State private var projectSort: ProjectSortOrder = .default
 
     /// Issues that would go with a project, so the confirmation can say so.
     private func issueCount(_ project: GraftProject) -> Int {
@@ -46,11 +47,16 @@ struct ProjectsView: View {
     }
 
     private var filteredProjects: [GraftProject] {
-        guard !searchText.isEmpty else { return scopedProjects }
-        return scopedProjects.filter {
-            $0.name.localizedCaseInsensitiveContains(searchText) ||
-            $0.description.localizedCaseInsensitiveContains(searchText)
+        let base: [GraftProject]
+        if searchText.isEmpty {
+            base = scopedProjects
+        } else {
+            base = scopedProjects.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText) ||
+                $0.description.localizedCaseInsensitiveContains(searchText)
+            }
         }
+        return projectSort.apply(base, areas: store.sortedAreas)
     }
 
     /// Projects grouped into their areas, real areas first in their own order
@@ -97,18 +103,46 @@ struct ProjectsView: View {
                     scopeMenu
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    if store.isLoading {
-                        ProgressView().tint(Color.gAccent)
-                    } else {
-                        Button {
-                            Task { await store.sync() }
+                    HStack(spacing: 0) {
+                        // Sort menu
+                        Menu {
+                            Picker("Sort", selection: $projectSort) {
+                                ForEach(ProjectSortOrder.allCases, id: \.self) { s in
+                                    Text(s.label).tag(s)
+                                }
+                            }
                         } label: {
-                            Image(systemName: "arrow.clockwise")
+                            Image(systemName: "arrow.up.arrow.down")
+                                .foregroundStyle(projectSort == .default ? Color.gAccentText : Color.gAccent)
+                                .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Sort projects")
+
+                        if store.isLoading {
+                            ProgressView().tint(Color.gAccent)
+                                .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                        } else {
+                            Button {
+                                Task { await store.sync() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                                    .foregroundStyle(Color.gAccentText)
+                                    .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityLabel("Refresh")
+                        }
+
+                        Button {
+                            showNewProject = true
+                        } label: {
+                            Image(systemName: "plus")
                                 .foregroundStyle(Color.gAccentText)
                                 .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
                                 .contentShape(Rectangle())
                         }
-                        .accessibilityLabel("Refresh")
+                        .accessibilityLabel("New project")
                     }
                 }
             }
@@ -427,6 +461,24 @@ struct ProjectCardView: View {
                         .accessibilityLabel("\(counts.done) of \(total) done")
                     }
                 }
+
+                // Tags
+                let tagList = project.tagList
+                if !tagList.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(tagList, id: \.self) { tag in
+                                Text(tag)
+                                    .font(GraftFont.text(GraftType.micro, .medium))
+                                    .foregroundStyle(Color.gInk2)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.gSurface2)
+                                    .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radiusTight))
+                            }
+                        }
+                    }
+                }
             }
             .padding(.horizontal, GraftMetrics.spaceS)
             .padding(.vertical, GraftMetrics.spaceS)
@@ -438,5 +490,50 @@ struct ProjectCardView: View {
             RoundedRectangle(cornerRadius: GraftMetrics.radius)
                 .stroke(Color.gHairline, lineWidth: GraftMetrics.border)
         )
+    }
+}
+
+// MARK: - Project sort order
+
+enum ProjectSortOrder: String, CaseIterable {
+    case `default`   // area section order, then creation
+    case name
+    case area
+    case status
+
+    static var `default`: ProjectSortOrder { .default }
+
+    var label: String {
+        switch self {
+        case .default: return "Default"
+        case .name:    return "Name"
+        case .area:    return "Area"
+        case .status:  return "Status"
+        }
+    }
+
+    func apply(_ projects: [GraftProject], areas: [GraftArea]) -> [GraftProject] {
+        switch self {
+        case .default:
+            return projects
+        case .name:
+            return projects.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .area:
+            let areaIndex: (String) -> Int = { id in
+                areas.firstIndex(where: { $0.id == id }) ?? Int.max
+            }
+            return projects.sorted {
+                let ai = areaIndex($0.areaKey), bi = areaIndex($1.areaKey)
+                if ai != bi { return ai < bi }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        case .status:
+            let rank = ["active": 0, "paused": 1, "done": 2]
+            return projects.sorted {
+                let ra = rank[$0.status] ?? 3, rb = rank[$1.status] ?? 3
+                if ra != rb { return ra < rb }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
     }
 }

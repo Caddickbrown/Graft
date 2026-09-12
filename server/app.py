@@ -162,6 +162,9 @@ def _migrate_db():
         # '' means "No area", which is also what a deleted area leaves behind.
         if "area_id" not in proj_cols:
             db.execute("ALTER TABLE projects ADD COLUMN area_id TEXT DEFAULT ''")
+        # tags: JSON array of strings, free-text with autocomplete.
+        if "tags" not in proj_cols:
+            db.execute("ALTER TABLE projects ADD COLUMN tags TEXT DEFAULT '[]'")
         db.commit()
     except sqlite3.OperationalError as exc:
         if "duplicate column name" not in str(exc):
@@ -380,6 +383,11 @@ def _project_with_counts(db, proj_row):
         "done":        counts["done"] or 0,
         "total":       counts["total"] or 0,
     }
+    # Decode tags from the JSON column — clients always see a real array.
+    try:
+        p["tags"] = json.loads(p.get("tags") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        p["tags"] = []
     return p
 
 
@@ -401,6 +409,12 @@ def list_projects():
         area_ids = ["" if a.lower() == "none" else a for a in area_ids]
         query += " AND area_id IN (%s)" % ",".join("?" for _ in area_ids)
         params.extend(area_ids)
+
+    # Tag filter: project must contain ALL requested tags.
+    tag_filters = _multi("tag")
+    for tag in tag_filters:
+        query += " AND tags LIKE ?"
+        params.append(f'%"{tag}"%')
 
     query += " ORDER BY created_at ASC"
     rows = db.execute(query, params).fetchall()
@@ -430,9 +444,12 @@ def create_project():
     # area_id is newer still, so the same rule applies: absent means "keep what's
     # there", an explicit "" means "un-file me".
     area_id = data["area_id"] if "area_id" in data else (existing["area_id"] if existing else "")
+    tags = data["tags"] if "tags" in data else (existing["tags"] if existing else "[]")
+    if not isinstance(tags, str):
+        tags = json.dumps(tags)
     updated_at = data.get("updated_at") or ts
     db.execute(
-        "INSERT OR REPLACE INTO projects (id,name,description,status,colour,icon,repo_url,area_id,archived,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO projects (id,name,description,status,colour,icon,repo_url,area_id,tags,archived,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (pid,
              data.get("name", "Untitled"),
              data.get("description", ""),
@@ -441,12 +458,29 @@ def create_project():
              data.get("icon", ""),
              repo_url,
              area_id,
+             tags,
             archived, created_at, updated_at,
         ),
     )
     db.commit()
     row = db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
     return jsonify(_project_with_counts(db, row)), 201
+
+
+@app.get("/api/projects/tags")
+def list_project_tags():
+    """Return every distinct tag in use across all projects, sorted."""
+    db = get_db()
+    rows = db.execute("SELECT tags FROM projects WHERE archived=0 AND tags IS NOT NULL AND tags != '' AND tags != '[]'").fetchall()
+    seen = set()
+    for row in rows:
+        try:
+            for t in json.loads(row["tags"] or "[]"):
+                if t and isinstance(t, str):
+                    seen.add(t.strip())
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return jsonify(sorted(seen, key=str.lower))
 
 
 @app.get("/api/projects/<pid>")
@@ -465,7 +499,7 @@ def update_project(pid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["name", "description", "status", "colour", "icon", "archived", "repo_url", "area_id"]
+    fields = ["name", "description", "status", "colour", "icon", "archived", "repo_url", "area_id", "tags"]
     updates = {f: data[f] for f in fields if f in data}
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)

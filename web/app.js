@@ -574,6 +574,7 @@
   let _allAreas = [];
   let _allViews = [];
   let _allLinks = [];
+  let _allProjectTags = [];
   // Every issue on the current surface, unfiltered. The filtered list cannot
   // answer "what labels exist" or "how many are hidden" — once a filter is on,
   // it only knows about what survived it.
@@ -1116,16 +1117,16 @@
   // only one now, identical on all three surfaces, and it is the first place
   // labels have ever been filterable despite being drawn on every row.
 
-  const ORG_KEYS = ['status', 'priority', 'assignee', 'label', 'project_id', 'milestone_id', 'area_id'];
+  const ORG_KEYS = ['status', 'priority', 'assignee', 'label', 'project_id', 'milestone_id', 'area_id', 'tag'];
 
   const FILTER_LABELS = {
     status: 'Status', priority: 'Priority', assignee: 'Assignee', label: 'Label',
-    project_id: 'Project', milestone_id: 'Milestone', area_id: 'Area',
+    project_id: 'Project', milestone_id: 'Milestone', area_id: 'Area', tag: 'Tag',
   };
 
   const SORT_LABELS = {
     manual: 'Manual', updated: 'Updated', created: 'Created', priority: 'Priority',
-    title: 'Title', status: 'Status', milestone_due: 'Milestone due',
+    title: 'Title', status: 'Status', milestone_due: 'Milestone due', area: 'Area',
   };
 
   const GROUP_LABELS = {
@@ -1133,13 +1134,13 @@
     milestone: 'Milestone', project: 'Project', area: 'Area',
   };
 
-  const ALL_SORTS = ['manual', 'updated', 'created', 'priority', 'title', 'status', 'milestone_due'];
+  const ALL_SORTS = ['manual', 'updated', 'created', 'priority', 'title', 'status', 'milestone_due', 'area'];
   const ALL_GROUPS = ['none', 'status', 'priority', 'assignee', 'milestone', 'project', 'area'];
 
   function orgDefaults() {
     return {
       q: '',
-      filters: { status: [], priority: [], assignee: [], label: [], project_id: [], milestone_id: [], area_id: [] },
+      filters: { status: [], priority: [], assignee: [], label: [], project_id: [], milestone_id: [], area_id: [], tag: [] },
       archived: false,
       sort: 'manual',
       dir: 'asc',
@@ -1172,10 +1173,10 @@
     projects: {
       noun: 'projects',
       placeholder: 'Search projects…',
-      keys: ['status', 'area_id'],
+      keys: ['status', 'area_id', 'tag'],
       // Priority and milestone-due are issue properties; offering them as a
       // project sort would be a menu item that does nothing.
-      sorts: ['manual', 'updated', 'created', 'title', 'status'],
+      sorts: ['manual', 'updated', 'created', 'title', 'status', 'area'],
       groups: ['none', 'status', 'area'],
       views: [['grid', 'Grid'], ['list', 'List']],
       // Archived projects are a different set of rows, not a different way of
@@ -2311,7 +2312,7 @@
       { label: 'New area', onClick: () => createArea() },
     ]);
     document.getElementById('projects-grid').innerHTML = skeleton('project', 6);
-    await Promise.all([loadAreas(), loadViews()]);
+    await Promise.all([loadAreas(), loadViews(), loadProjectTags()]);
     renderOrgBar();
     renderRail();
     await loadProjects();
@@ -2354,6 +2355,10 @@
 
   async function _retryProjects() { await loadProjects(); }
 
+  async function loadProjectTags() {
+    try { _allProjectTags = await api('GET', '/api/projects/tags'); } catch { /* non-fatal */ }
+  }
+
   function visibleProjects() {
     const q = (_org.q || '').toLowerCase();
     let list = _allProjects;
@@ -2361,6 +2366,12 @@
     if (_org.filters.status.length) list = list.filter(p => _org.filters.status.includes(p.status));
     if (_org.filters.area_id.length) {
       list = list.filter(p => _org.filters.area_id.includes(p.area_id ? p.area_id : 'none'));
+    }
+    if (_org.filters.tag && _org.filters.tag.length) {
+      list = list.filter(p => {
+        const pt = Array.isArray(p.tags) ? p.tags : [];
+        return _org.filters.tag.every(t => pt.includes(t));
+      });
     }
     if (q) {
       list = list.filter(p =>
@@ -2372,12 +2383,17 @@
   function sortProjects(list) {
     const dir = _org.dir === 'desc' ? -1 : 1;
     const rank = { active: 0, paused: 1, done: 2 };
+    const areaName = id => {
+      const a = _allAreas.find(a => a.id === id);
+      return a ? a.name.toLowerCase() : '\uffff';
+    };
     const cmp = {
       manual: (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')),
       created: (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')),
       updated: (a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')),
       title: (a, b) => String(a.name || '').localeCompare(String(b.name || '')),
       status: (a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3),
+      area: (a, b) => areaName(a.area_id).localeCompare(areaName(b.area_id)) || String(a.name || '').localeCompare(String(b.name || '')),
     }[_org.sort] || ((a, b) => 0);
     return [...list].sort((a, b) => cmp(a, b) * dir);
   }
@@ -2436,6 +2452,66 @@
   // Areas are sections with a header, a count, a rule and their own menu. The
   // unfiled projects land in "No area" at the bottom — always last, and only
   // drawn when there is something in it.
+  // ── Drag-and-drop: project cards → area sections ─────────────────
+  // Only active when grouped by area. Uses HTML5 drag API.
+  // dragover fires continuously; we throttle the highlight update.
+  let _dndDragId = null;
+
+  function _onCardDragStart(e, projectId) {
+    _dndDragId = projectId;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', projectId);
+    e.currentTarget.classList.add('dragging');
+  }
+
+  function _onCardDragEnd(e) {
+    _dndDragId = null;
+    e.currentTarget.classList.remove('dragging');
+    document.querySelectorAll('.area-section.drag-over').forEach(el => el.classList.remove('drag-over'));
+  }
+
+  function _onAreaDragOver(e, areaId) {
+    if (!_dndDragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    document.querySelectorAll('.area-section.drag-over').forEach(el => el.classList.remove('drag-over'));
+    const section = e.currentTarget.closest('.area-section');
+    if (section) section.classList.add('drag-over');
+  }
+
+  function _onAreaDragLeave(e) {
+    const related = e.relatedTarget;
+    const section = e.currentTarget.closest('.area-section');
+    if (section && (!related || !section.contains(related))) {
+      section.classList.remove('drag-over');
+    }
+  }
+
+  async function _onAreaDrop(e, areaId) {
+    e.preventDefault();
+    document.querySelectorAll('.area-section.drag-over').forEach(el => el.classList.remove('drag-over'));
+    const pid = e.dataTransfer.getData('text/plain') || _dndDragId;
+    _dndDragId = null;
+    if (!pid) return;
+    const project = _allProjects.find(p => p.id === pid);
+    if (!project) return;
+    const targetArea = areaId === '' ? '' : areaId;
+    if (project.area_id === targetArea) return;
+
+    // Optimistic update
+    const previous = project.area_id;
+    project.area_id = targetArea;
+    renderProjects();
+
+    try {
+      await api('PUT', `/api/projects/${pid}`, { area_id: targetArea });
+    } catch {
+      project.area_id = previous;
+      renderProjects();
+      toast("Couldn\u2019t move the project \u2014 try again");
+    }
+  }
+
   function renderAreaSections(visible) {
     // With no areas at all, every project would land in a section called "No
     // area" — a grouping that groups nothing. Draw the plain grid instead.
@@ -2461,7 +2537,10 @@
     ).map(s => {
       const shut = collapsed.has(s.id || '__none__');
       return `
-        <section class="area-section${shut ? ' collapsed' : ''}">
+        <section class="area-section${shut ? ' collapsed' : ''}"
+          ondragover="GRAFT._onAreaDragOver(event,'${jsStr(s.id)}')"
+          ondragleave="GRAFT._onAreaDragLeave(event)"
+          ondrop="GRAFT._onAreaDrop(event,'${jsStr(s.id)}')">
           <div class="area-header">
             <button class="area-header-name" type="button" aria-expanded="${!shut}"
                     onclick="GRAFT._toggleArea('${jsStr(s.id || '__none__')}')">
@@ -2508,6 +2587,9 @@
     return `
       <div class="project-card ${p.archived ? 'project-card-archived' : ''}"
            tabindex="0" role="link" aria-label="${esc(p.name)}"
+           draggable="true"
+           ondragstart="GRAFT._onCardDragStart(event,'${jsStr(p.id)}')"
+           ondragend="GRAFT._onCardDragEnd(event)"
            onclick="window.location.href='project.html?id=${esc(p.id)}'"
            onkeydown="if(event.key==='Enter'){window.location.href='project.html?id=${esc(p.id)}'}">
         <div class="project-card-stripe" style="background:${esc(p.colour)}"></div>
@@ -2520,6 +2602,7 @@
               : `<span class="project-card-status status-${esc(p.status)}">${esc(p.status)}</span>`}
           </div>
           ${p.description ? `<div class="project-card-desc">${esc(p.description)}</div>` : ''}
+          ${Array.isArray(p.tags) && p.tags.length ? `<div class="project-card-tags">${p.tags.map(t => `<span class="tag-pill">${esc(t)}</span>`).join('')}</div>` : ''}
           <div class="progress-row">
             <div class="progress" role="img" aria-label="${done} of ${total} done">
               <span class="progress-done" style="width:${donePct}%"></span>
@@ -2534,7 +2617,59 @@
       </div>`;
   }
 
+
   // ── The project form ────────────────────────────────────────────
+
+  // Tag chip input — renders inside a container element by id.
+  // Tags are stored as a JSON array on the project; the input is
+  // a chip row + text field with autocomplete from _allProjectTags.
+  function initTagInput(containerId, currentTags) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    let tags = [...(currentTags || [])];
+
+    function render() {
+      container.innerHTML = `
+        <div class="tag-input-chips" id="${containerId}-chips">
+          ${tags.map((t, i) => `<span class="tag-chip">${esc(t)}<button type="button" class="tag-chip-remove" aria-label="Remove ${esc(t)}" data-i="${i}">×</button></span>`).join('')}
+          <input class="tag-chip-input" id="${containerId}-input" type="text" placeholder="${tags.length ? '' : 'Add tags…'}" autocomplete="off" list="${containerId}-datalist">
+        </div>
+        <datalist id="${containerId}-datalist">${_allProjectTags.filter(t => !tags.includes(t)).map(t => `<option value="${esc(t)}">`).join('')}</datalist>`;
+
+      container.querySelectorAll('.tag-chip-remove').forEach(btn => {
+        btn.onclick = () => { tags.splice(+btn.dataset.i, 1); render(); };
+      });
+
+      const inp = document.getElementById(`${containerId}-input`);
+      if (inp) {
+        inp.onkeydown = e => {
+          if ((e.key === 'Enter' || e.key === ',') && inp.value.trim()) {
+            e.preventDefault();
+            const val = inp.value.trim().replace(/,+$/, '');
+            if (val && !tags.includes(val)) { tags.push(val); render(); }
+            else inp.value = '';
+          } else if (e.key === 'Backspace' && !inp.value && tags.length) {
+            tags.pop(); render();
+          }
+        };
+        inp.onblur = () => {
+          const val = inp.value.trim().replace(/,+$/, '');
+          if (val && !tags.includes(val)) { tags.push(val); render(); }
+        };
+      }
+    }
+
+    render();
+
+    // Expose getter on container element for submitProject to read.
+    container._getTags = () => tags;
+  }
+
+  function getTagInputValue(containerId) {
+    const container = document.getElementById(containerId);
+    return container?._getTags ? container._getTags() : [];
+  }
+
   function fillAreaSelect(selected) {
     const sel = document.getElementById('project-area');
     if (!sel) return;
@@ -2568,6 +2703,7 @@
     setColour('colour-picker', 'project-colour', '#7C7FC4');
     initIconPicker('icon-picker', 'project-icon');
     fillAreaSelect(areaId || '');
+    initTagInput('project-tags', []);
     document.getElementById('modal-project-title').textContent = 'New project';
     openModal('modal-new-project');
   }
@@ -2589,6 +2725,7 @@
       colour: document.getElementById('project-colour').value,
       icon: document.getElementById('project-icon').value,
       area_id: areaSel && areaSel.value !== '__new__' ? areaSel.value : '',
+      tags: getTagInputValue('project-tags'),
     };
     try {
       if (editId) {
@@ -2598,10 +2735,12 @@
         const p = await api('POST', '/api/projects', body);
         toast('Project created');
         closeProjectModal();
+        await loadProjectTags();
         window.location.href = `project.html?id=${p.id}`;
         return;
       }
       closeProjectModal();
+      await loadProjectTags();
       _railProjects = null;
       if (typeof reloadPage === 'function') reloadPage();
       else loadProjects();
@@ -3179,6 +3318,7 @@
     setColour('colour-picker', 'project-colour', _currentProject.colour);
     initIconPicker('icon-picker', 'project-icon');
     fillAreaSelect(_currentProject.area_id || '');
+    initTagInput('project-tags', _currentProject.tags || []);
     const archBtn = document.getElementById('archive-project-btn');
     if (archBtn) archBtn.textContent = _currentProject.archived ? 'Unarchive' : 'Archive';
     openModal('modal-edit-project');
@@ -3823,6 +3963,8 @@
     createArea, _areaMenu, _toggleArea, _toggleRailArea,
     _addLink, _editLink, _linkMenu, _removeLink,
     _applyView: applySavedView, _deleteView: deleteSavedView,
+    // drag and drop
+    _onCardDragStart, _onCardDragEnd, _onAreaDragOver, _onAreaDragLeave, _onAreaDrop,
     // retries
     _retryRail, _retryProjects, _retryIssues, _retryProject, _retryToday,
     _retryProjectLinks, _retrySlideoverLinks,

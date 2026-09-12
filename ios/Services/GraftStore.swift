@@ -306,7 +306,8 @@ final class GraftStore {
         colour: String,
         icon: String = "",
         status: String = "active",
-        areaId: String = ""
+        areaId: String = "",
+        tags: [String] = []
     ) async throws {
         let ts = nowISO()
         let project = GraftProject(
@@ -317,6 +318,7 @@ final class GraftStore {
             colour: colour,
             icon: icon,
             areaId: areaId,
+            tags: tags,
             archived: false,
             createdAt: ts,
             updatedAt: ts,
@@ -325,12 +327,13 @@ final class GraftStore {
         projects.append(project)
         saveCachedData()
 
-        let body = try JSONEncoder().encode([
+        var bodyDict: [String: Any] = [
             "id": project.id, "name": name, "description": description,
             "colour": colour, "status": status, "icon": icon,
-            "area_id": areaId,
+            "area_id": areaId, "tags": tags,
             "created_at": ts, "updated_at": ts
-        ])
+        ]
+        let body = try JSONSerialization.data(withJSONObject: bodyDict)
         syncEngine.enqueue(method: "POST", path: "/api/projects", body: body)
         await flushPending()
     }
@@ -344,16 +347,17 @@ final class GraftStore {
         }
         saveCachedData()
 
-        let bodyDict: [String: String] = [
+        let bodyDict: [String: Any] = [
             "name": project.name, "description": project.description,
             "colour": project.colour, "status": project.status, "icon": project.icon,
             // Always sent, never omitted: the server writes only the keys the
             // payload carries, so leaving it out would make "move to No area"
             // impossible to express.
             "area_id": project.areaKey,
+            "tags": project.tagList,
             "updated_at": ts
         ]
-        let body = try JSONEncoder().encode(bodyDict)
+        let body = try JSONSerialization.data(withJSONObject: bodyDict)
         syncEngine.enqueue(method: "PUT", path: "/api/projects/\(project.id)", body: body)
         await flushPending()
     }
