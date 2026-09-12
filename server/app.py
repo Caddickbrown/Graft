@@ -501,6 +501,8 @@ def update_project(pid):
     data = request.get_json(force=True)
     fields = ["name", "description", "status", "colour", "icon", "archived", "repo_url", "area_id", "tags"]
     updates = {f: data[f] for f in fields if f in data}
+    if "tags" in updates and not isinstance(updates["tags"], str):
+        updates["tags"] = json.dumps(updates["tags"])
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)
     db.execute(f"UPDATE projects SET {set_clause} WHERE id=?", (*updates.values(), pid))

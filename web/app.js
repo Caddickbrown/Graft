@@ -1189,7 +1189,7 @@
       keys: ORG_KEYS,
       sorts: ALL_SORTS,
       groups: ALL_GROUPS,
-      views: [['list', 'List'], ['board', 'Board']],
+      views: [['list', 'List'], ['board', 'Board'], ['table', 'Table']],
       apply: () => loadIssuesPage(),
     },
     project: {
@@ -1302,7 +1302,7 @@
         ? PROJECT_STATUSES.map(v => ({ v, label: PROJECT_STATUS_LABELS[v] }))
         : STATUSES.map(v => ({ v, label: STATUS_LABELS[v], icon: statusIcon(v, 15) }));
     }
-    if (key === 'priority') return PRIORITIES.map(v => ({ v, label: PRIORITY_LABELS[v] }));
+    
     // These two are drawn from the unfiltered set: filtering by one label must
     // not remove every other label from the menu you are standing in.
     const vocabulary = _facetIssues.length ? _facetIssues : _allIssues;
@@ -1571,6 +1571,7 @@
 
   function groupKeyOf(item, group) {
     if (group === 'status') return item.status || 'backlog';
+
     if (group === 'priority') return item.priority || 'normal';
     if (group === 'assignee') return item.assignee || '';
     if (group === 'milestone') return item.milestone_id || '';
@@ -1584,9 +1585,10 @@
 
   function groupLabelOf(key, group) {
     if (group === 'status') return STATUS_LABELS[key] || key;
+
     if (group === 'priority') return PRIORITY_LABELS[key] || key;
-    if (group === 'assignee') return key || 'Unassigned';
-    if (group === 'milestone') return key ? (_allMilestones.find(m => m.id === key)?.name || 'Unknown milestone') : 'No milestone';
+    if (group === 'assignee') return key ? key : 'Unassigned';
+    if (group === 'milestone')
     if (group === 'project') return key ? projectName(key) : 'No project';
     if (group === 'area') return areaName(key);
     return '';
@@ -1631,8 +1633,8 @@
     const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${esc(l)}</span>`).join('');
     const showProject = opts.showProject && issue.project_name
       ? `<span class="assignee-chip">${esc(issue.project_name)}</span>` : '';
-    const urgent = issue.priority === 'urgent' || issue.priority === 'high';
     const id = jsStr(issue.id);
+    const urgent = issue.priority === 'urgent' || issue.priority === 'high';
     return `
       <div class="kanban-card"
            data-priority="${esc(issue.priority)}"
@@ -1647,6 +1649,7 @@
            ondragend="GRAFT._dragEnd(event)">
         <div class="kanban-card-title">${esc(issue.title)}</div>
         <div class="kanban-card-meta">
+
           ${urgent ? priorityBadge(issue.priority) : ''}
           ${milestoneTag(issue.milestone_name)}
           ${labels}
@@ -1703,6 +1706,8 @@
     if (!el) return;
     if (board) {
       renderBoardInto(el, issues, { showProject });
+    } else if (_viewMode === 'table') {
+      renderTableView(el, issues, { showProject });
     } else {
       const groups = groupItems(issues, _org.group);
       el.innerHTML = groups.map(g =>
@@ -1712,7 +1717,141 @@
     pruneSelection(issues.map(i => i.id));
   }
 
-  // ── Inline status menu ──────────────────────────────────────────
+  // ── Table view ───────────────────────────────────────────────────
+  // A dense, spreadsheet-style view. Every cell is editable inline —
+  // title is a plain contenteditable, the rest are native selects/inputs
+  // that patch the server on change. No full reload; _allIssues is updated
+  // in memory so subsequent re-renders stay consistent.
+  function renderTableView(el, issues, { showProject = false } = {}) {
+    const groups = groupItems(issues, _org.group);
+
+    function msOptions(projectId) {
+      const ms = _allMilestones.filter(m => !projectId || m.project_id === projectId);
+      return `<option value="">—</option>` +
+        ms.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+    }
+
+    function tableRow(issue) {
+      const id = jsStr(issue.id);
+      const rowClass = `tbl-row${issue.archived ? ' issue-row-archived' : ''}${_selection.has(issue.id) ? ' selected' : ''}`;
+      return `<tr class="${rowClass}" data-id="${esc(issue.id)}">
+        <td class="tbl-check">
+          <input type="checkbox" class="row-check" ${_selection.has(issue.id) ? 'checked' : ''}
+                 aria-label="Select ${esc(issue.title)}"
+                 onclick="event.stopPropagation();GRAFT._toggleSelect('${id}',this.checked)">
+        </td>
+        <td class="tbl-status">
+          <select class="tbl-select tbl-status-sel" data-id="${esc(issue.id)}"
+                  onchange="GRAFT._tblChange(this,'status')" onclick="event.stopPropagation()">
+            ${STATUSES.map(s => `<option value="${s}"${issue.status===s?' selected':''}>${STATUS_LABELS[s]}</option>`).join('')}
+          </select>
+        </td>
+        <td class="tbl-title">
+          <div class="tbl-title-cell ${issue.status==='done'?'done-title':''}"
+               contenteditable="true" spellcheck="false"
+               data-id="${esc(issue.id)}" data-orig="${esc(issue.title)}"
+               onblur="GRAFT._tblTitleBlur(this)"
+               onkeydown="GRAFT._tblTitleKey(event,this)">${esc(issue.title)}</div>
+        </td>
+        ${showProject ? `<td class="tbl-project">
+          <span class="tbl-project-label">${esc(issue.project_name||'')}</span>
+        </td>` : ''}
+
+        <td class="tbl-priority">
+          <select class="tbl-select tbl-priority-sel" data-id="${esc(issue.id)}"
+                  onchange="GRAFT._tblChange(this,'priority')" onclick="event.stopPropagation()">
+            ${PRIORITIES.map(p => `<option value="${p}"${issue.priority===p?' selected':''}>${PRIORITY_LABELS[p]}</option>`).join('')}
+          </select>
+        </td>
+        <td class="tbl-assignee">
+          <input class="tbl-input" type="text" value="${esc(issue.assignee||'')}"
+                 placeholder="—" data-id="${esc(issue.id)}"
+                 onblur="GRAFT._tblChange(this,'assignee')"
+                 onkeydown="if(event.key==='Enter'){this.blur()}"
+                 onclick="event.stopPropagation()">
+        </td>
+        <td class="tbl-milestone">
+          <select class="tbl-select tbl-milestone-sel" data-id="${esc(issue.id)}"
+                  onchange="GRAFT._tblChange(this,'milestone_id')" onclick="event.stopPropagation()">
+            ${msOptions(issue.project_id).replace(
+              `value="${esc(issue.milestone_id||'')}"`,
+              `value="${esc(issue.milestone_id||'')}" selected`
+            )}
+          </select>
+        </td>
+        <td class="tbl-actions">
+          <button class="icon-btn" type="button" title="Open" aria-label="Open issue"
+                  onclick="event.stopPropagation();GRAFT.openIssueSlideover('${id}')">${svg(NAV_ICONS.edit, 14)}</button>
+        </td>
+      </tr>`;
+    }
+
+    const showProjCol = showProject;
+    const header = `<thead><tr class="tbl-head">
+      <th class="tbl-check"></th>
+      <th class="tbl-status">Status</th>
+      <th class="tbl-title">Title</th>
+      ${showProjCol ? '<th class="tbl-project">Project</th>' : ''}
+
+      <th class="tbl-priority">Priority</th>
+      <th class="tbl-assignee">Assignee</th>
+      <th class="tbl-milestone">Milestone</th>
+      <th class="tbl-actions"></th>
+    </tr></thead>`;
+
+    el.innerHTML = `<div class="tbl-wrap"><table class="issue-table">${header}<tbody>` +
+      groups.map(g =>
+        (g.label ? `<tr class="tbl-group-row"><td colspan="8" class="tbl-group-cell">${esc(g.label)} <span class="tbl-group-count">${g.rows.length}</span></td></tr>` : '') +
+        g.rows.map(tableRow).join('')
+      ).join('') +
+      `</tbody></table></div>`;
+  }
+
+  async function _tblChange(el, field) {
+    const id = el.dataset.id;
+    const issue = _issue(id);
+    if (!issue) return;
+    const val = el.value;
+    const prev = issue[field];
+    if (val === (prev || '')) return;
+    issue[field] = val || null;
+    // Sync milestone_name so list view stays consistent
+    if (field === 'milestone_id') {
+      issue.milestone_name = _allMilestones.find(m => m.id === val)?.name || null;
+    }
+    try {
+      await api('PUT', `/api/issues/${id}`, { [field]: val || null });
+    } catch {
+      issue[field] = prev;
+      toast('Could not save change');
+    }
+  }
+
+  function _tblTitleKey(e, el) {
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+    if (e.key === 'Escape') { el.textContent = el.dataset.orig; el.blur(); }
+  }
+
+  async function _tblTitleBlur(el) {
+    const id = el.dataset.id;
+    const issue = _issue(id);
+    if (!issue) return;
+    const newTitle = el.textContent.trim();
+    if (!newTitle || newTitle === issue.title) { el.textContent = issue.title; return; }
+    const prev = issue.title;
+    issue.title = newTitle;
+    el.dataset.orig = newTitle;
+    try {
+      await api('PUT', `/api/issues/${id}`, { title: newTitle });
+    } catch {
+      issue.title = prev;
+      el.textContent = prev;
+      el.dataset.orig = prev;
+      toast('Could not save title');
+    }
+  }
+
+  // ── Inline status menu ───────────────────────────────────────────
   function _openStatusMenu(event, id) {
     const issue = _issue(id);
     if (!issue) return;
@@ -1879,6 +2018,7 @@
     if (desc) desc.value = '';
     document.getElementById('issue-status').value = 'backlog';
     document.getElementById('issue-priority').value = 'normal';
+
     const assignee = document.getElementById('issue-assignee');
     if (assignee) assignee.value = '';
     const labels = document.getElementById('issue-labels');
@@ -1909,6 +2049,7 @@
     if (desc) desc.value = issue.description || '';
     document.getElementById('issue-status').value = issue.status;
     document.getElementById('issue-priority').value = issue.priority;
+
     const assignee = document.getElementById('issue-assignee');
     if (assignee) assignee.value = issue.assignee || '';
     const labels = document.getElementById('issue-labels');
@@ -2851,7 +2992,7 @@
       const rank = { urgent: 0, high: 1, normal: 2, low: 3 };
       const da = daysUntil(milestoneDue(a)), db = daysUntil(milestoneDue(b));
       if ((da !== null && da < 0) !== (db !== null && db < 0)) return (da !== null && da < 0) ? -1 : 1;
-      return rank[a.priority] - rank[b.priority];
+      return 0;
     });
 
     const inProgress = open.filter(i => i.status === 'in-progress' && !needsYou.includes(i));
@@ -3976,6 +4117,7 @@
     _expandToday, _collapseToday,
     // rows, status, selection
     _openStatusMenu, setIssueStatus, _toggleSelect, clearSelection,
+    _tblChange, _tblTitleBlur, _tblTitleKey,
     archiveIssue, deleteIssueById, _goToIssue,
   };
 })();
