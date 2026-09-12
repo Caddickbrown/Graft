@@ -8,11 +8,12 @@ options:
 settings:
   base:
     SWIFT_VERSION: '6.0'
-    # Xcode's "recommended settings" prompt asks for these two. They live here
+    # Xcode's "recommended settings" prompt asks for these three. They live here
     # rather than being accepted in Xcode, because `xcodegen generate` rewrites
     # project.pbxproj and would discard anything set in the IDE.
     ENABLE_USER_SCRIPT_SANDBOXING: 'YES'
     STRING_CATALOG_GENERATE_SYMBOLS: 'YES'
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: 'YES'
     MARKETING_VERSION: '1.0'
     CURRENT_PROJECT_VERSION: '1'
     IPHONEOS_DEPLOYMENT_TARGET: '18.0'
