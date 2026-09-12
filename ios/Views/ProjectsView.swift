@@ -501,8 +501,6 @@ enum ProjectSortOrder: String, CaseIterable {
     case area
     case status
 
-    static var `default`: ProjectSortOrder { .default }
-
     var label: String {
         switch self {
         case .default: return "Default"

@@ -2747,6 +2747,9 @@
             ${p.archived
               ? `<span class="project-card-status" style="background:var(--surface-2);color:var(--ink-2)">archived</span>`
               : `<span class="project-card-status status-${esc(p.status)}">${esc(p.status)}</span>`}
+            <button class="icon-btn project-card-menu" type="button" aria-haspopup="menu"
+                    aria-label="Actions for ${esc(p.name)}"
+                    onclick="GRAFT._projectMenu(event,'${jsStr(p.id)}')">${svg(DOTS_ICON, 15)}</button>
           </div>
           ${p.description ? `<div class="project-card-desc">${esc(p.description)}</div>` : ''}
           ${Array.isArray(p.tags) && p.tags.length ? `<div class="project-card-tags">${p.tags.map(t => `<span class="tag-pill">${esc(t)}</span>`).join('')}</div>` : ''}
@@ -2764,6 +2767,46 @@
       </div>`;
   }
 
+
+  // Archiving is the reversible half of "get this off my list", so the card
+  // offers it directly rather than making you open the project first. A menu
+  // rather than a bare button: the card is itself a link, and a second
+  // always-visible control on it reads as a second destination.
+  function _projectMenu(event, id) {
+    event.preventDefault();
+    event.stopPropagation();
+    const p = _allProjects.find(x => x.id === id);
+    openMenu(event.currentTarget, [
+      { label: p?.archived ? 'Unarchive project' : 'Archive project',
+        onClick: () => archiveProjectById(id) },
+    ]);
+  }
+
+  // Archive keeps everything — area, tags, issues, milestones — and only drops
+  // the project out of the lists. The server's PATCH touches `archived` alone,
+  // so the area survives and the project comes back where it was filed.
+  async function archiveProjectById(id) {
+    const p = _allProjects.find(x => x.id === id);
+    const wasArchived = !!p?.archived;
+    try {
+      await api('PATCH', `/api/projects/${id}/archive`);
+      await _reloadProjectLists();
+      undoToast(wasArchived ? 'Project unarchived' : 'Project archived', async () => {
+        await api('PATCH', `/api/projects/${id}/archive`);
+        await _reloadProjectLists();
+      });
+    } catch { toast('Could not archive project'); }
+  }
+
+  // The projects page and a single area page both draw project cards, and the
+  // rail counts them; after a toggle all three are stale.
+  async function _reloadProjectLists() {
+    _railProjects = null;
+    if (window._pageMode === 'area') await _loadAreaProjects();
+    else if (window._pageMode === 'projects') await loadProjects();
+    else await window.reloadPage();
+    renderRail();
+  }
 
   // ── The project form ────────────────────────────────────────────
 
@@ -4110,6 +4153,9 @@
   // ══════════════════════════════════════════════════════════════
   let _currentArea = null;
   let _areaNotesTimer = null;
+  // Shut by default: the live projects are the point of the page, and the
+  // archived ones are a drawer you open when you want something back.
+  let _areaShowArchived = false;
 
   async function initArea() {
     window._pageMode = 'area';
@@ -4118,10 +4164,18 @@
     const id = params.get('id');
     if (!id) { window.location.href = 'index.html'; return; }
     initChrome('area', { title: 'Area' });
+    // Every other page fills the rail on the way in; this one did not, so the
+    // sidebar sat empty and there was no way out of an area but the browser's
+    // back button.
+    await loadAreas();
+    renderRail();
     try {
+      // ?archived=1 asks for both halves in one request. An archived project
+      // keeps its area, so this page is the one place it stays reachable —
+      // the section below files it away rather than hiding it.
       const [area, projects] = await Promise.all([
         api('GET', `/api/areas/${id}`),
-        api('GET', '/api/projects'),
+        api('GET', '/api/projects?archived=1'),
       ]);
       _currentArea = area;
       _allProjects = projects;
@@ -4153,12 +4207,42 @@
       descEl.dataset.areaId = a.id;
     }
     if (gridEl) {
-      const areaProjects = _allProjects.filter(p => p.area_id === a.id && !p.archived);
-      gridEl.innerHTML = areaProjects.length
-        ? `<div class="projects-grid">${areaProjects.map(projectCard).join('')}</div>`
+      const inArea = _allProjects.filter(p => p.area_id === a.id);
+      const live = inArea.filter(p => !p.archived);
+      const archived = inArea.filter(p => p.archived);
+      const liveHtml = live.length
+        ? `<div class="projects-grid">${live.map(projectCard).join('')}</div>`
         : `<div class="empty-state"><div class="empty-state-title">No projects in this area yet</div>
              <div class="empty-state-body">Assign projects to this area from their edit form.</div></div>`;
+      const archivedHtml = archived.length ? `
+        <div class="area-archived${_areaShowArchived ? '' : ' collapsed'}">
+          <button class="area-archived-toggle" type="button" aria-expanded="${_areaShowArchived}"
+                  onclick="GRAFT._toggleAreaArchived()">
+            ${svg(CHEVRON_DOWN, 12)}
+            <span>Archived</span>
+            <span class="area-header-count">${archived.length}</span>
+          </button>
+          ${_areaShowArchived
+            ? `<div class="projects-grid">${archived.map(projectCard).join('')}</div>`
+            : ''}
+        </div>` : '';
+      gridEl.innerHTML = liveHtml + archivedHtml;
     }
+  }
+
+  function _toggleAreaArchived() {
+    _areaShowArchived = !_areaShowArchived;
+    _renderAreaPage();
+  }
+
+  // Re-fetch just the project list behind the area page, for when an archive
+  // toggle has moved a card from one section to the other.
+  async function _loadAreaProjects() {
+    if (!_currentArea) return;
+    try {
+      _allProjects = await api('GET', '/api/projects?archived=1');
+      _renderAreaPage();
+    } catch { toast('Could not refresh projects'); }
   }
 
   async function _saveAreaNotes(el) {
@@ -4198,7 +4282,8 @@
     // the organisation bar
     _clearFilter, _clearAllFilters, _toggleArchived, _onSearchInput,
     // areas, links, views
-    createArea, _areaMenu, _toggleArea, _toggleRailArea,
+    createArea, _areaMenu, _toggleArea, _toggleRailArea, _toggleAreaArchived,
+    _projectMenu, archiveProjectById,
     _addLink, _editLink, _linkMenu, _removeLink,
     _applyView: applySavedView, _deleteView: deleteSavedView,
     // drag and drop

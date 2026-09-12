@@ -2114,6 +2114,50 @@ option { background: var(--surface); color: var(--ink); }
 .project-card-archived { opacity: .55; }
 .project-card-archived:hover { opacity: .85; }
 
+/* The card's own actions menu. Hidden until the card is hovered or something
+   inside it has focus, so the resting card stays a single quiet target — but
+   never hidden from the keyboard, which is why :focus-within counts. */
+.project-card-menu {
+  width: 24px; height: 24px;
+  flex-shrink: 0;
+  margin: -2px -4px -2px 0;
+  opacity: 0;
+  transition: opacity .12s, color .1s, background .1s;
+}
+.project-card:hover .project-card-menu,
+.project-card:focus-within .project-card-menu,
+.project-card-menu:focus-visible { opacity: 1; }
+@media (hover: none) {
+  .project-card-menu { opacity: 1; }
+}
+
+/* ── An area's archived projects ─────────────────────────────────── */
+/* A drawer under the live grid: archived projects keep their area, so this is
+   where they wait rather than dropping out of the app entirely. */
+.area-archived { margin-top: 28px; }
+.area-archived-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--h-sm);
+  padding: 0 6px;
+  margin-bottom: 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  transition: background .12s, color .12s;
+}
+.area-archived-toggle:hover { background: var(--surface-2); color: var(--ink); }
+.area-archived-toggle svg { transition: transform .14s; flex-shrink: 0; }
+.area-archived.collapsed .area-archived-toggle svg { transform: rotate(-90deg); }
+
 .issue-row-archived { opacity: .5; }
 .issue-row-archived .issue-row-title { text-decoration: line-through; color: var(--ink-3); }
 

@@ -38,7 +38,17 @@ struct AreasView: View {
     @State private var renameText = ""
     @State private var pendingDelete: GraftArea?
 
+    /// What the row's count means: the projects you would actually see under
+    /// this area. An archived project keeps its area — that is the point of
+    /// archiving rather than un-filing — but it is out of every list, so
+    /// counting it here would promise projects the area does not show.
     private func projectCount(_ area: GraftArea) -> Int {
+        store.projects.filter { $0.areaKey == area.id && !$0.archived }.count
+    }
+
+    /// Deleting an area un-files everything in it, archived projects included,
+    /// so the confirmation counts the whole shelf rather than the visible part.
+    private func totalProjectCount(_ area: GraftArea) -> Int {
         store.projects.filter { $0.areaKey == area.id }.count
     }
 
@@ -181,7 +191,7 @@ struct AreasView: View {
                 Button("Cancel", role: .cancel) { pendingDelete = nil }
             } message: {
                 if let area = pendingDelete {
-                    let n = projectCount(area)
+                    let n = totalProjectCount(area)
                     Text("\(n) project\(n == 1 ? "" : "s") will move to \u{201C}No area\u{201D}. Nothing is deleted.")
                 }
             }
