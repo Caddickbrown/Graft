@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// One kanban column / list section. A struct rather than a `(String, [Issue])`
+/// tuple because `ForEach` identifies its data through a key path, and Swift
+/// has none into tuples.
+fileprivate struct StatusBucket: Identifiable {
+    let id: String
+    let issues: [GraftIssue]
+}
+
 struct ProjectDetailView: View {
     @Environment(GraftStore.self) private var store
     let project: GraftProject
@@ -8,11 +16,14 @@ struct ProjectDetailView: View {
     @State private var showNewIssueInStatus: String? = nil
     @State private var showMilestones = false
     @State private var showEditProject = false
-    @State private var selectedMilestoneId: String? = nil
-    @State private var viewMode: ViewMode = .board
-    @State private var showArchived = false
+    @State private var showFilters = false
     @State private var pendingDelete: GraftIssue?
     @State private var undo: UndoAction?
+
+    // Note what is *not* here any more: `viewMode`, `selectedMilestoneId` and
+    // `showArchived` used to be plain `@State` on a pushed view, so leaving the
+    // project and coming back silently reset every one of them. They live in
+    // the store now, keyed by project, and survive a relaunch.
 
     private func archive(_ issue: GraftIssue) {
         Task {
@@ -28,6 +39,42 @@ struct ProjectDetailView: View {
         case list = "List"
     }
 
+    // MARK: - Persisted per-project state
+
+    private var query: IssueQuery { store.projectQuery(project.id) }
+
+    private var queryBinding: Binding<IssueQuery> {
+        Binding(
+            get: { store.projectQuery(project.id) },
+            set: { store.setProjectQuery($0, for: project.id) }
+        )
+    }
+
+    private var viewMode: ViewMode {
+        ViewMode(rawValue: store.projectViewModes[project.id] ?? "") ?? .board
+    }
+
+    private var viewModeBinding: Binding<ViewMode> {
+        Binding(
+            get: { viewMode },
+            set: { store.projectViewModes[project.id] = $0.rawValue }
+        )
+    }
+
+    /// The single milestone chip selection, expressed through the multi-value
+    /// filter the sheet and the server both use.
+    private var selectedMilestoneId: String? {
+        query.filters.milestoneId.first
+    }
+
+    private func selectMilestone(_ id: String?) {
+        var next = query
+        next.filters.milestoneId = id.map { [$0] } ?? []
+        store.setProjectQuery(next, for: project.id)
+    }
+
+    // MARK: - Data
+
     var currentProject: GraftProject {
         store.projects.first { $0.id == project.id } ?? project
     }
@@ -36,22 +83,25 @@ struct ProjectDetailView: View {
         store.milestones(for: project.id)
     }
 
-    var projectIssues: [GraftIssue] {
-        var all = showArchived
-            ? store.issues.filter { $0.projectId == project.id }.sorted { $0.sortOrder < $1.sortOrder }
-            : store.issues(for: project.id)
-        if let mid = selectedMilestoneId {
-            all = all.filter { $0.milestoneId == mid }
-        }
-        return all
+    /// Every issue in this project, archived included — the query decides what
+    /// is shown. Kept separate from `projectIssues` so "this project is empty"
+    /// and "nothing matches your filters" are different answers.
+    private var allProjectIssues: [GraftIssue] {
+        store.issues.filter { $0.projectId == project.id }
     }
 
-    var issuesByStatus: [(String, [GraftIssue])] {
+    var projectIssues: [GraftIssue] {
+        store.apply(query, to: allProjectIssues)
+    }
+
+    fileprivate var issuesByStatus: [StatusBucket] {
         let order = ["backlog", "todo", "in-progress", "review", "done"]
         return order.map { status in
-            (status, projectIssues.filter { $0.status == status })
+            StatusBucket(id: status, issues: projectIssues.filter { $0.status == status })
         }
     }
+
+    // MARK: - Body
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -59,141 +109,65 @@ struct ProjectDetailView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    SyncStrip()
+                        .padding(.top, GraftMetrics.spaceXS)
+                        .padding(.bottom, GraftMetrics.spaceXS)
 
-                    // Project header card
-                    HStack(spacing: 12) {
-                        if !currentProject.icon.isEmpty {
-                            Text(currentProject.icon)
-                                .font(.system(size: 28))
-                                .frame(width: 36, height: 36)
-                        } else {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color(hex: currentProject.colour))
-                                .frame(width: 36, height: 36)
-                        }
+                    header
 
-                        VStack(alignment: .leading, spacing: 3) {
-                            if !currentProject.description.isEmpty {
-                                Text(currentProject.description)
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Color.gMuted)
-                            }
-                            HStack(spacing: 8) {
-                                projectStatusChip(currentProject.status)
-                                Button {
-                                    showMilestones = true
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "leaf.fill")
-                                            .font(.system(size: 10))
-                                        Text("Milestones")
-                                            .font(.system(size: 11, weight: .medium))
-                                    }
-                                    .foregroundStyle(Color.gSage)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.gSage.opacity(0.12))
-                                    .clipShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
+                    ProjectLinksSection(projectId: project.id)
+                        .padding(.bottom, GraftMetrics.spaceS)
 
-                        Spacer()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 12)
+                    milestoneChips
 
-                    // Milestone filter chips
-                    if !projectMilestones.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                MilestoneFilterChip(title: "All", isSelected: selectedMilestoneId == nil) {
-                                    selectedMilestoneId = nil
-                                }
-                                ForEach(projectMilestones) { milestone in
-                                    MilestoneFilterChip(
-                                        title: milestone.name,
-                                        isSelected: selectedMilestoneId == milestone.id
-                                    ) {
-                                        selectedMilestoneId = selectedMilestoneId == milestone.id ? nil : milestone.id
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                        }
-                        Divider().background(Color.gHairline)
-                    }
-
-                    // View mode toggle
-                    Picker("View", selection: $viewMode) {
+                    // No `.colorScheme(.dark)` here any more. It was the only
+                    // appearance override in the codebase, and in light mode it
+                    // drew a dark segmented control on a white screen.
+                    Picker("View", selection: viewModeBinding) {
                         ForEach(ViewMode.allCases, id: \.self) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, GraftMetrics.gutter)
                     .padding(.vertical, 10)
-                    .colorScheme(.dark)
 
-                    Divider().background(Color.gHairline)
-
-                    Toggle(isOn: $showArchived) {
-                        Text("Show archived")
-                            .font(.system(size: GraftType.secondary))
-                            .foregroundStyle(Color.gMuted)
-                    }
-                    .toggleStyle(.switch)
-                    .tint(Color.gSage)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-
-                    // Issues content
-                    if projectIssues.isEmpty {
-                        GraftEmptyState(
-                            title: "Nothing growing here",
-                            subtitle: "Tap + to plant your first issue.",
-                            systemImage: "leaf"
-                        )
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 40)
-                    } else if viewMode == .list {
-                        listView
-                    } else {
-                        boardView
-                    }
+                    issuesContent
                 }
             }
             .scrollContentBackground(.hidden)
+            // Project detail had no refresh at all: the only way to pull was to
+            // go back to a tab root and pull there.
+            .refreshable { await store.sync() }
 
-            // FAB
-            Button {
-                showNewIssue = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(Color.gOnAccent)
-                    .frame(width: 56, height: 56)
-                    .background(Color.gAmber, in: Circle())
-                    .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
-            }
-            .padding(.trailing, 20)
-            .padding(.bottom, 28)
+            GraftFAB(label: "New issue") { showNewIssue = true }
         }
         .navigationTitle(currentProject.name)
         .navigationBarTitleDisplayMode(.large)
         .toolbarBackground(Color.gBg, for: .navigationBar)
+        .searchable(text: searchBinding, prompt: "Search issues in this project")
+        .onSubmit(of: .search) {
+            let snapshot = query
+            Task { await store.refreshIssues(matching: snapshot) }
+        }
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                FilterButton(query: query) { showFilters = true }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showEditProject = true
                 } label: {
                     Image(systemName: "pencil")
-                        .foregroundStyle(Color.gMuted)
+                        .foregroundStyle(Color.gInk2)
+                        .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                        .contentShape(Rectangle())
                 }
+                .accessibilityLabel("Edit project")
             }
+        }
+        .sheet(isPresented: $showFilters) {
+            FilterSortSheet(query: queryBinding, projectId: project.id)
         }
         .sheet(isPresented: $showNewIssue) {
             NewIssueView(projectId: project.id)
@@ -228,61 +202,229 @@ struct ProjectDetailView: View {
         }
     }
 
+    private var searchBinding: Binding<String> {
+        Binding(
+            get: { query.q },
+            set: { newValue in
+                var next = query
+                next.q = newValue
+                store.setProjectQuery(next, for: project.id)
+            }
+        )
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: GraftMetrics.spaceS) {
+            if !currentProject.icon.isEmpty {
+                Text(currentProject.icon)
+                    .font(.system(size: 28))
+                    .frame(width: 36, height: 36)
+            } else {
+                RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall)
+                    .fill(Color(hex: currentProject.colour))
+                    .frame(width: 36, height: 36)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                if !currentProject.description.isEmpty {
+                    Text(currentProject.description)
+                        .font(.system(size: GraftType.secondary))
+                        .foregroundStyle(Color.gInk2)
+                }
+                HStack(spacing: GraftMetrics.spaceXS) {
+                    projectStatusChip(currentProject.status)
+                    if let area = store.area(currentProject.areaId) {
+                        Text(area.name)
+                            .font(.system(size: GraftType.caption, weight: .medium))
+                            .foregroundStyle(Color.gInk2)
+                            .padding(.horizontal, GraftMetrics.spaceXS)
+                            .padding(.vertical, GraftMetrics.spaceXXS)
+                            .background(Color.gSurface2)
+                            .clipShape(Capsule())
+                    }
+                    Button {
+                        showMilestones = true
+                    } label: {
+                        HStack(spacing: GraftMetrics.spaceXXS) {
+                            Image(systemName: "flag.fill")
+                                .font(.system(size: 10))
+                            Text("Milestones")
+                                .font(.system(size: GraftType.caption, weight: .medium))
+                        }
+                        .foregroundStyle(Color.gAccentText)
+                        .padding(.horizontal, GraftMetrics.spaceXS)
+                        .background(Color.gAccentWash)
+                        .clipShape(Capsule())
+                        .frame(minHeight: GraftMetrics.tap)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, GraftMetrics.gutter)
+        .padding(.bottom, GraftMetrics.spaceS)
+    }
+
+    // MARK: - Milestone chips
+
+    @ViewBuilder
+    private var milestoneChips: some View {
+        if !projectMilestones.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: GraftMetrics.spaceXS) {
+                    MilestoneFilterChip(title: "All", isSelected: selectedMilestoneId == nil) {
+                        selectMilestone(nil)
+                    }
+                    ForEach(projectMilestones) { milestone in
+                        MilestoneFilterChip(
+                            title: milestone.name,
+                            isSelected: selectedMilestoneId == milestone.id
+                        ) {
+                            selectMilestone(selectedMilestoneId == milestone.id ? nil : milestone.id)
+                        }
+                    }
+                }
+                .padding(.horizontal, GraftMetrics.gutter)
+            }
+            Divider().background(Color.gHairline)
+        }
+    }
+
+    // MARK: - Issue content, and its states
+
+    @ViewBuilder
+    private var issuesContent: some View {
+        if allProjectIssues.isEmpty && store.isLoading {
+            GraftSkeletonList(count: 4)
+                .padding(.top, GraftMetrics.spaceS)
+
+        } else if allProjectIssues.isEmpty {
+            GraftEmptyState(
+                title: "Nothing growing here",
+                subtitle: "Tap + to plant your first issue.",
+                systemImage: "leaf"
+            )
+            .frame(maxWidth: .infinity)
+            .padding(.top, GraftMetrics.spaceL)
+
+        } else if projectIssues.isEmpty {
+            // The old code showed "Tap + to plant your first issue" here, about
+            // a project holding 41 of them, because a milestone filter matching
+            // nothing was indistinguishable from an empty project.
+            GraftNoResults(
+                searchText: query.q,
+                activeFilters: query.badgeCount,
+                clearTitle: "Clear filters"
+            ) {
+                var next = query
+                next.reset()
+                store.setProjectQuery(next, for: project.id)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, GraftMetrics.spaceL)
+
+        } else if query.group != .none {
+            groupedListView
+
+        } else if viewMode == .list {
+            listView
+
+        } else {
+            boardView
+        }
+    }
+
     // MARK: - List view
 
     @ViewBuilder
     var listView: some View {
         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-            ForEach(issuesByStatus, id: \.0) { (status, statusIssues) in
-                Section {
-                    ForEach(statusIssues) { issue in
-                        NavigationLink(destination: IssueDetailView(issue: issue)) {
-                            GraftIssueRow(
-                                issue: issue,
-                                due: GraftDate.dueLabel(store.milestone(issue.milestoneId)?.dueDate),
-                                showProject: false
-                            )
+            ForEach(issuesByStatus) { bucket in
+                if !bucket.issues.isEmpty {
+                    Section {
+                        ForEach(bucket.issues) { issue in
+                            issueRow(issue)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 4)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                pendingDelete = issue
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            Button {
-                                archive(issue)
-                            } label: {
-                                Label("Archive", systemImage: "archivebox")
-                            }
-                            .tint(Color.gSage)
-                        }
+                    } header: {
+                        statusHeader(bucket.id, count: bucket.issues.count)
                     }
-                } header: {
-                    HStack(spacing: 8) {
-                        let s = IssueStatus(rawValue: status) ?? .backlog
-                        Image(systemName: s.icon)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(s.color)
-                        Text(s.label)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.gMuted)
-                        Text("·")
-                            .foregroundStyle(Color.gHairline)
-                        Text("\(statusIssues.count)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color.gMuted)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.gBg)
                 }
             }
         }
         .padding(.bottom, 100)
+    }
+
+    /// The same list, grouped by whatever the filter sheet asked for.
+    @ViewBuilder
+    var groupedListView: some View {
+        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+            ForEach(store.groups(projectIssues, by: query.group)) { group in
+                Section {
+                    ForEach(group.issues) { issue in
+                        issueRow(issue)
+                    }
+                } header: {
+                    GraftSectionHeader(title: group.title, count: group.issues.count)
+                        .background(Color.gBg)
+                }
+            }
+        }
+        .padding(.bottom, 100)
+    }
+
+    @ViewBuilder
+    private func issueRow(_ issue: GraftIssue) -> some View {
+        NavigationLink(destination: IssueDetailView(issue: issue)) {
+            GraftIssueRow(
+                issue: issue,
+                due: GraftDate.dueLabel(store.milestone(issue.milestoneId)?.dueDate),
+                showProject: false
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, GraftMetrics.gutter)
+        .padding(.vertical, GraftMetrics.spaceXXS)
+        // A context menu, not .swipeActions: these rows live in a LazyVStack,
+        // and swipe actions are only wired up for rows of a List, so the swipe
+        // here did nothing at all. The Inbox rows use the same affordance.
+        .contextMenu {
+            Button {
+                archive(issue)
+            } label: {
+                Label(issue.archived ? "Unarchive" : "Archive", systemImage: "archivebox")
+            }
+            Button(role: .destructive) {
+                pendingDelete = issue
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
+    private func statusHeader(_ status: String, count: Int) -> some View {
+        let s = IssueStatus(rawValue: status) ?? .backlog
+        return HStack(spacing: GraftMetrics.spaceXS) {
+            StatusRing(status: s, size: 12)
+            Text(s.label)
+                .font(.system(size: GraftType.micro, weight: .semibold))
+                .kerning(GraftType.microTracking)
+                .foregroundStyle(Color.gInk2)
+            Text("\(count)")
+                .font(.system(size: GraftType.micro))
+                .foregroundStyle(Color.gInk2)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 1)
+                .background(Color.gSurface2, in: Capsule())
+            Spacer()
+        }
+        .padding(.horizontal, GraftMetrics.gutter)
+        .padding(.vertical, GraftMetrics.spaceXS)
+        .background(Color.gBg)
     }
 
     // MARK: - Board view
@@ -291,17 +433,17 @@ struct ProjectDetailView: View {
     var boardView: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: 10) {
-                ForEach(issuesByStatus, id: \.0) { (status, statusIssues) in
+                ForEach(issuesByStatus) { bucket in
                     KanbanColumn(
-                        status: status,
-                        issues: statusIssues,
-                        onAddIssue: { showNewIssueInStatus = status }
+                        status: bucket.id,
+                        issues: bucket.issues,
+                        onAddIssue: { showNewIssueInStatus = bucket.id }
                     )
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, GraftMetrics.gutter)
             .padding(.bottom, 100)
-            .padding(.top, 8)
+            .padding(.top, GraftMetrics.spaceXS)
         }
     }
 
@@ -311,17 +453,16 @@ struct ProjectDetailView: View {
     func projectStatusChip(_ status: String) -> some View {
         let color: Color = {
             switch status {
-            case "active": return .gSage
+            case "active": return .gAccent
             case "paused": return .gAmber
-            case "done": return .gTeal
-            default: return .gMuted
+            default: return .gInk2
             }
         }()
         Text(status)
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: GraftType.caption, weight: .medium))
             .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, GraftMetrics.spaceXS)
+            .padding(.vertical, GraftMetrics.spaceXXS)
             .background(color.opacity(0.12))
             .clipShape(Capsule())
     }
@@ -340,17 +481,16 @@ struct KanbanColumn: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Column header
-            HStack(spacing: 6) {
-                Image(systemName: statusInfo.icon)
-                    .font(.system(size: 11))
-                    .foregroundStyle(statusInfo.color)
+            HStack(spacing: GraftMetrics.spaceXXS + 2) {
+                StatusRing(status: statusInfo, size: 12)
                 Text(statusInfo.label)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.gMuted)
+                    .font(.system(size: GraftType.micro, weight: .semibold))
+                    .kerning(GraftType.microTracking)
+                    .foregroundStyle(Color.gInk2)
                 Spacer()
                 Text("\(issues.count)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.gMuted)
+                    .font(.system(size: GraftType.micro))
+                    .foregroundStyle(Color.gInk2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(Color.gSurface2)
@@ -363,21 +503,22 @@ struct KanbanColumn: View {
             VStack(spacing: 6) {
                 ForEach(issues) { issue in
                     KanbanCard(issue: issue)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, GraftMetrics.spaceXS)
                 }
 
                 // Add button
                 Button(action: onAddIssue) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: GraftMetrics.spaceXXS) {
                         Image(systemName: "plus")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
                         Text("Add issue")
-                            .font(.system(size: 12))
+                            .font(.system(size: GraftType.secondary))
                     }
-                    .foregroundStyle(Color.gMuted)
+                    .foregroundStyle(Color.gInk2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .frame(minHeight: GraftMetrics.tap)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -387,8 +528,11 @@ struct KanbanColumn: View {
         }
         .frame(width: 220)
         .background(Color.gSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gHairline, lineWidth: 0.5))
+        .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: GraftMetrics.radius)
+                .stroke(Color.gHairline, lineWidth: GraftMetrics.border)
+        )
     }
 }
 
@@ -399,74 +543,99 @@ struct KanbanCard: View {
     let issue: GraftIssue
 
     @State private var showStatusPicker = false
-    @State private var navigateToDetail = false
 
     let allStatuses = ["backlog", "todo", "in-progress", "review", "done"]
 
     var body: some View {
         let priority = IssuePriority(rawValue: issue.priority) ?? .normal
+        let labels = issue.labels.filter { !$0.isEmpty }
 
-        NavigationLink(destination: IssueDetailView(issue: issue)) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 0) {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(priority.color)
-                        .frame(width: 3, height: 14)
-                        .padding(.trailing, 6)
-                    Text(issue.title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Color.gInk)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                }
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS + 2) {
+            NavigationLink(destination: IssueDetailView(issue: issue)) {
+                VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS + 2) {
+                    HStack(spacing: 0) {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(priority.color)
+                            .frame(width: 3, height: 14)
+                            .padding(.trailing, 6)
+                        Text(issue.title)
+                            .font(.system(size: GraftType.secondary, weight: .medium))
+                            .foregroundStyle(Color.gInk)
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                    }
 
-                HStack(spacing: 6) {
-                    if let milestone = issue.milestoneName {
-                        MilestoneTag(name: milestone)
-                    }
-                    if !issue.assignee.isEmpty {
-                        Text("@\(issue.assignee)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.gMuted)
-                    }
-                }
-
-                // Status pill — tap to change without opening detail
-                Button {
-                    showStatusPicker = true
-                } label: {
-                    HStack(spacing: 4) {
-                        let s = IssueStatus(rawValue: issue.status) ?? .backlog
-                        Image(systemName: s.icon)
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(s.label)
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                    .foregroundStyle(statusColor(issue.status))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(statusColor(issue.status).opacity(0.12))
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .confirmationDialog("Move to…", isPresented: $showStatusPicker, titleVisibility: .visible) {
-                    ForEach(allStatuses.filter { $0 != issue.status }, id: \.self) { s in
-                        let label = IssueStatus(rawValue: s)?.label ?? s
-                        Button(label) {
-                            Task { try? await store.updateIssueStatus(id: issue.id, status: s) }
+                    if !labels.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(labels.prefix(2), id: \.self) { label in
+                                GraftLabelChip(text: label)
+                            }
+                            if labels.count > 2 {
+                                Text("+\(labels.count - 2)")
+                                    .font(.system(size: GraftType.caption, weight: .medium))
+                                    .foregroundStyle(Color.gInk3)
+                            }
+                            Spacer(minLength: 0)
                         }
+                    }
+
+                    HStack(spacing: GraftMetrics.spaceXXS + 2) {
+                        if let milestone = issue.milestoneName {
+                            MilestoneTag(name: milestone)
+                        }
+                        if !issue.assignee.isEmpty {
+                            Text("@\(issue.assignee)")
+                                .font(.system(size: GraftType.caption))
+                                .foregroundStyle(Color.gInk2)
+                        }
+                        Spacer(minLength: 0)
                     }
                 }
             }
-            .padding(10)
-            .background(Color.gSurface2)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .buttonStyle(.plain)
+
+            // Status pill — tap to change without opening detail.
+            //
+            // Outside the NavigationLink on purpose: nested inside one, the tap
+            // belonged to the link. And the visual pill is ~22pt, so it carries
+            // a 44pt hit area of its own rather than being the ~16pt target it
+            // used to be.
+            Button {
+                showStatusPicker = true
+            } label: {
+                HStack(spacing: GraftMetrics.spaceXXS) {
+                    let s = IssueStatus(rawValue: issue.status) ?? .backlog
+                    StatusRing(status: s, size: 10)
+                    Text(s.label)
+                        .font(.system(size: GraftType.micro, weight: .medium))
+                        .foregroundStyle(s.color)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(statusColor(issue.status).opacity(0.12))
+                .clipShape(Capsule())
+                .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Status, \(IssueStatus(rawValue: issue.status)?.label ?? issue.status). Change")
+            .confirmationDialog("Move to…", isPresented: $showStatusPicker, titleVisibility: .visible) {
+                ForEach(allStatuses.filter { $0 != issue.status }, id: \.self) { s in
+                    let label = IssueStatus(rawValue: s)?.label ?? s
+                    Button(label) {
+                        Task { try? await store.updateIssueStatus(id: issue.id, status: s) }
+                    }
+                }
+            }
         }
-        .buttonStyle(.plain)
+        .padding(10)
+        .background(Color.gSurface2)
+        .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
     }
 
     func statusColor(_ status: String) -> Color {
-        IssueStatus(rawValue: status)?.color ?? Color.gMuted
+        IssueStatus(rawValue: status)?.color ?? Color.gInk2
     }
 }
 
@@ -479,26 +648,32 @@ struct MilestoneFilterChip: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
+            HStack(spacing: GraftMetrics.spaceXXS) {
                 if isSelected {
-                    Image(systemName: "leaf.fill")
+                    Image(systemName: "flag.fill")
                         .font(.system(size: 10))
                 }
                 Text(title)
-                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: GraftType.secondary, weight: isSelected ? .semibold : .regular))
             }
-            .foregroundStyle(isSelected ? Color.gSage : Color.gMuted)
+            .foregroundStyle(isSelected ? Color.gAccentText : Color.gInk2)
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            // The chip reads at the small control height, but the thing you can
+            // hit is 44pt — it was a ~28pt target.
+            .frame(minHeight: GraftMetrics.controlSmall)
             .background(
-                isSelected ? Color.gSage.opacity(0.15) : Color.gSurface2,
-                in: RoundedRectangle(cornerRadius: 8)
+                isSelected ? Color.gAccentWash : Color.gSurface2,
+                in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? Color.gSage.opacity(0.3) : Color.gHairline, lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall)
+                    .stroke(isSelected ? Color.gAccent.opacity(0.35) : Color.gHairline,
+                            lineWidth: GraftMetrics.border)
             )
+            .frame(minHeight: GraftMetrics.tap)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }

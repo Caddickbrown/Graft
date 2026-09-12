@@ -39,21 +39,23 @@
         <h1 class="page-title">Projects</h1>
         <p class="page-subtitle" id="projects-subtitle">Loading…</p>
       </div>
-      <button class="btn btn-primary" onclick="GRAFT.openNewProject()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New project
-      </button>
+      <div class="header-actions">
+        <button class="btn btn-ghost" onclick="GRAFT.createArea()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          New area
+        </button>
+        <button class="btn btn-primary" onclick="GRAFT.openNewProject()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New project
+        </button>
+      </div>
     </header>
 
-    <div class="filter-bar">
-      <button class="filter-btn active" data-status="all" onclick="GRAFT.filterProjects('all', this)">All</button>
-      <button class="filter-btn" data-status="active" onclick="GRAFT.filterProjects('active', this)">Active</button>
-      <button class="filter-btn" data-status="paused" onclick="GRAFT.filterProjects('paused', this)">Paused</button>
-      <button class="filter-btn" data-status="done" onclick="GRAFT.filterProjects('done', this)">Done</button>
-      <button class="filter-btn" data-status="archived" onclick="GRAFT.filterProjects('archived', this)">Archived</button>
-    </div>
+    <!-- Search, filter, group, sort, view and save-view — the same component
+         on every list surface. Populated by app.js on load. -->
+    <div class="org-bar" id="org-bar"></div>
 
-    <div class="projects-grid" id="projects-grid">
+    <div id="projects-grid">
       <div class="loading-state">Loading projects…</div>
     </div>
   </main>
@@ -105,6 +107,12 @@
         </div>
       </div>
       <div class="form-group">
+        <label class="form-label" for="project-area">Area</label>
+        <select class="form-input" id="project-area">
+          <option value="">No area</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label class="form-label">Icon</label>
         <div class="icon-picker" id="icon-picker"></div>
         <input type="hidden" id="project-icon" value="">
@@ -117,7 +125,7 @@
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="app.js"></script>
 <script>GRAFT.init();</script>
 </body>

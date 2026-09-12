@@ -59,35 +59,16 @@
       </div>
     </header>
 
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap">
-    <div class="view-toggle" role="tablist" aria-label="View" style="margin-bottom:0">
-      <button class="view-btn active" id="btn-board" role="tab" aria-selected="true" onclick="GRAFT.setView('board', this)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="5" height="18" rx="1"/><rect x="9.5" y="3" width="5" height="18" rx="1"/><rect x="17" y="3" width="5" height="18" rx="1"/></svg>
-        Board
-      </button>
-      <button class="view-btn" id="btn-list" role="tab" aria-selected="false" onclick="GRAFT.setView('list', this)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        List
-      </button>
-    </div>
-      <button class="switch-btn" id="btn-archived" type="button" aria-pressed="false"
-              onclick="GRAFT.toggleArchivedIssues(this)">
-        <span class="switch-track"><span class="switch-knob"></span></span> Show archived
-      </button>
-    </div>
+    <!-- The project's related URLs. Replaces the half-built repo_url field,
+         which had no UI anywhere in the client. -->
+    <section class="links-section" id="project-links"></section>
 
-    <div class="milestone-filter" id="milestone-filter-bar" style="display:none">
-      <span class="filter-label">Milestone:</span>
-      <div id="milestone-filter-buttons"></div>
-    </div>
+    <!-- The same organisation bar as Projects and All issues: the milestone
+         pill bar and the archived switch are both filters in it now. -->
+    <div class="org-bar" id="org-bar"></div>
 
-    <!-- Board view -->
-    <div id="view-board" class="kanban-board">
-      <div class="loading-state">Loading…</div>
-    </div>
-
-    <!-- List view -->
-    <div id="view-list" class="issue-list" style="display:none">
+    <!-- Board or list, whichever the view switcher is set to. -->
+    <div id="project-issues">
       <div class="loading-state">Loading…</div>
     </div>
   </main>
@@ -227,6 +208,12 @@
         </div>
       </div>
       <div class="form-group">
+        <label class="form-label" for="project-area">Area</label>
+        <select class="form-input" id="project-area">
+          <option value="">No area</option>
+        </select>
+      </div>
+      <div class="form-group">
         <label class="form-label">Icon</label>
         <div class="icon-picker" id="icon-picker"></div>
         <input type="hidden" id="project-icon" value="">
@@ -274,7 +261,7 @@
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="app.js"></script>
 <script>GRAFT.initProject();</script>
 </body>

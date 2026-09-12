@@ -42,9 +42,6 @@
         <p class="page-subtitle" id="issues-subtitle">Loading…</p>
       </div>
       <div class="header-actions">
-        <label class="sr-only" for="filter-search">Search issues</label>
-        <input type="search" class="form-input search-input" id="filter-search"
-               placeholder="Search issues…" oninput="GRAFT._onSearchInput(this.value)">
         <button class="btn btn-primary" onclick="GRAFT.openNewIssue()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           New issue
@@ -52,7 +49,8 @@
       </div>
     </header>
 
-    <div class="chip-bar" id="chip-bar"></div>
+    <!-- The one organisation bar: search, filters, group, sort, view, save. -->
+    <div class="org-bar" id="org-bar"></div>
 
     <div class="issue-list" id="issue-list">
       <div class="loading-state">Loading issues…</div>
@@ -147,7 +145,7 @@
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <script src="app.js"></script>
 <script>GRAFT.initIssues();</script>
 </body>

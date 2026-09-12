@@ -4,18 +4,27 @@
 
   // Served by the Flask app itself, so talk to the same origin. Only fall
   // back to the Pi when the pages are opened from disk or a static server.
+  // The server is HTTPS-only now: an http:// fallback is refused outright
+  // rather than redirected, so the fallback moved with it.
   const API = window.GRAFT_API !== undefined
     ? window.GRAFT_API
     : (location.protocol === 'http:' || location.protocol === 'https:'
         ? ''
-        : 'http://raspberrypi.local:8911');
+        : 'https://raspberrypi.local:8911');
 
   // ── Core API ────────────────────────────────────────────────────
   async function api(method, path, body) {
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
     if (body !== undefined) opts.body = JSON.stringify(body);
     const r = await fetch(API + path, opts);
-    if (!r.ok) throw new Error(`${method} ${path} → ${r.status}`);
+    if (!r.ok) {
+      // Callers need to tell "the server said no" from "the request never
+      // arrived", so the status rides along on the error. It is for the code
+      // to branch on — never for the user to read.
+      const err = new Error(`${method} ${path} → ${r.status}`);
+      err.status = r.status;
+      throw err;
+    }
     if (r.status === 204) return null;
     return r.json();
   }
@@ -24,6 +33,11 @@
   function toast(msg, duration = 2200) {
     const el = document.getElementById('toast');
     if (!el) return;
+    // Every failure message in the client arrives through here. Without a live
+    // region a screen reader never heard one of them.
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.setAttribute('aria-atomic', 'true');
     el.textContent = msg;
     el.classList.add('show');
     setTimeout(() => el.classList.remove('show'), duration);
@@ -38,6 +52,10 @@
     ));
   }
 
+  // Ids are ours, not the user's, but they still end up inside a quoted JS
+  // string in an attribute — so they go through the same door.
+  function jsStr(v) { return esc(String(v ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")); }
+
   // ── Icons ───────────────────────────────────────────────────────
   // One drawn set, shared by the board, the list and every menu, so a
   // status looks the same everywhere and recolours with the theme.
@@ -46,7 +64,7 @@
     todo: '<circle cx="12" cy="12" r="9" stroke-dasharray="3.2 3.2"/>',
     'in-progress': '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/>',
     review: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/>',
-    done: '<circle cx="12" cy="12" r="9" fill="currentColor" stroke="none"/><path d="m8 12 2.5 2.5L16 9" stroke="var(--bg)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
+    done: '<circle cx="12" cy="12" r="9" fill="currentColor" stroke="none"/><path d="m8 12 2.5 2.5L16 9" stroke="var(--on-accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>',
   };
 
   const PRIORITY_ICON = {
@@ -56,9 +74,27 @@
     low:    '<path d="M12 5v14"/><path d="m5 12 7 7 7-7"/>',
   };
 
+  // A link's kind is a glyph, never a wordmark. The code-branch mark stands in
+  // for GitHub deliberately: the Octocat is copyrighted and this says the same
+  // thing without borrowing anyone's logo.
+  const LINK_ICON = {
+    github: '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+    docs:   '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/>',
+    design: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2"/>',
+    deploy: '<path d="M12 2 4 7v10l8 5 8-5V7z"/><path d="m4 7 8 5 8-5"/><path d="M12 12v10"/>',
+    link:   '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  };
+
+  const EXTERNAL_ICON = '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>';
+  const CHEVRON_DOWN = '<polyline points="6 9 12 15 18 9"/>';
+  const DOTS_ICON = '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>';
+  const STAR_ICON = '<path d="m12 3 2.6 5.6 6.1.8-4.5 4.2 1.2 6.1L12 16.8 6.6 19.7l1.2-6.1L3.3 9.4l6.1-.8z"/>';
+
   const PRIORITY_LABELS = { urgent: 'Urgent', high: 'High', normal: 'Normal', low: 'Low' };
   const PRIORITIES = ['urgent', 'high', 'normal', 'low'];
   const STATUSES = ['backlog', 'todo', 'in-progress', 'review', 'done'];
+  const PROJECT_STATUSES = ['active', 'paused', 'done'];
+  const PROJECT_STATUS_LABELS = { active: 'Active', paused: 'Paused', done: 'Done' };
 
   function svg(paths, size = 16, extra = '') {
     return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
@@ -129,6 +165,134 @@
     return `in ${d} days`;
   }
 
+  // ══════════════════════════════════════════════════════════════
+  //  The states — loading, empty, zero-results, error, stale
+  // ══════════════════════════════════════════════════════════════
+  // Six of the ten worst findings in the design review were a missing or a
+  // wrong state, so they are built once here and used by every surface. The
+  // four have to stay tellable apart at a glance: a skeleton is shaped like
+  // the content, an empty state names the thing and offers the one action, a
+  // zero-results state counts what it is hiding, and an error never pretends
+  // to be emptiness.
+
+  // Alternating the line lengths stops five identical bars reading as a
+  // spinner that has jammed.
+  function skeleton(kind = 'issue', n = 5) {
+    let rows = '';
+    for (let i = 0; i < n; i++) {
+      const width = i % 3 === 1 ? ' short' : (i % 3 === 2 ? '' : ' short');
+      if (kind === 'project') {
+        rows += `<div class="skeleton-card">
+            <span class="skeleton skeleton-line"></span>
+            <span class="skeleton skeleton-line short"></span>
+            <span class="skeleton skeleton-line tiny"></span>
+          </div>`;
+      } else if (kind === 'card') {
+        rows += `<div class="skeleton-card">
+            <span class="skeleton skeleton-line${width}"></span>
+            <span class="skeleton skeleton-line tiny"></span>
+          </div>`;
+      } else if (kind === 'link') {
+        rows += `<div class="skeleton-row">
+            <span class="skeleton skeleton-ring"></span>
+            <span class="skeleton skeleton-line short"></span>
+          </div>`;
+      } else {
+        rows += `<div class="skeleton-row">
+            <span class="skeleton skeleton-ring"></span>
+            <span class="skeleton skeleton-line${width}"></span>
+            <span class="skeleton skeleton-line tiny"></span>
+          </div>`;
+      }
+    }
+    return `<div class="skeleton-list" aria-hidden="true">${rows}</div>
+      <span class="sr-only" role="status">Loading…</span>`;
+  }
+
+  // The board's skeleton has to be board-shaped, or the columns snap into
+  // existence and shove the page down when the data lands.
+  function boardSkeleton() {
+    return `<div class="kanban-board">${STATUSES.map((st, n) => `
+      <div class="kanban-col" aria-hidden="true">
+        <div class="kanban-col-header">
+          <span class="skeleton skeleton-ring"></span>
+          <span class="skeleton skeleton-line short"></span>
+        </div>
+        ${skeleton('card', n === 4 ? 1 : 2)}
+      </div>`).join('')}</div>
+      <span class="sr-only" role="status">Loading the board…</span>`;
+  }
+
+  function emptyState({ icon = '', title, body = '', actionLabel = '', onAction = '' }) {
+    return `<div class="empty-state">
+      ${icon ? `<div class="empty-state-icon">${esc(icon)}</div>` : ''}
+      <div class="empty-state-title">${esc(title)}</div>
+      ${body ? `<div class="empty-state-body">${esc(body)}</div>` : ''}
+      ${actionLabel ? `<button class="btn btn-primary" type="button" style="margin-top:14px"
+         onclick="${onAction}">${esc(actionLabel)}</button>` : ''}
+    </div>`;
+  }
+
+  // "0 issues are hidden by the filters above" with no filters set was the
+  // single most confusing line in the client. This one cannot say that: it is
+  // only ever rendered when something really is filtered out, and it names
+  // both the count and the filters doing the hiding.
+  function noMatchState({ hidden, summary, onClear, noun = 'issues' }) {
+    return `<div class="empty-state state-no-match">
+      <div class="empty-state-title">No ${esc(noun)} match these filters</div>
+      <div class="empty-state-body">${hidden} ${esc(noun)} ${hidden === 1 ? 'is' : 'are'} hidden${
+        summary ? ` — ${esc(summary)}` : ''}.</div>
+      <button class="btn btn-ghost" type="button" style="margin-top:14px" onclick="${onClear}">Clear filters</button>
+    </div>`;
+  }
+
+  // A failure is never drawn as emptiness, and never quotes the error: the
+  // user has no use for "GET /api/projects → 500". They need to know what
+  // could not be reached and how to try again.
+  function errorState({ title = 'Can’t reach the Graft server', body = '', onRetry = '' } = {}) {
+    return `<div class="empty-state state-error" role="alert">
+      <div class="empty-state-icon">⚠</div>
+      <div class="empty-state-title">${esc(title)}</div>
+      <div class="empty-state-body">${esc(body || 'The server may be down, or this device may be offline. Nothing has been lost.')}</div>
+      ${onRetry ? `<button class="btn btn-ghost" type="button" style="margin-top:14px" onclick="${onRetry}">Try again</button>` : ''}
+    </div>`;
+  }
+
+  // ── Stale banner ────────────────────────────────────────────────
+  // A refresh that fails leaves the last good data on screen. That used to be
+  // announced by a toast that had vanished before you looked up, so the board
+  // in front of you was silently out of date. This says so, and stays.
+  let _lastGood = null;
+  let _staleRetry = null;
+
+  function markFresh() {
+    _lastGood = Date.now();
+    document.getElementById('stale-banner')?.remove();
+  }
+
+  function markStale(onRetry) {
+    _staleRetry = onRetry;
+    let el = document.getElementById('stale-banner');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'stale-banner';
+      el.className = 'stale-banner';
+      el.setAttribute('role', 'status');
+      const main = document.querySelector('.main');
+      const topbar = main?.querySelector('.mobile-topbar');
+      if (topbar) topbar.after(el);
+      else main?.prepend(el);
+    }
+    const when = _lastGood ? relTime(new Date(_lastGood).toISOString()) : 'earlier';
+    el.innerHTML = `<span class="stale-dot" aria-hidden="true"></span>
+      <span class="stale-text">Showing data from ${esc(when)} — the last refresh didn’t reach the server.</span>
+      <button class="btn btn-ghost btn-sm" type="button" data-act="retry">Retry</button>`;
+    el.querySelector('[data-act="retry"]').onclick = () => {
+      el.remove();
+      if (_staleRetry) _staleRetry();
+    };
+  }
+
   // ── Undo toast ──────────────────────────────────────────────────
   // Destructive actions apply immediately and offer a way back, instead of
   // asking a browser dialog to guess your intent up front.
@@ -141,6 +305,7 @@
       el.id = 'undo-toast';
       el.className = 'undo-toast';
       el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
       document.body.appendChild(el);
     }
     clearTimeout(_undoTimer);
@@ -152,6 +317,55 @@
     };
     requestAnimationFrame(() => el.classList.add('show'));
     _undoTimer = setTimeout(() => el.classList.remove('show'), duration);
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Focus management
+  // ══════════════════════════════════════════════════════════════
+  // Every overlay in the client used to leave focus behind it: you could tab
+  // into the page underneath a modal, and closing one dropped focus back to
+  // <body>. One trap, used by the modals, the slide-over and the palette.
+  const FOCUSABLE = [
+    'a[href]', 'button:not([disabled])', 'input:not([disabled])',
+    'select:not([disabled])', 'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])', '[contenteditable="true"]',
+  ].join(',');
+
+  const _traps = new Map();
+
+  function trapFocus(container, { autofocus = true } = {}) {
+    if (!container || _traps.has(container)) return;
+    const restore = document.activeElement;
+    const onKey = e => {
+      if (e.key !== 'Tab') return;
+      const items = [...container.querySelectorAll(FOCUSABLE)]
+        .filter(el => el.offsetWidth || el.offsetHeight || el === document.activeElement);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const inside = container.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault(); first.focus();
+      }
+    };
+    container.addEventListener('keydown', onKey);
+    _traps.set(container, { onKey, restore });
+    if (autofocus) {
+      const target = container.querySelector('[autofocus]') || container.querySelector(FOCUSABLE);
+      setTimeout(() => { try { target?.focus(); } catch { /* nothing focusable */ } }, 30);
+    }
+  }
+
+  function releaseFocus(container) {
+    const t = container && _traps.get(container);
+    if (!t) return;
+    container.removeEventListener('keydown', t.onKey);
+    _traps.delete(container);
+    // Focus goes back where it came from, so closing a modal does not dump a
+    // keyboard user at the top of the document.
+    if (t.restore && document.contains(t.restore)) { try { t.restore.focus(); } catch { /* gone */ } }
   }
 
   // ── Confirm dialog ──────────────────────────────────────────────
@@ -183,6 +397,7 @@
       document.body.appendChild(overlay);
       document.body.style.overflow = 'hidden';
 
+      const dialog = overlay.querySelector('.modal');
       const okBtn = overlay.querySelector('[data-act="ok"]');
       const typed = overlay.querySelector('#confirm-typed');
       if (typed) {
@@ -197,6 +412,7 @@
 
       function close(result) {
         document.removeEventListener('keydown', onKey, true);
+        releaseFocus(dialog);
         overlay.remove();
         document.body.style.overflow = '';
         resolve(result);
@@ -209,26 +425,106 @@
       overlay.addEventListener('click', e => { if (e.target === overlay) close(false); });
       overlay.querySelector('[data-act="cancel"]').onclick = () => close(false);
       okBtn.onclick = () => { if (!okBtn.disabled) close(true); };
+      trapFocus(dialog, { autofocus: false });
       setTimeout(() => (typed || okBtn).focus(), 30);
     });
   }
 
-  // ── Modal helpers ───────────────────────────────────────────────
-  function openModal(id) {
-    document.getElementById(id).style.display = 'flex';
-    document.body.style.overflow = 'hidden';
+  // ── Form dialog ─────────────────────────────────────────────────
+  // One small built-on-the-fly form, used where a whole markup modal would be
+  // three fields of ceremony: renaming, assigning in bulk, areas and links.
+  function formDialog({ title, fields, submitLabel = 'Save' }) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.style.display = 'flex';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}" style="max-width:420px">
+          <div class="modal-header"><h2 class="modal-title">${esc(title)}</h2>
+            <button class="modal-close" type="button" data-act="cancel" aria-label="Close">${svg(NAV_ICONS.close, 18)}</button>
+          </div>
+          <div class="modal-body">
+            ${fields.map((f, n) => `
+              <div class="form-group">
+                <label class="form-label" for="fd-${n}">${esc(f.label)}</label>
+                ${f.type === 'select'
+                  ? `<select class="form-input" id="fd-${n}">${(f.options || []).map(o =>
+                       `<option value="${esc(o.value)}" ${String(o.value) === String(f.value ?? '') ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`
+                  : `<input class="form-input" id="fd-${n}" type="${esc(f.type || 'text')}"
+                       value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}" autocomplete="off">`}
+                ${f.hint ? `<div class="form-hint">${esc(f.hint)}</div>` : ''}
+              </div>`).join('')}
+            <div class="modal-footer">
+              <button type="button" class="btn btn-ghost" data-act="cancel">Cancel</button>
+              <button type="button" class="btn btn-primary" data-act="ok">${esc(submitLabel)}</button>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      document.body.style.overflow = 'hidden';
+      const dialog = overlay.querySelector('.modal');
+
+      function close(result) {
+        document.removeEventListener('keydown', onKey, true);
+        releaseFocus(dialog);
+        overlay.remove();
+        document.body.style.overflow = '';
+        resolve(result);
+      }
+      function read() {
+        const out = {};
+        fields.forEach((f, n) => { out[f.name] = overlay.querySelector(`#fd-${n}`).value.trim(); });
+        return out;
+      }
+      function onKey(e) {
+        if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+        if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.stopPropagation(); close(read()); }
+      }
+      document.addEventListener('keydown', onKey, true);
+      overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+      overlay.querySelectorAll('[data-act="cancel"]').forEach(b => { b.onclick = () => close(null); });
+      overlay.querySelector('[data-act="ok"]').onclick = () => close(read());
+      trapFocus(dialog);
+    });
   }
+
+  function promptDialog(title, label, initial) {
+    return formDialog({ title, fields: [{ name: 'value', label, value: initial }] })
+      .then(r => (r === null ? null : r.value));
+  }
+
+  // ── Modal helpers ───────────────────────────────────────────────
+  // Each page carries only the modals it uses, and shared code asks for ids
+  // that may not be here — a missing one is nothing to do, not an error.
+  function openModal(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    const dialog = el.querySelector('.modal') || el;
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    trapFocus(dialog);
+  }
+
   function closeModal(id) {
-    document.getElementById(id).style.display = 'none';
+    const el = document.getElementById(id);
+    if (!el) return;
+    releaseFocus(el.querySelector('.modal') || el);
+    el.style.display = 'none';
     document.body.style.overflow = '';
   }
 
-  // Dismiss modals on overlay click
+  function anyModalOpen() {
+    return [...document.querySelectorAll('.modal-overlay')].some(m => m.style.display === 'flex')
+      || document.getElementById('issue-slideover')?.style.display === 'flex'
+      || !!document.getElementById('palette');
+  }
+
+  // Dismiss modals on overlay click — through closeModal so focus is restored
+  // and the trap is torn down, rather than just hiding the element.
   document.addEventListener('click', (e) => {
-    if (e.target.classList.contains('modal-overlay')) {
-      e.target.style.display = 'none';
-      document.body.style.overflow = '';
-    }
+    if (e.target.classList.contains('modal-overlay') && e.target.id) closeModal(e.target.id);
   });
 
   // ── Colour picker ───────────────────────────────────────────────
@@ -258,6 +554,7 @@
     backlog: 'Backlog', todo: 'Todo', 'in-progress': 'In progress',
     review: 'Review', done: 'Done',
   };
+
   function milestoneTag(name) {
     if (!name) return '';
     return `<span class="milestone-tag">${esc(name)}</span>`;
@@ -268,44 +565,1069 @@
     return `<span class="assignee-chip">${esc(name)}</span>`;
   }
 
-  // ── Sidebar project list ────────────────────────────────────────
-  async function renderSidebarProjects() {
+  // ══════════════════════════════════════════════════════════════
+  //  Shared caches
+  // ══════════════════════════════════════════════════════════════
+  let _allProjects = [];
+  let _allMilestones = [];
+  let _allIssues = [];
+  let _allAreas = [];
+  let _allViews = [];
+  let _allLinks = [];
+  // Every issue on the current surface, unfiltered. The filtered list cannot
+  // answer "what labels exist" or "how many are hidden" — once a filter is on,
+  // it only knows about what survived it.
+  let _facetIssues = [];
+  let _currentProjectId = null;
+  let _currentProject = null;
+  // Areas and views are new tables; a client talking to an older server gets a
+  // 404 for them. That is a degraded rail, not a broken page, so it is tracked
+  // separately and shown as its own small error rather than taking the page.
+  let _areasFailed = false;
+  let _viewsFailed = false;
+  // The rail's project list is the same on every page, so it is fetched once
+  // and invalidated by hand when a project is created, renamed or filed.
+  let _railProjects = null;
+
+  function areaName(id) {
+    if (!id) return 'No area';
+    return _allAreas.find(a => a.id === id)?.name || 'Unknown area';
+  }
+
+  function projectName(id) {
+    return _allProjects.find(p => p.id === id)?.name || 'Unknown project';
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Areas — the project grouping
+  // ══════════════════════════════════════════════════════════════
+  async function loadAreas() {
+    try {
+      _allAreas = await api('GET', '/api/areas');
+      _areasFailed = false;
+    } catch {
+      _allAreas = [];
+      _areasFailed = true;
+    }
+    return _allAreas;
+  }
+
+  // Sections remember whether they were folded away, per area, because a rail
+  // of twelve areas is only usable if the ones you never open stay shut.
+  const AREA_COLLAPSE_KEY = 'graft_areas_collapsed';
+
+  function collapsedAreas() {
+    try { return new Set(JSON.parse(localStorage.getItem(AREA_COLLAPSE_KEY) || '[]')); }
+    catch { return new Set(); }
+  }
+
+  async function createArea() {
+    const r = await formDialog({
+      title: 'New area',
+      submitLabel: 'Create area',
+      fields: [{ name: 'name', label: 'Name', placeholder: 'e.g. Client work' }],
+    });
+    if (!r || !r.name) return;
+    try {
+      await api('POST', '/api/areas', { name: r.name, sort_order: _allAreas.length });
+      await loadAreas();
+      toast('Area created');
+      renderProjects();
+      renderRail();
+    } catch { toast('Could not create the area'); }
+  }
+
+  async function renameArea(id) {
+    const area = _allAreas.find(a => a.id === id);
+    if (!area) return;
+    const r = await formDialog({
+      title: 'Rename area',
+      fields: [{ name: 'name', label: 'Name', value: area.name }],
+    });
+    if (!r || !r.name) return;
+    const previous = area.name;
+    area.name = r.name;
+    renderProjects();
+    renderRail();
+    try {
+      await api('PUT', `/api/areas/${id}`, { name: r.name });
+    } catch {
+      area.name = previous;
+      renderProjects();
+      renderRail();
+      toast('Could not rename the area');
+    }
+  }
+
+  // Deleting an area never deletes its projects — the server un-files them —
+  // and the dialog has to say so, or nobody will ever press the button.
+  async function deleteArea(id) {
+    const area = _allAreas.find(a => a.id === id);
+    if (!area) return;
+    const inside = _allProjects.filter(p => p.area_id === id).length;
+    const ok = await confirmDialog({
+      title: 'Delete this area?',
+      body: `<div class="confirm-text">“<span class="confirm-strong">${esc(area.name)}</span>” will be removed.</div>
+             <div class="confirm-detail">${inside
+               ? `Its ${inside} project${inside !== 1 ? 's' : ''} ${inside !== 1 ? 'are' : 'is'} kept — ${inside !== 1 ? 'they move' : 'it moves'} to “No area”.`
+               : 'It has no projects in it.'}</div>`,
+      confirmLabel: 'Delete area',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api('DELETE', `/api/areas/${id}`);
+      _allProjects.forEach(p => { if (p.area_id === id) p.area_id = ''; });
+      await loadAreas();
+      toast('Area deleted — its projects were kept');
+      renderProjects();
+      renderRail();
+    } catch { toast('Could not delete the area'); }
+  }
+
+  function _areaMenu(event, id) {
+    event.stopPropagation();
+    openMenu(event.currentTarget, [
+      { label: 'New project in this area', onClick: () => openNewProject(id) },
+      { label: 'Rename area', onClick: () => renameArea(id) },
+      { label: 'Delete area', danger: true, onClick: () => deleteArea(id) },
+    ]);
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Links — a project's related URLs
+  // ══════════════════════════════════════════════════════════════
+  // These replace the half-built projects.repo_url, which had no UI at all.
+  // repo_url is still in the schema for older clients; nothing here reads it.
+
+  function linkHost(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ''); }
+    catch { return String(url || '').replace(/^[a-z]+:\/\//i, '').split('/')[0]; }
+  }
+
+  // The kind is inferred from the hostname rather than asked for: a "type"
+  // dropdown on a form whose only real field is a URL is a question the app
+  // can answer itself.
+  function linkKind(url) {
+    const host = linkHost(url).toLowerCase();
+    if (/(^|\.)(github\.com|gitlab\.com|bitbucket\.org|codeberg\.org|sr\.ht)$/.test(host)) return 'github';
+    if (/(^|\.)(figma\.com|sketch\.com|dribbble\.com|excalidraw\.com|penpot\.app|framer\.com)$/.test(host)) return 'design';
+    if (/(^|\.)(notion\.so|notion\.site|readthedocs\.io|gitbook\.io|gitbook\.com|readme\.io)$/.test(host)
+        || /^docs?\./.test(host) || host.startsWith('docs.google.com')) return 'docs';
+    if (/(^|\.)(vercel\.app|netlify\.app|fly\.dev|herokuapp\.com|onrender\.com|pages\.dev|railway\.app)$/.test(host)
+        || /^(deploy|staging|status|ci)\./.test(host)) return 'deploy';
+    return 'link';
+  }
+
+  // A url the user typed without a scheme is still a url they meant. Only the
+  // three schemes that make sense for a link survive as-is: anything else —
+  // javascript://x%0aalert(1) included — is treated as a hostname and ends up
+  // behind https://, where it can only fail to resolve.
+  function normaliseUrl(url) {
+    const v = String(url || '').trim();
+    if (!v) return '';
+    if (/^(https?:\/\/|mailto:)/i.test(v)) return v;
+    return `https://${v.replace(/^[a-z][a-z0-9+.-]*:\/*/i, '')}`;
+  }
+
+  async function loadLinks(projectId) {
+    _allLinks = await api('GET', `/api/links?project_id=${encodeURIComponent(projectId)}`);
+    return _allLinks;
+  }
+
+  function linkRow(l) {
+    const kind = LINK_ICON[l.kind] ? l.kind : linkKind(l.url);
+    const href = esc(normaliseUrl(l.url));
+    return `<a class="link-row link-${esc(kind)}" href="${href}" target="_blank" rel="noopener noreferrer">
+      <span class="link-row-icon" aria-hidden="true">${svg(LINK_ICON[kind], 15)}</span>
+      <span class="link-row-label">${esc(l.label || linkHost(l.url))}</span>
+      <span class="link-row-url">${esc(linkHost(l.url))}</span>
+      <span class="link-row-actions">
+        <span class="link-row-external" aria-hidden="true">${svg(EXTERNAL_ICON, 13)}</span>
+        <button class="icon-btn" type="button" aria-haspopup="menu" title="Link actions"
+                aria-label="Actions for ${esc(l.label || linkHost(l.url))}"
+                onclick="event.preventDefault();event.stopPropagation();GRAFT._linkMenu(event,'${jsStr(l.id)}')">${svg(DOTS_ICON, 14)}</button>
+      </span>
+      <span class="sr-only">opens in a new tab</span>
+    </a>`;
+  }
+
+  function renderLinks(containerId, projectId) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    el.innerHTML = `
+      <div class="section-head">
+        <h2 class="section-title">Links</h2>
+        <span class="section-count">${_allLinks.length}</span>
+        <div class="section-rule"></div>
+      </div>
+      <div class="link-list">
+        ${_allLinks.map(l => linkRow(l)).join('')}
+        <button class="link-add" type="button" onclick="GRAFT._addLink('${jsStr(projectId)}')">
+          ${svg(NAV_ICONS.plus, 14)} Add link
+        </button>
+      </div>`;
+  }
+
+  async function _addLink(projectId) {
+    const r = await formDialog({
+      title: 'Add link',
+      submitLabel: 'Add link',
+      fields: [
+        { name: 'url', label: 'URL', placeholder: 'github.com/you/thing' },
+        { name: 'label', label: 'Label', placeholder: 'Repo', hint: 'Optional — the hostname is used if you leave it blank.' },
+      ],
+    });
+    if (!r || !r.url) return;
+    const url = normaliseUrl(r.url);
+    const body = {
+      project_id: projectId,
+      url,
+      label: r.label || linkHost(url),
+      kind: linkKind(url),
+      sort_order: _allLinks.length,
+    };
+    try {
+      await api('POST', '/api/links', body);
+      await loadLinks(projectId);
+      refreshLinkSurfaces(projectId);
+      toast('Link added');
+    } catch { toast('Could not add the link'); }
+  }
+
+  function _linkMenu(event, id) {
+    openMenu(event.currentTarget, [
+      { label: 'Edit link', onClick: () => _editLink(id) },
+      { label: 'Remove link', danger: true, onClick: () => _removeLink(id) },
+    ]);
+  }
+
+  async function _editLink(id) {
+    const link = _allLinks.find(l => l.id === id);
+    if (!link) return;
+    const r = await formDialog({
+      title: 'Edit link',
+      submitLabel: 'Save link',
+      fields: [
+        { name: 'url', label: 'URL', value: link.url },
+        { name: 'label', label: 'Label', value: link.label },
+      ],
+    });
+    if (!r || !r.url) return;
+    const url = normaliseUrl(r.url);
+    try {
+      await api('PUT', `/api/links/${id}`, { url, label: r.label || linkHost(url), kind: linkKind(url) });
+      await loadLinks(link.project_id);
+      refreshLinkSurfaces(link.project_id);
+      toast('Link saved');
+    } catch { toast('Could not save the link'); }
+  }
+
+  // Removing is undoable rather than confirmed: the id is ours to supply, so
+  // putting the link back is the same POST that created it.
+  async function _removeLink(id) {
+    const link = _allLinks.find(l => l.id === id);
+    if (!link) return;
+    const pid = link.project_id;
+    try {
+      await api('DELETE', `/api/links/${id}`);
+      await loadLinks(pid);
+      refreshLinkSurfaces(pid);
+      undoToast(`Removed ${link.label || linkHost(link.url)}`, async () => {
+        await api('POST', '/api/links', {
+          id: link.id, project_id: pid, label: link.label, url: link.url,
+          kind: link.kind, sort_order: link.sort_order,
+        });
+        await loadLinks(pid);
+        refreshLinkSurfaces(pid);
+      });
+    } catch { toast('Could not remove the link'); }
+  }
+
+  // The same list can be on screen twice — the project page and the slide-over
+  // behind it — so both are refreshed from the one cache.
+  function refreshLinkSurfaces(projectId) {
+    if (document.getElementById('project-links')) renderLinks('project-links', projectId);
+    if (document.getElementById('so-links')) renderLinks('so-links', projectId);
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Saved views
+  // ══════════════════════════════════════════════════════════════
+  async function loadViews() {
+    try {
+      _allViews = await api('GET', '/api/views');
+      _viewsFailed = false;
+    } catch {
+      _allViews = [];
+      _viewsFailed = true;
+    }
+    return _allViews;
+  }
+
+  // views.query is an opaque JSON blob both clients agree on. A server that
+  // hands it back already parsed is just as valid as one that hands back the
+  // string it stored, so both are accepted.
+  function viewBlob(v) {
+    if (!v) return orgDefaults();
+    const raw = v.query;
+    if (raw && typeof raw === 'object') return orgNormalise(raw);
+    try { return orgNormalise(JSON.parse(raw || '{}')); }
+    catch { return orgDefaults(); }
+  }
+
+  async function saveCurrentView() {
+    const r = await formDialog({
+      title: 'Save this view',
+      submitLabel: 'Save view',
+      fields: [{ name: 'name', label: 'Name', placeholder: 'e.g. My urgent work', value: suggestViewName() }],
+    });
+    if (!r || !r.name) return;
+    try {
+      await api('POST', '/api/views', {
+        name: r.name,
+        query: JSON.stringify(_org),
+        sort_order: _allViews.length,
+      });
+      await loadViews();
+      renderRail();
+      toast('View saved');
+    } catch { toast('Could not save the view'); }
+  }
+
+  // A name made from what is actually filtered beats an empty field.
+  function suggestViewName() {
+    const parts = [];
+    if (_org.q) parts.push(`“${_org.q}”`);
+    ORG_KEYS.forEach(k => {
+      if (_org.filters[k]?.length) parts.push(filterValueLabel(k, _org.filters[k]));
+    });
+    return parts.slice(0, 2).join(' · ');
+  }
+
+  function applySavedView(id) {
+    const view = _allViews.find(v => v.id === id);
+    if (!view) return;
+    const blob = viewBlob(view);
+    // A saved view is a whole query, not a page. It lands on All issues, which
+    // is the only surface that can honour every filter in the blob.
+    const target = window._pageMode === 'issues' ? null : 'issues.html';
+    if (target) {
+      window.location.href = target + orgToURLString(blob);
+      return;
+    }
+    _org = blob;
+    orgPersist();
+    orgWriteURL();
+    renderOrgBar();
+    orgApply();
+  }
+
+  async function deleteSavedView(id) {
+    const view = _allViews.find(v => v.id === id);
+    const ok = await confirmDialog({
+      title: 'Delete this view?',
+      body: `<div class="confirm-text">“<span class="confirm-strong">${esc(view?.name || 'This view')}</span>” will be removed.</div>
+             <div class="confirm-detail">It is only a saved set of filters — no issues or projects are affected.</div>`,
+      confirmLabel: 'Delete view',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api('DELETE', `/api/views/${id}`);
+      await loadViews();
+      renderRail();
+      toast('View deleted');
+    } catch { toast('Could not delete the view'); }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  The rail — areas as a tree, then every project, then saved views
+  // ══════════════════════════════════════════════════════════════
+  async function renderRail() {
     const el = document.getElementById('sidebar-projects');
     if (!el) return;
     try {
-      const projects = await api('GET', '/api/projects');
       // Paused and done projects were invisible here — you could not navigate
       // to a project you had paused. Archived ones stay out.
+      const projects = _railProjects || (_railProjects = await api('GET', '/api/projects'));
       const rank = { active: 0, paused: 1, done: 2 };
       const active = projects
         .filter(p => !p.archived)
         .sort((a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3));
-      if (!active.length) { el.innerHTML = ''; return; }
       const current = new URLSearchParams(window.location.search).get('id');
+      const collapsed = collapsedAreas();
+
+      // Areas first, as a tree, so the rail mirrors how the projects page is
+      // now grouped. A project with no area appears only in the flat list.
+      const areaTree = _allAreas.map(a => {
+        const inside = active.filter(p => p.area_id === a.id);
+        const shut = collapsed.has(a.id);
+        return `
+          <div class="area-section${shut ? ' collapsed' : ''}">
+            <button class="area-header" type="button" aria-expanded="${!shut}"
+                    onclick="GRAFT._toggleRailArea('${jsStr(a.id)}')">
+              <span class="area-dot" aria-hidden="true" ${a.colour ? `style="background:${esc(a.colour)}"` : ''}></span>
+              <span class="area-header-name">${esc(a.name)}</span>
+              <span class="area-header-count">${inside.length}</span>
+            </button>
+            ${shut ? '' : `<div class="area-section-body">${
+              inside.length
+                ? inside.map(p => railProjectItem(p, current)).join('')
+                : `<div class="rail-empty">No projects</div>`
+            }</div>`}
+          </div>`;
+      }).join('');
+
       el.innerHTML = `
-        <div class="nav-section-label">Projects</div>
-        ${active.map(p => {
-          const c = p.issue_counts || {};
-          const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
-          return `
-          <a href="project.html?id=${esc(p.id)}" class="nav-item${p.id === current ? ' active' : ''}"
-             ${p.status !== 'active' ? `title="${esc(p.name)} — ${esc(p.status)}" style="opacity:.7"` : ''}>
-            ${p.icon ? `<span class="nav-project-icon">${esc(p.icon)}</span>` : `<span class="nav-project-dot" style="background:${esc(p.colour)}"></span>`}
-            ${esc(p.name)}
-            ${open ? `<span style="margin-left:auto;font-size:11.5px;color:var(--dim)">${open}</span>` : ''}
-          </a>`;
-        }).join('')}
+        ${_allAreas.length ? `<div class="nav-section-label">Areas</div>${areaTree}` : ''}
+        ${_areasFailed ? `<div class="nav-section-label">Areas</div>
+          <div class="rail-error">Couldn’t load areas.
+            <button class="chip-clear" type="button" onclick="GRAFT._retryRail()">Retry</button></div>` : ''}
+        ${active.length ? `<div class="nav-section-label">Projects</div>
+          ${active.map(p => railProjectItem(p, current)).join('')}`
+          : `<div class="nav-section-label">Projects</div>
+             <div class="rail-empty">No projects yet.
+               <a href="index.html">Create one</a></div>`}
+        ${renderRailViews()}
       `;
       syncDrawer();
-    } catch { el.innerHTML = ''; }
+    } catch {
+      // A failed load used to be indistinguishable from having no projects:
+      // catch { el.innerHTML = '' }. Say what happened and offer the way back.
+      el.innerHTML = `
+        <div class="nav-section-label">Projects</div>
+        <div class="rail-error">Couldn’t load your projects.
+          <button class="chip-clear" type="button" onclick="GRAFT._retryRail()">Retry</button>
+        </div>`;
+      syncDrawer();
+    }
   }
 
-  // ── Issue card / row rendering ──────────────────────────────────
+  function railProjectItem(p, current) {
+    const c = p.issue_counts || {};
+    const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
+    return `
+      <a href="project.html?id=${esc(p.id)}" class="nav-item${p.id === current ? ' active' : ''}"
+         ${p.status !== 'active' ? `title="${esc(p.name)} — ${esc(p.status)}" style="opacity:.7"` : ''}>
+        ${p.icon ? `<span class="nav-project-icon">${esc(p.icon)}</span>`
+                 : `<span class="nav-project-dot" style="background:${esc(p.colour)}"></span>`}
+        ${esc(p.name)}
+        ${open ? `<span style="margin-left:auto;font-size:11.5px;color:var(--dim)">${open}</span>` : ''}
+      </a>`;
+  }
+
+  function renderRailViews() {
+    if (_viewsFailed) {
+      return `<div class="nav-section-label">Views</div>
+        <div class="rail-error">Couldn’t load saved views.
+          <button class="chip-clear" type="button" onclick="GRAFT._retryRail()">Retry</button></div>`;
+    }
+    if (!_allViews.length) return '';
+    return `<div class="nav-section-label">Views</div>
+      ${_allViews.map(v => `
+        <div class="view-item">
+          <button class="view-item-name" type="button" onclick="GRAFT._applyView('${jsStr(v.id)}')">
+            ${svg(STAR_ICON, 14)} ${esc(v.name)}
+          </button>
+          <span class="view-item-actions">
+            <button class="icon-btn" type="button" title="Delete view"
+                    aria-label="Delete view ${esc(v.name)}"
+                    onclick="GRAFT._deleteView('${jsStr(v.id)}')">${svg(NAV_ICONS.close, 13)}</button>
+          </span>
+        </div>`).join('')}`;
+  }
+
+  function _toggleRailArea(id) {
+    const set = collapsedAreas();
+    if (set.has(id)) set.delete(id); else set.add(id);
+    try { localStorage.setItem(AREA_COLLAPSE_KEY, JSON.stringify([...set])); } catch { /* private mode */ }
+    renderRail();
+    if (window._pageMode === 'projects') renderProjects();
+  }
+
+  async function _retryRail() {
+    _railProjects = null;
+    await Promise.all([loadAreas(), loadViews()]);
+    renderRail();
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Menus — one popover for every dropdown in the client
+  // ══════════════════════════════════════════════════════════════
+  function closeMenus() {
+    document.querySelectorAll('.popover').forEach(p => p.remove());
+  }
+
+  function openMenu(anchorEl, items, { label = '', above = false } = {}) {
+    closeMenus();
+    const pop = document.createElement('div');
+    pop.className = 'popover';
+    pop.setAttribute('role', 'menu');
+    pop.innerHTML = (label ? `<div class="popover-label">${esc(label)}</div>` : '') +
+      items.map((it, n) => it.separator
+        ? `<div class="popover-sep"></div>`
+        : `<button class="popover-item${it.danger ? ' popover-item-danger' : ''}" type="button" data-n="${n}"
+             ${it.checked !== undefined ? `role="menuitemcheckbox" aria-checked="${!!it.checked}"` : 'role="menuitem"'}>
+            ${it.icon || ''}<span>${esc(it.label)}</span>
+            ${it.checked !== undefined ? `<span class="popover-check">${svg('<path d="m5 12 5 5 9-10"/>', 14)}</span>` : ''}
+          </button>`).join('');
+    document.body.appendChild(pop);
+    positionPopover(pop, anchorEl, above);
+    pop.querySelectorAll('[data-n]').forEach(b => {
+      const it = items[+b.dataset.n];
+      b.onclick = ev => {
+        ev.stopPropagation();
+        if (!it.keepOpen) pop.remove();
+        it.onClick?.(b);
+      };
+    });
+    dismissOnOutsideClick(pop);
+    return pop;
+  }
+
+  function positionPopover(pop, anchorEl, above = false) {
+    const r = anchorEl.getBoundingClientRect();
+    const top = above
+      ? r.top + window.scrollY - pop.offsetHeight - 8
+      : Math.min(r.bottom + 6, window.innerHeight - pop.offsetHeight - 12) + window.scrollY;
+    pop.style.top = `${Math.max(8, top)}px`;
+    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - pop.offsetWidth - 12))}px`;
+  }
+
+  function dismissOnOutsideClick(pop) {
+    setTimeout(() => {
+      document.addEventListener('click', function off(ev) {
+        if (pop.contains(ev.target)) return;
+        pop.remove();
+        document.removeEventListener('click', off);
+      });
+    }, 0);
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  The organisation bar
+  // ══════════════════════════════════════════════════════════════
+  // [search ⌘K] [chips…] [+ Filter] ⟨spacer⟩ [Group ▾] [Sort ▾] [view] [☆]
+  //
+  // There used to be three filtering paradigms — a pill bar on projects, a
+  // chip-and-popover system on all-issues, a milestone pill bar on a project —
+  // and "archived" was rendered three different ways between them. This is the
+  // only one now, identical on all three surfaces, and it is the first place
+  // labels have ever been filterable despite being drawn on every row.
+
+  const ORG_KEYS = ['status', 'priority', 'assignee', 'label', 'project_id', 'milestone_id', 'area_id'];
+
+  const FILTER_LABELS = {
+    status: 'Status', priority: 'Priority', assignee: 'Assignee', label: 'Label',
+    project_id: 'Project', milestone_id: 'Milestone', area_id: 'Area',
+  };
+
+  const SORT_LABELS = {
+    manual: 'Manual', updated: 'Updated', created: 'Created', priority: 'Priority',
+    title: 'Title', status: 'Status', milestone_due: 'Milestone due',
+  };
+
+  const GROUP_LABELS = {
+    none: 'None', status: 'Status', priority: 'Priority', assignee: 'Assignee',
+    milestone: 'Milestone', project: 'Project', area: 'Area',
+  };
+
+  const ALL_SORTS = ['manual', 'updated', 'created', 'priority', 'title', 'status', 'milestone_due'];
+  const ALL_GROUPS = ['none', 'status', 'priority', 'assignee', 'milestone', 'project', 'area'];
+
+  function orgDefaults() {
+    return {
+      q: '',
+      filters: { status: [], priority: [], assignee: [], label: [], project_id: [], milestone_id: [], area_id: [] },
+      archived: false,
+      sort: 'manual',
+      dir: 'asc',
+      group: 'none',
+    };
+  }
+
+  function orgNormalise(blob) {
+    const out = orgDefaults();
+    if (!blob || typeof blob !== 'object') return out;
+    out.q = typeof blob.q === 'string' ? blob.q : '';
+    ORG_KEYS.forEach(k => {
+      const v = blob.filters?.[k];
+      out.filters[k] = Array.isArray(v) ? v.map(String).filter(Boolean) : [];
+    });
+    out.archived = !!blob.archived;
+    out.sort = ALL_SORTS.includes(blob.sort) ? blob.sort : 'manual';
+    out.dir = blob.dir === 'desc' ? 'desc' : 'asc';
+    out.group = ALL_GROUPS.includes(blob.group) ? blob.group : 'none';
+    return out;
+  }
+
+  let _org = orgDefaults();
+  let _orgName = null;      // which surface's config is mounted
+  let _orgSearchTimer = null;
+
+  // Each surface declares which filters make sense on it and what a "view" is
+  // there. Everything else about the bar is identical.
+  const ORG_SURFACES = {
+    projects: {
+      noun: 'projects',
+      placeholder: 'Search projects…',
+      keys: ['status', 'area_id'],
+      // Priority and milestone-due are issue properties; offering them as a
+      // project sort would be a menu item that does nothing.
+      sorts: ['manual', 'updated', 'created', 'title', 'status'],
+      groups: ['none', 'status', 'area'],
+      views: [['grid', 'Grid'], ['list', 'List']],
+      // Archived projects are a different set of rows, not a different way of
+      // drawing the ones already here, so this refetches.
+      apply: () => loadProjects(),
+    },
+    issues: {
+      noun: 'issues',
+      placeholder: 'Search issues…',
+      keys: ORG_KEYS,
+      sorts: ALL_SORTS,
+      groups: ALL_GROUPS,
+      views: [['list', 'List'], ['board', 'Board']],
+      apply: () => loadIssuesPage(),
+    },
+    project: {
+      noun: 'issues',
+      placeholder: 'Search this project…',
+      // project_id and area_id are fixed by the page you are on.
+      keys: ['status', 'priority', 'assignee', 'label', 'milestone_id'],
+      sorts: ALL_SORTS,
+      groups: ['none', 'status', 'priority', 'assignee', 'milestone'],
+      views: [['board', 'Board'], ['list', 'List']],
+      apply: () => loadProjectIssues(),
+    },
+  };
+
+  function orgSurface() { return ORG_SURFACES[_orgName] || ORG_SURFACES.issues; }
+
+  // ── State in the URL, and surviving the trip to the next page ──
+  // The URL is the shareable copy. localStorage is why the state no longer
+  // resets the moment you click through to a project and back.
+  function orgStorageKey() { return `graft_org_${_orgName}`; }
+
+  function orgFromURL() {
+    const q = new URLSearchParams(window.location.search);
+    const hasAny = ['q', 'archived', 'sort', 'dir', 'group', ...ORG_KEYS].some(k => q.has(k));
+    if (!hasAny) return null;
+    const blob = orgDefaults();
+    blob.q = q.get('q') || '';
+    ORG_KEYS.forEach(k => {
+      const v = q.get(k);
+      blob.filters[k] = v ? v.split(',').filter(Boolean) : [];
+    });
+    blob.archived = q.get('archived') === '1';
+    blob.sort = q.get('sort') || 'manual';
+    blob.dir = q.get('dir') || 'asc';
+    blob.group = q.get('group') || 'none';
+    return orgNormalise(blob);
+  }
+
+  function orgToURLString(blob) {
+    const q = new URLSearchParams();
+    if (blob.q) q.set('q', blob.q);
+    ORG_KEYS.forEach(k => { if (blob.filters[k]?.length) q.set(k, blob.filters[k].join(',')); });
+    if (blob.archived) q.set('archived', '1');
+    if (blob.sort !== 'manual') q.set('sort', blob.sort);
+    if (blob.dir !== 'asc') q.set('dir', blob.dir);
+    if (blob.group !== 'none') q.set('group', blob.group);
+    const s = q.toString();
+    return s ? `?${s}` : '';
+  }
+
+  function orgWriteURL() {
+    // Start from what is already there so the project id and any ?issue=
+    // deep link survive a filter change.
+    const q = new URLSearchParams(window.location.search);
+    ['q', 'archived', 'sort', 'dir', 'group', ...ORG_KEYS].forEach(k => q.delete(k));
+    if (_org.q) q.set('q', _org.q);
+    ORG_KEYS.forEach(k => { if (_org.filters[k].length) q.set(k, _org.filters[k].join(',')); });
+    if (_org.archived) q.set('archived', '1');
+    if (_org.sort !== 'manual') q.set('sort', _org.sort);
+    if (_org.dir !== 'asc') q.set('dir', _org.dir);
+    if (_org.group !== 'none') q.set('group', _org.group);
+    const s = q.toString();
+    history.replaceState(null, '', s ? `?${s}` : window.location.pathname);
+  }
+
+  function orgPersist() {
+    try { localStorage.setItem(orgStorageKey(), JSON.stringify(_org)); } catch { /* private mode */ }
+  }
+
+  function orgInit(name) {
+    _orgName = name;
+    const fromURL = orgFromURL();
+    if (fromURL) {
+      _org = fromURL;
+    } else {
+      try { _org = orgNormalise(JSON.parse(localStorage.getItem(orgStorageKey()) || 'null')); }
+      catch { _org = orgDefaults(); }
+      // Areas are what the projects page is for, so that is where it starts.
+      if (name === 'projects' && !localStorage.getItem(orgStorageKey())) _org.group = 'area';
+    }
+    orgPersist();
+    orgWriteURL();
+  }
+
+  // ── Talking to the server ──────────────────────────────────────
+  // Every filter here is a real query parameter; nothing is filtered twice.
+  function orgQuery(extra = {}) {
+    const q = new URLSearchParams();
+    if (_org.q) q.set('q', _org.q);
+    ORG_KEYS.forEach(k => { if (_org.filters[k].length) q.set(k, _org.filters[k].join(',')); });
+    if (_org.archived) q.set('archived', '1');
+    q.set('sort', _org.sort);
+    q.set('dir', _org.dir);
+    Object.entries(extra).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') q.set(k, v); });
+    const s = q.toString();
+    return s ? `?${s}` : '';
+  }
+
+  function orgActiveCount() {
+    return orgSurface().keys.reduce((n, k) => n + (_org.filters[k].length ? 1 : 0), 0)
+      + (_org.archived ? 1 : 0);
+  }
+
+  function orgIsFiltering() { return orgActiveCount() > 0 || !!_org.q; }
+
+  // ── Option sets ────────────────────────────────────────────────
+  function filterOptions(key) {
+    if (key === 'status') {
+      return _orgName === 'projects'
+        ? PROJECT_STATUSES.map(v => ({ v, label: PROJECT_STATUS_LABELS[v] }))
+        : STATUSES.map(v => ({ v, label: STATUS_LABELS[v], icon: statusIcon(v, 15) }));
+    }
+    if (key === 'priority') return PRIORITIES.map(v => ({ v, label: PRIORITY_LABELS[v] }));
+    // These two are drawn from the unfiltered set: filtering by one label must
+    // not remove every other label from the menu you are standing in.
+    const vocabulary = _facetIssues.length ? _facetIssues : _allIssues;
+    if (key === 'assignee') {
+      // No "Unassigned" option: the server's multi-value reader drops empty
+      // fragments, so ?assignee= would silently mean "no filter at all".
+      return [...new Set(vocabulary.map(i => i.assignee).filter(Boolean))].sort()
+        .map(v => ({ v, label: v }));
+    }
+    if (key === 'label') {
+      const seen = new Set();
+      vocabulary.forEach(i => (i.labels || []).forEach(l => seen.add(l)));
+      return [...seen].sort().map(v => ({ v, label: v }));
+    }
+    if (key === 'project_id') return _allProjects.map(p => ({ v: p.id, label: p.name }));
+    if (key === 'milestone_id') {
+      const ms = _orgName === 'project'
+        ? _allMilestones.filter(m => m.project_id === _currentProjectId)
+        : _allMilestones;
+      return [{ v: 'none', label: 'No milestone' }, ...ms.map(m => ({ v: m.id, label: m.name }))];
+    }
+    if (key === 'area_id') {
+      return [{ v: 'none', label: 'No area' }, ..._allAreas.map(a => ({ v: a.id, label: a.name }))];
+    }
+    return [];
+  }
+
+  function filterValueLabel(key, values) {
+    const opts = filterOptions(key);
+    return values.map(v => opts.find(o => String(o.v) === String(v))?.label || v).join(', ');
+  }
+
+  // Reads back as a sentence, for the zero-results state and the view name.
+  function orgFilterSummary() {
+    const parts = orgSurface().keys
+      .filter(k => _org.filters[k].length)
+      .map(k => `${FILTER_LABELS[k]} is ${filterValueLabel(k, _org.filters[k])}`);
+    if (_org.archived) parts.push('archived included');
+    if (_org.q) parts.unshift(`search “${_org.q}”`);
+    return parts.join(', ');
+  }
+
+  // ── Rendering ──────────────────────────────────────────────────
+  function renderOrgBar() {
+    const bar = document.getElementById('org-bar');
+    if (!bar) return;
+    const s = orgSurface();
+    const chips = s.keys.filter(k => _org.filters[k].length).map(k => `
+      <span class="chip">
+        <span class="chip-key">${esc(FILTER_LABELS[k])}</span> is
+        <span class="chip-val">${esc(filterValueLabel(k, _org.filters[k]))}</span>
+        <button class="chip-x" type="button" aria-label="Remove ${esc(FILTER_LABELS[k])} filter"
+                onclick="GRAFT._clearFilter('${k}')">${svg(NAV_ICONS.close, 11, 'stroke-width="2.5"')}</button>
+      </span>`).join('');
+
+    const archivedChip = _org.archived ? `
+      <span class="chip">
+        <span class="chip-key">Archived</span> <span class="chip-val">included</span>
+        <button class="chip-x" type="button" aria-label="Stop including archived"
+                onclick="GRAFT._toggleArchived()">${svg(NAV_ICONS.close, 11, 'stroke-width="2.5"')}</button>
+      </span>` : '';
+
+    bar.innerHTML = `
+      <div class="org-search">
+        <span class="org-search-icon" aria-hidden="true">${svg(NAV_ICONS.search, 14)}</span>
+        <input type="search" class="search-input org-search-input" id="org-q"
+               value="${esc(_org.q)}" placeholder="${esc(s.placeholder)}"
+               aria-label="${esc(s.placeholder)}" autocomplete="off" spellcheck="false">
+        <span class="kbd" aria-hidden="true">⌘K</span>
+      </div>
+      <div class="org-chips">
+        ${chips}${archivedChip}
+        <button class="chip-add" type="button" id="org-add-filter" aria-haspopup="menu">
+          ${svg(NAV_ICONS.plus, 13, 'stroke-width="2.5"')} Filter
+        </button>
+        ${orgIsFiltering() ? `<button class="chip-clear" type="button" onclick="GRAFT._clearAllFilters()">Clear all</button>` : ''}
+      </div>
+      <span class="org-spacer" style="flex:1"></span>
+      <span class="org-sep" aria-hidden="true"></span>
+      <button class="org-control" type="button" id="org-group" aria-haspopup="menu">
+        <span class="org-control-label">Group</span>${esc(GROUP_LABELS[_org.group])}${svg(CHEVRON_DOWN, 12)}
+      </button>
+      <button class="org-control" type="button" id="org-sort" aria-haspopup="menu">
+        <span class="org-control-label">Sort</span>${esc(SORT_LABELS[_org.sort])}${svg(CHEVRON_DOWN, 12)}
+      </button>
+      <button class="org-dir" type="button" id="org-dir"
+              title="${_org.dir === 'asc' ? 'Ascending' : 'Descending'}"
+              aria-label="Sort direction: ${_org.dir === 'asc' ? 'ascending' : 'descending'}">${_org.dir === 'asc' ? '↑' : '↓'}</button>
+      ${s.views.length > 1 ? `<div class="view-toggle" role="tablist" aria-label="View">
+        ${s.views.map(([v, label]) => `
+          <button class="view-btn${_viewMode === v ? ' active' : ''}" type="button" role="tab"
+                  aria-selected="${_viewMode === v}" onclick="GRAFT.setView('${v}')">${esc(label)}</button>`).join('')}
+      </div>` : ''}
+      <button class="org-control" type="button" id="org-save" title="Save this view as a named view"
+              aria-label="Save this view">${svg(STAR_ICON, 14)}<span class="org-save-label">Save view</span></button>
+      <div class="org-count result-count" id="org-count" aria-live="polite"></div>`;
+
+    const input = bar.querySelector('#org-q');
+    input.addEventListener('input', e => _onSearchInput(e.target.value));
+    bar.querySelector('#org-add-filter').onclick = e => _openFilterMenu(e.currentTarget);
+    bar.querySelector('#org-group').onclick = e => _openGroupMenu(e.currentTarget);
+    bar.querySelector('#org-sort').onclick = e => _openSortMenu(e.currentTarget);
+    bar.querySelector('#org-dir').onclick = () => _toggleSortDir();
+    bar.querySelector('#org-save').onclick = () => saveCurrentView();
+  }
+
+  function _toggleSortDir() {
+    _org.dir = _org.dir === 'asc' ? 'desc' : 'asc';
+    orgPersist(); orgWriteURL(); renderOrgBar(); orgApply();
+  }
+
+  // Typing must not rebuild the bar — that would take the caret with it — so
+  // the search box updates the state and the results, and nothing else.
+  function _onSearchInput(value) {
+    _org.q = value;
+    clearTimeout(_orgSearchTimer);
+    _orgSearchTimer = setTimeout(() => {
+      orgPersist();
+      orgWriteURL();
+      const clear = document.querySelector('#org-bar .chip-clear');
+      if (orgIsFiltering() && !clear) renderOrgBar();
+      else if (!orgIsFiltering() && clear) renderOrgBar();
+      orgApply();
+    }, 220);
+  }
+
+  function orgApply() { orgSurface().apply(); }
+
+  function _openFilterMenu(anchor) {
+    const s = orgSurface();
+    const items = s.keys.map(k => ({
+      label: FILTER_LABELS[k],
+      onClick: () => _openFilterValues(anchor, k),
+    }));
+    items.push({ separator: true });
+    items.push({
+      label: 'Include archived',
+      checked: _org.archived,
+      keepOpen: false,
+      onClick: () => _toggleArchived(),
+    });
+    openMenu(anchor, items, { label: 'Filter by' });
+  }
+
+  function _openFilterValues(anchor, key) {
+    const opts = filterOptions(key);
+    if (!opts.length) {
+      openMenu(anchor, [{ label: `Nothing to filter by yet`, onClick: () => {} }], { label: FILTER_LABELS[key] });
+      return;
+    }
+    // Multi-value everywhere: every one of these hits an IN (...) on the
+    // server, so "status is todo or review" is one request, not two.
+    const items = opts.map(o => ({
+      label: o.label,
+      icon: o.icon || '',
+      checked: _org.filters[key].includes(String(o.v)),
+      keepOpen: true,
+      onClick: (btn) => {
+        const list = _org.filters[key];
+        const at = list.indexOf(String(o.v));
+        if (at >= 0) list.splice(at, 1); else list.push(String(o.v));
+        btn.setAttribute('aria-checked', String(list.includes(String(o.v))));
+        orgPersist();
+        orgWriteURL();
+        renderOrgBarChipsOnly();
+        orgApply();
+      },
+    }));
+    openMenu(anchor, items, { label: FILTER_LABELS[key] });
+  }
+
+  // The chips change while a value menu stays open, so only they are redrawn.
+  function renderOrgBarChipsOnly() {
+    const bar = document.getElementById('org-bar');
+    if (!bar) return;
+    const focused = document.activeElement === bar.querySelector('#org-q');
+    const caret = focused ? bar.querySelector('#org-q').selectionStart : null;
+    renderOrgBar();
+    if (focused) {
+      const input = bar.querySelector('#org-q');
+      input.focus();
+      if (caret !== null) input.setSelectionRange(caret, caret);
+    }
+  }
+
+  function _openGroupMenu(anchor) {
+    const s = orgSurface();
+    openMenu(anchor, s.groups.map(g => ({
+      label: GROUP_LABELS[g],
+      checked: _org.group === g,
+      onClick: () => { _org.group = g; orgPersist(); orgWriteURL(); renderOrgBar(); orgApply(); },
+    })), { label: 'Group by' });
+  }
+
+  function _openSortMenu(anchor) {
+    const s = orgSurface();
+    const items = s.sorts.map(v => ({
+      label: SORT_LABELS[v],
+      checked: _org.sort === v,
+      onClick: () => { _org.sort = v; orgPersist(); orgWriteURL(); renderOrgBar(); orgApply(); },
+    }));
+    items.push({ separator: true });
+    items.push({
+      label: _org.dir === 'asc' ? 'Ascending' : 'Descending',
+      onClick: () => _toggleSortDir(),
+    });
+    openMenu(anchor, items, { label: 'Sort by' });
+  }
+
+  function _clearFilter(key) {
+    _org.filters[key] = [];
+    orgPersist(); orgWriteURL(); renderOrgBar(); orgApply();
+  }
+
+  function _clearAllFilters() {
+    const keep = { sort: _org.sort, dir: _org.dir, group: _org.group };
+    _org = Object.assign(orgDefaults(), keep);
+    orgPersist(); orgWriteURL(); renderOrgBar(); orgApply();
+  }
+
+  function _toggleArchived() {
+    _org.archived = !_org.archived;
+    orgPersist(); orgWriteURL(); renderOrgBar(); orgApply();
+  }
+
+  function orgCount(shown, total) {
+    const el = document.getElementById('org-count');
+    if (!el) return;
+    const noun = orgSurface().noun;
+    el.innerHTML = shown === total
+      ? `<strong>${total}</strong> ${esc(noun)}`
+      : `Showing <strong>${shown}</strong> of ${total} ${esc(noun)} · ${orgActiveCount() + (_org.q ? 1 : 0)} filter${
+          orgActiveCount() + (_org.q ? 1 : 0) !== 1 ? 's' : ''} active`;
+  }
+
+  // ── The view switcher ──────────────────────────────────────────
+  let _viewMode = 'board';
+
+  function viewStorageKey() { return _orgName === 'project' ? 'graft_view' : `graft_view_${_orgName}`; }
+
+  function initViewMode(name) {
+    const allowed = (ORG_SURFACES[name] || ORG_SURFACES.issues).views.map(v => v[0]);
+    let saved = null;
+    try { saved = localStorage.getItem(viewStorageKey()); } catch { saved = null; }
+    _viewMode = allowed.includes(saved) ? saved : allowed[0];
+  }
+
+  function setView(view) {
+    _viewMode = view;
+    try { localStorage.setItem(viewStorageKey(), view); } catch { /* private mode */ }
+    renderOrgBar();
+    rerenderCurrentView();
+  }
+
+  // ── Grouping, client-side ──────────────────────────────────────
+  // The API returns one flat ordered list; the sections are drawn here so a
+  // regroup costs nothing and never loses the server's ordering inside a group.
+  const GROUP_ORDER = {
+    status: STATUSES,
+    priority: PRIORITIES,
+  };
+
+  function groupKeyOf(item, group) {
+    if (group === 'status') return item.status || 'backlog';
+    if (group === 'priority') return item.priority || 'normal';
+    if (group === 'assignee') return item.assignee || '';
+    if (group === 'milestone') return item.milestone_id || '';
+    if (group === 'project') return item.project_id || '';
+    if (group === 'area') {
+      if (item.area_id !== undefined) return item.area_id || '';
+      return _allProjects.find(p => p.id === item.project_id)?.area_id || '';
+    }
+    return '';
+  }
+
+  function groupLabelOf(key, group) {
+    if (group === 'status') return STATUS_LABELS[key] || key;
+    if (group === 'priority') return PRIORITY_LABELS[key] || key;
+    if (group === 'assignee') return key || 'Unassigned';
+    if (group === 'milestone') return key ? (_allMilestones.find(m => m.id === key)?.name || 'Unknown milestone') : 'No milestone';
+    if (group === 'project') return key ? projectName(key) : 'No project';
+    if (group === 'area') return areaName(key);
+    return '';
+  }
+
+  function groupItems(items, group) {
+    if (!group || group === 'none') return [{ key: '', label: '', rows: items }];
+    const map = new Map();
+    items.forEach(i => {
+      const k = groupKeyOf(i, group);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(i);
+    });
+    let keys = [...map.keys()];
+    const order = GROUP_ORDER[group];
+    if (order) {
+      keys.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    } else {
+      // Empty buckets — unassigned, no milestone, no area — read as a tail,
+      // not as a section called "".
+      keys.sort((a, b) => {
+        if (!a) return 1;
+        if (!b) return -1;
+        return groupLabelOf(a, group).localeCompare(groupLabelOf(b, group));
+      });
+    }
+    return keys.map(k => ({ key: k, label: groupLabelOf(k, group), rows: map.get(k) }));
+  }
+
+  function groupHead(label, count) {
+    return `<div class="section-head" style="margin:16px 0 8px">
+      <span class="section-title" style="font-size:12.5px">${esc(label)}</span>
+      <span class="section-count">${count}</span>
+      <div class="section-rule"></div>
+    </div>`;
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Issue card / row rendering
+  // ══════════════════════════════════════════════════════════════
   function renderKanbanCard(issue, opts = {}) {
     const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${esc(l)}</span>`).join('');
     const showProject = opts.showProject && issue.project_name
       ? `<span class="assignee-chip">${esc(issue.project_name)}</span>` : '';
     const urgent = issue.priority === 'urgent' || issue.priority === 'high';
+    const id = jsStr(issue.id);
     return `
       <div class="kanban-card"
            data-priority="${esc(issue.priority)}"
@@ -314,8 +1636,8 @@
            tabindex="0"
            role="button"
            aria-label="${esc(issue.title)}"
-           onclick="GRAFT.openIssueSlideover('${esc(issue.id)}')"
-           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();GRAFT.openIssueSlideover('${esc(issue.id)}')}"
+           onclick="GRAFT.openIssueSlideover('${id}')"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();GRAFT.openIssueSlideover('${id}')}"
            ondragstart="GRAFT._dragStart(event)"
            ondragend="GRAFT._dragEnd(event)">
         <div class="kanban-card-title">${esc(issue.title)}</div>
@@ -330,10 +1652,12 @@
   }
 
   function renderIssueRow(issue, opts = {}) {
-    const id = esc(issue.id);
+    const id = jsStr(issue.id);
     const showProject = opts.showProject && issue.project_name
       ? `<span class="issue-row-project">${esc(issue.project_name)}</span>` : '';
     const labels = (issue.labels || []).slice(0, 2).map(l => `<span class="label-chip">${esc(l)}</span>`).join('');
+    const extra = (issue.labels || []).length > 2
+      ? `<span class="label-chip label-chip-more">+${(issue.labels || []).length - 2}</span>` : '';
     const archivedClass = issue.archived ? ' issue-row-archived' : '';
     const selected = _selection.has(issue.id) ? ' selected' : '';
     const check = opts.selectable === false ? '' : `
@@ -341,7 +1665,7 @@
              aria-label="Select ${esc(issue.title)}"
              onclick="event.stopPropagation();GRAFT._toggleSelect('${id}',this.checked)">`;
     return `
-      <div class="issue-row${archivedClass}${selected}" data-priority="${esc(issue.priority)}" data-id="${id}"
+      <div class="issue-row${archivedClass}${selected}" data-priority="${esc(issue.priority)}" data-id="${esc(issue.id)}"
            tabindex="0" role="button" aria-label="${esc(issue.title)}"
            onclick="GRAFT.openIssueSlideover('${id}')"
            onkeydown="if(event.key==='Enter'){GRAFT.openIssueSlideover('${id}')}">
@@ -359,7 +1683,7 @@
         </div>
         <div class="issue-row-meta">
           ${milestoneTag(issue.milestone_name)}
-          ${labels}
+          ${labels}${extra}
           ${priorityBadge(issue.priority)}
           ${showProject}
           ${avatar(issue.assignee)}
@@ -367,37 +1691,32 @@
       </div>`;
   }
 
+  // Draws a set of issues into a container as list or board, honouring the
+  // organisation bar's grouping. Every list surface goes through here, so the
+  // states below are the same states everywhere.
+  function renderIssueSurface(el, issues, { showProject = false, board = false } = {}) {
+    if (!el) return;
+    if (board) {
+      renderBoardInto(el, issues, { showProject });
+    } else {
+      const groups = groupItems(issues, _org.group);
+      el.innerHTML = groups.map(g =>
+        (g.label ? groupHead(g.label, g.rows.length) : '') +
+        g.rows.map(i => renderIssueRow(i, { showProject })).join('')).join('');
+    }
+    pruneSelection(issues.map(i => i.id));
+  }
+
   // ── Inline status menu ──────────────────────────────────────────
   function _openStatusMenu(event, id) {
-    document.querySelector('.popover')?.remove();
     const issue = _issue(id);
     if (!issue) return;
-    const pop = document.createElement('div');
-    pop.className = 'popover';
-    pop.innerHTML = `<div class="popover-label">Move to</div>` + STATUSES.map(st => `
-      <button class="popover-item" type="button" role="menuitemradio"
-              aria-checked="${issue.status === st}" data-status="${st}">
-        ${statusIcon(st, 15)}<span>${STATUS_LABELS[st]}</span>
-        <span class="popover-check">${svg('<path d="m5 12 5 5 9-10"/>', 14)}</span>
-      </button>`).join('');
-    document.body.appendChild(pop);
-
-    const r = event.currentTarget.getBoundingClientRect();
-    pop.style.top = `${Math.min(r.bottom + 6, window.innerHeight - pop.offsetHeight - 12) + window.scrollY}px`;
-    pop.style.left = `${Math.min(r.left, window.innerWidth - pop.offsetWidth - 12)}px`;
-
-    pop.querySelectorAll('[data-status]').forEach(b => {
-      b.onclick = async () => {
-        pop.remove();
-        await setIssueStatus(id, b.dataset.status);
-      };
-    });
-    setTimeout(() => {
-      document.addEventListener('click', function off() {
-        pop.remove();
-        document.removeEventListener('click', off);
-      }, { once: true });
-    }, 0);
+    openMenu(event.currentTarget, STATUSES.map(st => ({
+      label: STATUS_LABELS[st],
+      icon: statusIcon(st, 15),
+      checked: issue.status === st,
+      onClick: () => setIssueStatus(id, st),
+    })), { label: 'Move to' });
   }
 
   async function setIssueStatus(id, status) {
@@ -436,6 +1755,19 @@
     renderBulkBar();
   }
 
+  // A bulk action used to fire on rows a filter had since hidden: select five,
+  // change the filters, and the bar still acted on the ones off screen. The
+  // selection is now pruned to what is actually drawn, every render.
+  function pruneSelection(visibleIds) {
+    if (!_selection.size) return;
+    const keep = new Set(visibleIds);
+    let changed = false;
+    [..._selection].forEach(id => {
+      if (!keep.has(id)) { _selection.delete(id); changed = true; }
+    });
+    if (changed) renderBulkBar();
+  }
+
   function renderBulkBar() {
     let bar = document.getElementById('bulk-bar');
     if (!_selection.size) { bar?.remove(); return; }
@@ -444,6 +1776,7 @@
       bar.id = 'bulk-bar';
       bar.className = 'bulk-bar';
       bar.setAttribute('role', 'toolbar');
+      bar.setAttribute('aria-label', 'Bulk actions');
       document.body.appendChild(bar);
     }
     const n = _selection.size;
@@ -462,23 +1795,11 @@
   }
 
   function _bulkStatusMenu(event) {
-    document.querySelector('.popover')?.remove();
-    const pop = document.createElement('div');
-    pop.className = 'popover';
-    pop.innerHTML = `<div class="popover-label">Move ${_selection.size} to</div>` + STATUSES.map(st => `
-      <button class="popover-item" type="button" data-status="${st}">
-        ${statusIcon(st, 15)}<span>${STATUS_LABELS[st]}</span>
-      </button>`).join('');
-    document.body.appendChild(pop);
-    const r = event.currentTarget.getBoundingClientRect();
-    pop.style.top = `${r.top + window.scrollY - pop.offsetHeight - 8}px`;
-    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - pop.offsetWidth - 12))}px`;
-    pop.querySelectorAll('[data-status]').forEach(b => {
-      b.onclick = async () => { pop.remove(); await _bulkSetStatus(b.dataset.status); };
-    });
-    setTimeout(() => document.addEventListener('click', function off() {
-      pop.remove(); document.removeEventListener('click', off);
-    }, { once: true }), 0);
+    openMenu(event.currentTarget, STATUSES.map(st => ({
+      label: STATUS_LABELS[st],
+      icon: statusIcon(st, 15),
+      onClick: () => _bulkSetStatus(st),
+    })), { label: `Move ${_selection.size} to`, above: true });
   }
 
   async function _bulkSetStatus(status) {
@@ -522,59 +1843,23 @@
     } catch { toast('Could not archive'); }
   }
 
-  function promptDialog(title, label, initial) {
-    return new Promise(resolve => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.style.display = 'flex';
-      overlay.innerHTML = `
-        <div class="modal" role="dialog" aria-modal="true" style="max-width:380px">
-          <div class="modal-header"><h2 class="modal-title">${esc(title)}</h2></div>
-          <div class="modal-body">
-            <div class="form-group">
-              <label class="form-label" for="prompt-input">${esc(label)}</label>
-              <input class="form-input" id="prompt-input" value="${esc(initial)}" autocomplete="off">
-            </div>
-            <div class="modal-footer">
-              <button type="button" class="btn btn-ghost" data-act="cancel">Cancel</button>
-              <button type="button" class="btn btn-primary" data-act="ok">Save</button>
-            </div>
-          </div>
-        </div>`;
-      document.body.appendChild(overlay);
-      const input = overlay.querySelector('#prompt-input');
-      const done = v => { overlay.remove(); resolve(v); };
-      overlay.querySelector('[data-act="cancel"]').onclick = () => done(null);
-      overlay.querySelector('[data-act="ok"]').onclick = () => done(input.value.trim());
-      input.onkeydown = e => {
-        if (e.key === 'Enter') { e.preventDefault(); done(input.value.trim()); }
-        if (e.key === 'Escape') { e.preventDefault(); done(null); }
-      };
-      overlay.addEventListener('click', e => { if (e.target === overlay) done(null); });
-      setTimeout(() => input.focus(), 30);
-    });
-  }
-
   function rerenderCurrentView() {
-    if (window._pageMode === 'project') renderView();
-    else if (window._pageMode === 'issues') applyFilters();
+    if (window._pageMode === 'project') renderProjectIssues();
+    else if (window._pageMode === 'issues') renderIssuesPage();
     else if (window._pageMode === 'today') renderToday();
+    else if (window._pageMode === 'projects') renderProjects();
   }
 
-  // ── Issue modal population ──────────────────────────────────────
-  let _allProjects = [];
-  let _allMilestones = [];
-  let _allIssues = [];
-  let _currentProjectId = null;
-
+  // ══════════════════════════════════════════════════════════════
+  //  Issue modal
+  // ══════════════════════════════════════════════════════════════
   async function loadMilestonesForProject() {
     const pid = document.getElementById('issue-project')?.value || _currentProjectId;
     const sel = document.getElementById('issue-milestone');
     if (!sel) return;
     sel.innerHTML = '<option value="">No milestone</option>';
     if (!pid) return;
-    const ms = _allMilestones.filter(m => m.project_id === pid);
-    ms.forEach(m => {
+    _allMilestones.filter(m => m.project_id === pid).forEach(m => {
       const o = document.createElement('option');
       o.value = m.id; o.textContent = m.name;
       sel.appendChild(o);
@@ -597,7 +1882,6 @@
     const delBtn = document.getElementById('issue-delete-btn');
     if (delBtn) delBtn.style.display = 'none';
 
-    // Populate project dropdown
     const projectSel = document.getElementById('issue-project');
     if (projectSel) {
       projectSel.innerHTML = '<option value="">Select project</option>';
@@ -613,6 +1897,7 @@
   }
 
   function openEditIssue(issue) {
+    if (!issue) return;
     document.getElementById('issue-edit-id').value = issue.id;
     document.getElementById('issue-title').value = issue.title;
     const desc = document.getElementById('issue-description');
@@ -638,10 +1923,8 @@
       });
     }
     loadMilestonesForProject();
-    setTimeout(() => {
-      const msSel = document.getElementById('issue-milestone');
-      if (msSel && issue.milestone_id) msSel.value = issue.milestone_id;
-    }, 50);
+    const msSel = document.getElementById('issue-milestone');
+    if (msSel && issue.milestone_id) msSel.value = issue.milestone_id;
     openModal('modal-new-issue');
   }
 
@@ -672,9 +1955,8 @@
       }
       closeModal('modal-new-issue');
       if (typeof reloadPage === 'function') reloadPage();
-    } catch (err) {
-      toast('Error saving issue');
-      console.error(err);
+    } catch {
+      toast('Could not save the issue — nothing was lost, try again');
     }
   }
 
@@ -720,7 +2002,9 @@
     } catch { toast('Could not archive issue'); }
   }
 
-  // ── Issue slide-over (inline editable) ──────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  //  Issue slide-over
+  // ══════════════════════════════════════════════════════════════
   let _slideoverIssueId = null;
 
   async function openIssueSlideover(id) {
@@ -729,7 +2013,6 @@
     _slideoverIssueId = id;
     document.getElementById('detail-id').textContent = id.replace('iss_', '#');
 
-    // Build milestone options for this issue's project
     const msOptions = _allMilestones
       .filter(m => m.project_id === issue.project_id)
       .map(m => `<option value="${esc(m.id)}" ${issue.milestone_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`)
@@ -739,6 +2022,8 @@
       <div class="so-field">
         <div class="so-title"
              contenteditable="true"
+             role="textbox"
+             aria-label="Issue title"
              data-field="title"
              onblur="GRAFT._soSave()"
              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
@@ -748,6 +2033,8 @@
       <div class="so-field">
         <div class="so-desc"
              contenteditable="true"
+             role="textbox"
+             aria-label="Description"
              data-field="description"
              onblur="GRAFT._soSave()"
              placeholder="Add a description…"
@@ -757,56 +2044,53 @@
       <div class="so-meta">
         <div class="so-meta-row">
           <span class="so-label">Status</span>
-          <select class="so-select" data-field="status" onchange="GRAFT._soSave()">
-            <option value="backlog"     ${issue.status==='backlog'     ?'selected':''}>Backlog</option>
-            <option value="todo"        ${issue.status==='todo'        ?'selected':''}>Todo</option>
-            <option value="in-progress" ${issue.status==='in-progress' ?'selected':''}>In progress</option>
-            <option value="review"      ${issue.status==='review'      ?'selected':''}>Review</option>
-            <option value="done"        ${issue.status==='done'        ?'selected':''}>Done</option>
+          <select class="so-select" aria-label="Status" data-field="status" onchange="GRAFT._soSave()">
+            ${STATUSES.map(st => `<option value="${st}" ${issue.status === st ? 'selected' : ''}>${STATUS_LABELS[st]}</option>`).join('')}
           </select>
         </div>
         <div class="so-meta-row">
           <span class="so-label">Priority</span>
-          <select class="so-select" data-field="priority" onchange="GRAFT._soSave()">
-            <option value="urgent" ${issue.priority==='urgent'?'selected':''}>Urgent</option>
-            <option value="high"   ${issue.priority==='high'  ?'selected':''}>High</option>
-            <option value="normal" ${issue.priority==='normal'?'selected':''}>Normal</option>
-            <option value="low"    ${issue.priority==='low'   ?'selected':''}>Low</option>
+          <select class="so-select" aria-label="Priority" data-field="priority" onchange="GRAFT._soSave()">
+            ${PRIORITIES.map(p => `<option value="${p}" ${issue.priority === p ? 'selected' : ''}>${PRIORITY_LABELS[p]}</option>`).join('')}
           </select>
         </div>
         <div class="so-meta-row">
           <span class="so-label">Assignee</span>
-          <input class="so-input" data-field="assignee"
+          <input class="so-input" data-field="assignee" aria-label="Assignee"
                  value="${esc(issue.assignee || '')}"
                  placeholder="Unassigned"
                  onblur="GRAFT._soSave()">
         </div>
         <div class="so-meta-row">
           <span class="so-label">Milestone</span>
-          <select class="so-select" data-field="milestone_id" onchange="GRAFT._soSave()">
+          <select class="so-select" aria-label="Milestone" data-field="milestone_id" onchange="GRAFT._soSave()">
             <option value="">None</option>
             ${msOptions}
           </select>
         </div>
         <div class="so-meta-row">
           <span class="so-label">Labels</span>
-          <input class="so-input" data-field="labels"
-                 value="${esc((issue.labels||[]).join(', '))}"
+          <input class="so-input" data-field="labels" aria-label="Labels"
+                 value="${esc((issue.labels || []).join(', '))}"
                  placeholder="bug, frontend…"
                  onblur="GRAFT._soSave()">
         </div>
       </div>
 
       <div class="so-footer">
-        <button class="btn btn-ghost btn-sm" onclick="GRAFT._archiveIssueFromSlideover('${id}')" title="${issue.archived ? 'Unarchive' : 'Archive'}">
+        <button class="btn btn-ghost btn-sm" type="button" onclick="GRAFT._archiveIssueFromSlideover('${jsStr(id)}')"
+                title="${issue.archived ? 'Unarchive' : 'Archive'}">
           ${issue.archived ? '↩ Unarchive' : '⊘ Archive'}
         </button>
-        <button class="btn btn-ghost btn-danger btn-sm" onclick="GRAFT._deleteIssueFromSlideover('${id}')">Delete issue</button>
+        <button class="btn btn-ghost btn-danger btn-sm" type="button" onclick="GRAFT._deleteIssueFromSlideover('${jsStr(id)}')">Delete issue</button>
       </div>
 
       <div class="so-project-section">
-        <div class="so-project-header" onclick="GRAFT._toggleProjectSection()" id="so-project-toggle">
-          <span class="so-project-label">Project — ${esc(_allProjects.find(p=>p.id===issue.project_id)?.name || '')}</span>
+        <div class="so-project-header" role="button" tabindex="0"
+             onclick="GRAFT._toggleProjectSection()"
+             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();GRAFT._toggleProjectSection()}"
+             id="so-project-toggle" aria-expanded="false">
+          <span class="so-project-label">Project — ${esc(_allProjects.find(p => p.id === issue.project_id)?.name || '')}</span>
           <svg class="so-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="so-project-body" id="so-project-body" style="display:none">
@@ -814,17 +2098,69 @@
         </div>
       </div>
     `;
+    const panel = document.getElementById('issue-slideover');
     document.getElementById('slideover-overlay').style.display = 'block';
-    document.getElementById('issue-slideover').style.display = 'flex';
+    panel.style.display = 'flex';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', `Issue ${issue.title}`);
     document.body.style.overflow = 'hidden';
+    // Opening it never used to move focus into it, so a keyboard user was left
+    // tabbing through the list behind the panel.
+    trapFocus(panel);
+
+    // The links list is a separate request, so the panel opens straight away
+    // and the section fills in — it is never a reason to wait.
+    const linksBox = document.getElementById('so-links');
+    if (linksBox) {
+      linksBox.innerHTML = skeleton('link', 2);
+      try {
+        await loadLinks(issue.project_id);
+        renderLinks('so-links', issue.project_id);
+      } catch {
+        linksBox.innerHTML = errorState({
+          title: 'Couldn’t load links',
+          body: 'The server didn’t answer.',
+          onRetry: `GRAFT._retrySlideoverLinks('${jsStr(issue.project_id)}')`,
+        });
+      }
+    }
+  }
+
+  async function _retrySlideoverLinks(pid) {
+    const box = document.getElementById('so-links');
+    if (!box) return;
+    box.innerHTML = skeleton('link', 2);
+    try {
+      await loadLinks(pid);
+      renderLinks('so-links', pid);
+    } catch {
+      box.innerHTML = errorState({
+        title: 'Couldn’t load links',
+        body: 'The server didn’t answer.',
+        onRetry: `GRAFT._retrySlideoverLinks('${jsStr(pid)}')`,
+      });
+    }
   }
 
   async function _soSave() {
     const id = _slideoverIssueId;
     if (!id) return;
     const body = document.getElementById('slideover-body');
+    if (!body) return;
+    const issue = _allIssues.find(i => i.id === id);
 
-    const title = body.querySelector('[data-field="title"]')?.innerText?.trim();
+    // The title is checked before anything else is read, because the check
+    // used to sit after every field had been gathered and before the write:
+    // clearing the title silently threw away every other edit in that save.
+    const titleEl = body.querySelector('[data-field="title"]');
+    const title = titleEl?.innerText?.trim();
+    if (!title) {
+      if (titleEl && issue) titleEl.innerText = issue.title;
+      toast('An issue needs a title — the rest of your changes are still here');
+      return;
+    }
+
     const description = body.querySelector('[data-field="description"]')?.innerText?.trim();
     const status = body.querySelector('[data-field="status"]')?.value;
     const priority = body.querySelector('[data-field="priority"]')?.value;
@@ -833,32 +2169,34 @@
     const labelsRaw = body.querySelector('[data-field="labels"]')?.value || '';
     const labels = labelsRaw.split(',').map(l => l.trim()).filter(Boolean);
 
-    if (!title) return;
-
-    // Update local cache immediately
-    const issue = _allIssues.find(i => i.id === id);
+    const previous = issue ? { ...issue } : null;
     if (issue) {
       Object.assign(issue, { title, description, status, priority, assignee, milestone_id, labels });
-      // Update milestone_name for display
-      const ms = _allMilestones.find(m => m.id === milestone_id);
-      issue.milestone_name = ms?.name || null;
+      issue.milestone_name = _allMilestones.find(m => m.id === milestone_id)?.name || null;
     }
 
-    // Refresh board/list behind the slideover quietly
-    if (_currentView === 'board') renderBoard();
-    else renderList();
+    // Refresh the board/list behind the slide-over quietly
+    rerenderCurrentView();
 
     try {
       await api('PUT', `/api/issues/${id}`, { title, description, status, priority, assignee, milestone_id, labels });
     } catch {
-      toast('Save failed');
+      // The edit was shown before it was saved, so a failure has to take it
+      // back — otherwise the value sits there until you navigate away.
+      if (issue && previous) Object.assign(issue, previous);
+      rerenderCurrentView();
+      if (_slideoverIssueId === id) openIssueSlideover(id);
+      toast('That didn’t save — the server didn’t answer');
     }
   }
 
   function closeSlideover() {
+    const panel = document.getElementById('issue-slideover');
+    if (!panel) return;
+    releaseFocus(panel);
     _slideoverIssueId = null;
     document.getElementById('slideover-overlay').style.display = 'none';
-    document.getElementById('issue-slideover').style.display = 'none';
+    panel.style.display = 'none';
     document.body.style.overflow = '';
   }
 
@@ -871,125 +2209,357 @@
   function _renderProjectSection(pid) {
     const p = _allProjects.find(proj => proj.id === pid);
     if (!p) return '<div class="so-empty">No project</div>';
+    const areaOptions = [{ id: '', name: 'No area' }, ..._allAreas]
+      .map(a => `<option value="${esc(a.id)}" ${String(p.area_id || '') === String(a.id) ? 'selected' : ''}>${esc(a.name)}</option>`)
+      .join('');
     return `
       <div class="so-meta" style="margin-top:10px">
         <div class="so-meta-row">
           <span class="so-label">Name</span>
-          <input class="so-input" data-pfield="name" value="${esc(p.name)}" onblur="GRAFT._soProjectSave('${pid}')">
+          <input class="so-input" aria-label="Project name" data-pfield="name" value="${esc(p.name)}" onblur="GRAFT._soProjectSave('${jsStr(pid)}')">
         </div>
         <div class="so-meta-row">
           <span class="so-label">Status</span>
-          <select class="so-select" data-pfield="status" onchange="GRAFT._soProjectSave('${pid}')">
-            <option value="active"  ${p.status==='active' ?'selected':''}>Active</option>
-            <option value="paused"  ${p.status==='paused' ?'selected':''}>Paused</option>
-            <option value="done"    ${p.status==='done'   ?'selected':''}>Done</option>
+          <select class="so-select" aria-label="Project status" data-pfield="status" onchange="GRAFT._soProjectSave('${jsStr(pid)}')">
+            ${PROJECT_STATUSES.map(s => `<option value="${s}" ${p.status === s ? 'selected' : ''}>${PROJECT_STATUS_LABELS[s]}</option>`).join('')}
+          </select>
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Area</span>
+          <select class="so-select" aria-label="Area" data-pfield="area_id" onchange="GRAFT._soProjectSave('${jsStr(pid)}')">
+            ${areaOptions}
           </select>
         </div>
         <div class="so-meta-row">
           <span class="so-label">Icon</span>
-          <input class="so-input" data-pfield="icon" value="${esc(p.icon||'')}" placeholder="Paste emoji…" onblur="GRAFT._soProjectSave('${pid}')">
+          <input class="so-input" aria-label="Project icon" data-pfield="icon" value="${esc(p.icon || '')}" placeholder="Paste emoji…" onblur="GRAFT._soProjectSave('${jsStr(pid)}')">
         </div>
         <div class="so-meta-row">
           <span class="so-label">Description</span>
-          <input class="so-input" data-pfield="description" value="${esc(p.description||'')}" placeholder="Add description…" onblur="GRAFT._soProjectSave('${pid}')">
+          <input class="so-input" aria-label="Project description" data-pfield="description" value="${esc(p.description || '')}" placeholder="Add description…" onblur="GRAFT._soProjectSave('${jsStr(pid)}')">
         </div>
       </div>
-    `;
+      <div class="so-links" id="so-links"></div>`;
   }
 
   function _toggleProjectSection() {
     const body = document.getElementById('so-project-body');
+    const head = document.getElementById('so-project-toggle');
     const chevron = document.querySelector('.so-chevron');
     const open = body.style.display !== 'none';
     body.style.display = open ? 'none' : 'block';
+    head?.setAttribute('aria-expanded', String(!open));
     if (chevron) chevron.style.transform = open ? '' : 'rotate(180deg)';
   }
 
   async function _soProjectSave(pid) {
     const body = document.getElementById('so-project-body');
     if (!body) return;
-    const name = body.querySelector('[data-pfield="name"]')?.value?.trim();
+    const proj = _allProjects.find(p => p.id === pid);
+
+    // Same shape of bug as the issue title: the guard belongs before any of
+    // this is written anywhere, not between reading the fields and sending.
+    const nameEl = body.querySelector('[data-pfield="name"]');
+    const name = nameEl?.value?.trim();
+    if (!name) {
+      if (nameEl && proj) nameEl.value = proj.name;
+      toast('A project needs a name — the rest of your changes are still here');
+      return;
+    }
+
     const status = body.querySelector('[data-pfield="status"]')?.value;
     const icon = body.querySelector('[data-pfield="icon"]')?.value?.trim();
     const description = body.querySelector('[data-pfield="description"]')?.value?.trim();
-    if (!name) return;
-    // Update local cache
-    const proj = _allProjects.find(p => p.id === pid);
-    if (proj) Object.assign(proj, { name, status, icon, description });
-    // Update project toggle label
+    const area_id = body.querySelector('[data-pfield="area_id"]')?.value ?? '';
+
+    const previous = proj
+      ? { name: proj.name, status: proj.status, icon: proj.icon, description: proj.description, area_id: proj.area_id }
+      : null;
+    if (proj) Object.assign(proj, { name, status, icon, description, area_id });
     const label = document.querySelector('.so-project-label');
     if (label) label.textContent = `Project — ${name}`;
     try {
-      await api('PUT', `/api/projects/${pid}`, { name, status, icon, description });
-      // Refresh sidebar in case name/icon changed
-      renderSidebarProjects();
-    } catch { toast('Failed to save project'); }
+      await api('PUT', `/api/projects/${pid}`, { name, status, icon, description, area_id });
+      _railProjects = null;
+      renderRail();
+    } catch {
+      // The fields were written before the request, so put the old values
+      // back rather than leave an edit that was never saved on screen.
+      if (proj && previous) Object.assign(proj, previous);
+      const section = document.getElementById('so-project-body');
+      if (section) section.innerHTML = _renderProjectSection(pid);
+      if (label) label.textContent = `Project — ${previous?.name || ''}`;
+      toast('That didn’t save — the server didn’t answer');
+    }
   }
 
   // ══════════════════════════════════════════════════════════════
   //  PAGE: index.html  (Projects)
   // ══════════════════════════════════════════════════════════════
-  let _projectFilter = 'all';
+  let _projectsLoaded = false;
 
   async function init() {
     window._pageMode = 'projects';
     initTheme();
-    initChrome('projects', { title: 'Projects', fab: { label: 'New project', action: openNewProject } });
+    initChrome('projects', { title: 'Projects', fab: { label: 'New project', action: () => openNewProject() } });
     initColourPicker('colour-picker', 'project-colour');
     initIconPicker('icon-picker', 'project-icon');
-    await renderSidebarProjects();
-    loadProjects();
+    orgInit('projects');
+    initViewMode('projects');
+    setTopbarMenu([
+      { label: 'New project', onClick: () => openNewProject() },
+      { label: 'New area', onClick: () => createArea() },
+    ]);
+    document.getElementById('projects-grid').innerHTML = skeleton('project', 6);
+    await Promise.all([loadAreas(), loadViews()]);
+    renderOrgBar();
+    renderRail();
+    await loadProjects();
   }
 
   async function loadProjects() {
+    const grid = document.getElementById('projects-grid');
+    if (grid && !_projectsLoaded) grid.innerHTML = skeleton('project', 6);
     try {
-      // Fetch both normal and archived in parallel when needed
-      const showArchived = _projectFilter === 'archived';
-      const url = showArchived ? '/api/projects?archived=1' : '/api/projects';
-      _allProjects = await api('GET', url);
-      _allMilestones = await api('GET', '/api/milestones');
+      // area_id and archived are real query parameters; project status and the
+      // search term are cheap enough to apply here over a list we already hold.
+      const params = new URLSearchParams();
+      if (_org.archived) params.set('archived', '1');
+      if (_org.filters.area_id.length) params.set('area_id', _org.filters.area_id.join(','));
+      const suffix = params.toString() ? `?${params}` : '';
+      const [projects, milestones] = await Promise.all([
+        api('GET', `/api/projects${suffix}`),
+        api('GET', '/api/milestones'),
+      ]);
+      _allProjects = projects;
+      _allMilestones = milestones;
+      _projectsLoaded = true;
+      markFresh();
       renderProjects();
-      const sub = document.getElementById('projects-subtitle');
-      if (sub) {
-        const active = _allProjects.filter(p => p.status === 'active' && !p.archived).length;
-        sub.textContent = `${_allProjects.length} project${_allProjects.length !== 1 ? 's' : ''} · ${active} active`;
+    } catch {
+      if (_projectsLoaded) {
+        // The list on screen is still the last good one — say it is old rather
+        // than blanking it, and leave a way to try again.
+        markStale(() => loadProjects());
+        renderProjects();
+      } else if (grid) {
+        grid.innerHTML = errorState({
+          title: 'Can’t reach the Graft server',
+          body: 'Your projects are safe on the server — this device just couldn’t reach it.',
+          onRetry: 'GRAFT._retryProjects()',
+        });
       }
-    } catch (err) {
-      document.getElementById('projects-grid').innerHTML = `<div class="empty-state"><div class="empty-state-title">Can't reach Graft server</div><div>${err.message}</div></div>`;
     }
   }
 
-  function filterProjects(status, btn) {
-    _projectFilter = status;
-    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    loadProjects(); // reload — archived needs a different API call
+  async function _retryProjects() { await loadProjects(); }
+
+  function visibleProjects() {
+    const q = (_org.q || '').toLowerCase();
+    let list = _allProjects;
+    if (!_org.archived) list = list.filter(p => !p.archived);
+    if (_org.filters.status.length) list = list.filter(p => _org.filters.status.includes(p.status));
+    if (_org.filters.area_id.length) {
+      list = list.filter(p => _org.filters.area_id.includes(p.area_id ? p.area_id : 'none'));
+    }
+    if (q) {
+      list = list.filter(p =>
+        p.name.toLowerCase().includes(q) || (p.description || '').toLowerCase().includes(q));
+    }
+    return sortProjects(list);
+  }
+
+  function sortProjects(list) {
+    const dir = _org.dir === 'desc' ? -1 : 1;
+    const rank = { active: 0, paused: 1, done: 2 };
+    const cmp = {
+      manual: (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')),
+      created: (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')),
+      updated: (a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')),
+      title: (a, b) => String(a.name || '').localeCompare(String(b.name || '')),
+      status: (a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3),
+    }[_org.sort] || ((a, b) => 0);
+    return [...list].sort((a, b) => cmp(a, b) * dir);
   }
 
   function renderProjects() {
     const grid = document.getElementById('projects-grid');
     if (!grid) return;
-    let visible;
-    if (_projectFilter === 'archived') {
-      visible = _allProjects.filter(p => p.archived);
-    } else if (_projectFilter === 'all') {
-      visible = _allProjects.filter(p => !p.archived);
-    } else {
-      visible = _allProjects.filter(p => !p.archived && p.status === _projectFilter);
+    const visible = visibleProjects();
+    const total = _allProjects.length;
+
+    const sub = document.getElementById('projects-subtitle');
+    if (sub) {
+      const active = _allProjects.filter(p => p.status === 'active' && !p.archived).length;
+      sub.textContent = `${total} project${total !== 1 ? 's' : ''} · ${active} active`;
     }
-    if (!visible.length) {
-      const msg = _projectFilter === 'archived' ? 'No archived projects' : 'No projects yet';
-      const hint = _projectFilter === 'archived'
-        ? 'Archived projects are kept out of the way but never deleted.'
-        : 'Create one to start tracking issues.';
-      grid.innerHTML = `<div class="empty-state"><div class="empty-state-icon">🌱</div>
-        <div class="empty-state-title">${msg}</div><div>${hint}</div></div>`;
+    orgCount(visible.length, total);
+
+    // Truly empty and filtered-to-nothing are different things and must read
+    // differently: "No projects yet — create one" used to be shown for a
+    // Paused filter over a workspace with nine projects in it.
+    if (!total) {
+      grid.innerHTML = emptyState({
+        icon: '🌱',
+        title: 'No projects yet',
+        body: 'A project holds issues, milestones and links. Start with the thing you are actually working on.',
+        actionLabel: 'Create your first project',
+        onAction: 'GRAFT.openNewProject()',
+      });
       return;
     }
-    grid.innerHTML = visible.map(projectCard).join('');
+    if (!visible.length) {
+      grid.innerHTML = noMatchState({
+        hidden: total,
+        summary: orgFilterSummary(),
+        onClear: 'GRAFT._clearAllFilters()',
+        noun: 'projects',
+      });
+      return;
+    }
+
+    if (_org.group === 'status') {
+      grid.innerHTML = groupItems(visible, 'status').map(g => `
+        ${groupHead(PROJECT_STATUS_LABELS[g.key] || g.key, g.rows.length)}
+        <div class="projects-grid${_viewMode === 'list' ? ' projects-grid-list' : ''}">${
+          g.rows.map(projectCard).join('')}</div>`).join('');
+      return;
+    }
+    if (_org.group !== 'area') {
+      grid.innerHTML = `<div class="projects-grid${_viewMode === 'list' ? ' projects-grid-list' : ''}">${
+        visible.map(projectCard).join('')}</div>`;
+      return;
+    }
+    grid.innerHTML = renderAreaSections(visible);
   }
 
-  function openNewProject() {
+  // Areas are sections with a header, a count, a rule and their own menu. The
+  // unfiled projects land in "No area" at the bottom — always last, and only
+  // drawn when there is something in it.
+  function renderAreaSections(visible) {
+    // With no areas at all, every project would land in a section called "No
+    // area" — a grouping that groups nothing. Draw the plain grid instead.
+    if (!_allAreas.length) {
+      return `<div class="projects-grid${_viewMode === 'list' ? ' projects-grid-list' : ''}">${
+        visible.map(projectCard).join('')}</div>`;
+    }
+    const collapsed = collapsedAreas();
+    const sections = _allAreas.map(a => ({
+      id: a.id,
+      name: a.name,
+      colour: a.colour || '',
+      rows: visible.filter(p => p.area_id === a.id),
+      menu: true,
+    }));
+    const unfiled = visible.filter(p => !p.area_id || !_allAreas.some(a => a.id === p.area_id));
+    if (unfiled.length) sections.push({ id: '', name: 'No area', colour: '', rows: unfiled, menu: false });
+
+    return sections.filter(s =>
+      // An empty area is worth showing so you can see the one you just made —
+      // but not while a filter is on, when every area would be empty scaffolding.
+      s.rows.length || !orgIsFiltering()
+    ).map(s => {
+      const shut = collapsed.has(s.id || '__none__');
+      return `
+        <section class="area-section${shut ? ' collapsed' : ''}">
+          <div class="area-header">
+            <button class="area-header-name" type="button" aria-expanded="${!shut}"
+                    onclick="GRAFT._toggleArea('${jsStr(s.id || '__none__')}')">
+              <span class="area-dot" aria-hidden="true" ${s.colour ? `style="background:${esc(s.colour)}"` : ''}></span>
+              ${esc(s.name)}
+            </button>
+            <span class="area-header-count">${s.rows.length}</span>
+            <div class="area-header-rule"></div>
+            <div class="area-header-actions">
+              ${s.menu ? `<button class="icon-btn" type="button" aria-haspopup="menu"
+                     aria-label="Actions for ${esc(s.name)}"
+                     onclick="GRAFT._areaMenu(event,'${jsStr(s.id)}')">${svg(DOTS_ICON, 16)}</button>` : ''}
+            </div>
+          </div>
+          ${shut ? '' : `<div class="projects-grid${_viewMode === 'list' ? ' projects-grid-list' : ''}">${
+            s.rows.length
+              ? s.rows.map(projectCard).join('')
+              : `<div class="empty-state"><div class="empty-state-title">Nothing filed here yet</div>
+                   <div class="empty-state-body">Give a project this area from its edit form.</div></div>`
+          }</div>`}
+        </section>`;
+    }).join('');
+  }
+
+  function _toggleArea(id) {
+    const set = collapsedAreas();
+    if (set.has(id)) set.delete(id); else set.add(id);
+    try { localStorage.setItem(AREA_COLLAPSE_KEY, JSON.stringify([...set])); } catch { /* private mode */ }
+    renderProjects();
+  }
+
+  // Shared project card — a progress bar answers "how far along" in a way
+  // two raw counts never did.
+  function projectCard(p) {
+    const c = p.issue_counts || {};
+    const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
+    const done = c.done || 0;
+    const total = open + done;
+    const donePct = total ? Math.round((done / total) * 100) : 0;
+    const doingPct = total ? Math.round(((c.in_progress || 0) / total) * 100) : 0;
+    const next = _allMilestones
+      .filter(m => m.project_id === p.id && m.due_date && daysUntil(m.due_date) !== null)
+      .sort((a, b) => a.due_date.localeCompare(b.due_date))[0];
+    return `
+      <div class="project-card ${p.archived ? 'project-card-archived' : ''}"
+           tabindex="0" role="link" aria-label="${esc(p.name)}"
+           onclick="window.location.href='project.html?id=${esc(p.id)}'"
+           onkeydown="if(event.key==='Enter'){window.location.href='project.html?id=${esc(p.id)}'}">
+        <div class="project-card-stripe" style="background:${esc(p.colour)}"></div>
+        <div class="project-card-body">
+          <div class="project-card-header">
+            ${p.icon ? `<span class="project-icon">${esc(p.icon)}</span>` : ''}
+            <span class="project-card-name">${esc(p.name)}</span>
+            ${p.archived
+              ? `<span class="project-card-status" style="background:var(--surface-2);color:var(--ink-2)">archived</span>`
+              : `<span class="project-card-status status-${esc(p.status)}">${esc(p.status)}</span>`}
+          </div>
+          ${p.description ? `<div class="project-card-desc">${esc(p.description)}</div>` : ''}
+          <div class="progress-row">
+            <div class="progress" role="img" aria-label="${done} of ${total} done">
+              <span class="progress-done" style="width:${donePct}%"></span>
+              <span class="progress-doing" style="width:${doingPct}%"></span>
+            </div>
+            <span class="progress-label">${open} open · ${done} done</span>
+          </div>
+          ${next
+            ? `<div style="font-size:12px;color:var(--ink-2)">Next: <span style="color:var(--accent-text)">${esc(next.name)}</span> ${esc(dueLabel(next.due_date))}</div>`
+            : ''}
+        </div>
+      </div>`;
+  }
+
+  // ── The project form ────────────────────────────────────────────
+  function fillAreaSelect(selected) {
+    const sel = document.getElementById('project-area');
+    if (!sel) return;
+    sel.innerHTML = `<option value="">No area</option>` +
+      _allAreas.map(a => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('') +
+      `<option value="__new__">＋ New area…</option>`;
+    sel.value = selected || '';
+    sel.onchange = async () => {
+      if (sel.value !== '__new__') return;
+      sel.value = '';
+      const r = await formDialog({
+        title: 'New area', submitLabel: 'Create area',
+        fields: [{ name: 'name', label: 'Name', placeholder: 'e.g. Client work' }],
+      });
+      if (!r || !r.name) return;
+      try {
+        const created = await api('POST', '/api/areas', { name: r.name, sort_order: _allAreas.length });
+        await loadAreas();
+        fillAreaSelect(created?.id || '');
+        renderRail();
+      } catch { toast('Could not create the area'); }
+    };
+  }
+
+  function openNewProject(areaId) {
     document.getElementById('project-edit-id').value = '';
     document.getElementById('project-name').value = '';
     document.getElementById('project-description').value = '';
@@ -997,19 +2567,28 @@
     document.getElementById('project-icon').value = '';
     setColour('colour-picker', 'project-colour', '#6366f1');
     initIconPicker('icon-picker', 'project-icon');
+    fillAreaSelect(areaId || '');
     document.getElementById('modal-project-title').textContent = 'New project';
     openModal('modal-new-project');
+  }
+
+  // The same project form is markup-id 'modal-new-project' on index.html and
+  // 'modal-edit-project' on project.html; only one of the two is ever here.
+  function closeProjectModal() {
+    closeModal(document.getElementById('modal-edit-project') ? 'modal-edit-project' : 'modal-new-project');
   }
 
   async function submitProject(e) {
     e.preventDefault();
     const editId = document.getElementById('project-edit-id').value;
+    const areaSel = document.getElementById('project-area');
     const body = {
       name: document.getElementById('project-name').value.trim(),
       description: document.getElementById('project-description').value.trim(),
       status: document.getElementById('project-status').value,
       colour: document.getElementById('project-colour').value,
       icon: document.getElementById('project-icon').value,
+      area_id: areaSel && areaSel.value !== '__new__' ? areaSel.value : '',
     };
     try {
       if (editId) {
@@ -1018,22 +2597,25 @@
       } else {
         const p = await api('POST', '/api/projects', body);
         toast('Project created');
-        closeModal('modal-new-project');
-        closeModal('modal-edit-project');
+        closeProjectModal();
         window.location.href = `project.html?id=${p.id}`;
         return;
       }
-      closeModal('modal-new-project');
-      closeModal('modal-edit-project');
+      closeProjectModal();
+      _railProjects = null;
       if (typeof reloadPage === 'function') reloadPage();
       else loadProjects();
-    } catch { toast('Error saving project'); }
+    } catch { toast('Could not save the project — nothing was lost, try again'); }
   }
 
   async function deleteProject() {
-    const editId = document.getElementById('project-edit-id').value;
+    const editId = document.getElementById('project-edit-id')?.value || _currentProject?.id;
     if (!editId) return;
-    const project = _allProjects.find(p => p.id === editId) || _currentProject;
+    await deleteProjectById(editId);
+  }
+
+  async function deleteProjectById(id) {
+    const project = _allProjects.find(p => p.id === id) || _currentProject;
     const counts = project?.issue_counts || {};
     const total = counts.total ?? Object.values(counts).reduce((a, b) => a + (b || 0), 0);
     const ok = await confirmDialog({
@@ -1047,7 +2629,7 @@
     });
     if (!ok) return;
     try {
-      await api('DELETE', `/api/projects/${editId}`);
+      await api('DELETE', `/api/projects/${id}`);
       toast('Project deleted');
       closeModal('modal-edit-project');
       window.location.href = 'index.html';
@@ -1057,34 +2639,53 @@
   // ══════════════════════════════════════════════════════════════
   //  PAGE: today.html  (What needs you)
   // ══════════════════════════════════════════════════════════════
-  let _overview = null;
+  // Today has no organisation bar: it is a fixed, opinionated answer to one
+  // question, not a list you filter.
+  const TODAY_PAGE = 8;
+  const _todayExpanded = {};
 
   async function initToday() {
     window._pageMode = 'today';
     initTheme();
     initChrome('today', { title: 'Today', fab: { label: 'New issue', action: () => openNewIssue() } });
-    await renderSidebarProjects();
+    document.getElementById('today-content').innerHTML = skeleton('issue', 5);
+    await Promise.all([loadAreas(), loadViews()]);
+    renderRail();
+    await loadToday();
+  }
+
+  async function loadToday() {
     try {
-      const [projects, issues, milestones, overview] = await Promise.all([
+      const [projects, issues, milestones] = await Promise.all([
         api('GET', '/api/projects'),
         api('GET', '/api/issues'),
         api('GET', '/api/milestones'),
-        api('GET', '/api/overview').catch(() => null),
       ]);
       _allProjects = projects;
       _allMilestones = milestones;
-      _overview = overview;
       const byId = Object.fromEntries(projects.map(p => [p.id, p]));
       _allIssues = issues.map(i => ({
         ...i,
         project_name: byId[i.project_id]?.name,
         project_icon: byId[i.project_id]?.icon,
       }));
+      _todayLoaded = true;
+      markFresh();
       renderToday();
-    } catch (err) {
-      document.getElementById('today-content').innerHTML =
-        `<div class="empty-state"><div class="empty-state-title">Can't reach the Graft server</div><div>${esc(err.message)}</div></div>`;
+    } catch {
+      if (_todayLoaded) { markStale(() => loadToday()); renderToday(); return; }
+      document.getElementById('today-content').innerHTML = errorState({
+        title: 'Can’t reach the Graft server',
+        body: 'Nothing has been lost — this device just couldn’t reach the server.',
+        onRetry: 'GRAFT._retryToday()',
+      });
     }
+  }
+
+  let _todayLoaded = false;
+  async function _retryToday() {
+    document.getElementById('today-content').innerHTML = skeleton('issue', 5);
+    await loadToday();
   }
 
   // A milestone's due date is the only real deadline in the data, so
@@ -1120,44 +2721,60 @@
     }
 
     el.innerHTML = `
-      ${todaySection('Needs you', needsYou, 'Nothing urgent or near a deadline. Enjoy it.')}
-      ${todaySection('In progress', inProgress, 'Nothing started yet.')}
+      ${todaySection('needs', 'Needs you', needsYou, 'Nothing urgent or near a deadline. Enjoy it.')}
+      ${todaySection('doing', 'In progress', inProgress, 'Nothing started yet.')}
       <section class="section">
         <div class="section-head">
           <h2 class="section-title">Projects</h2>
           <div class="section-rule"></div>
-          <a href="index.html" style="font-size:12.5px;color:var(--sage)">View all</a>
+          <a href="index.html" style="font-size:12.5px;color:var(--accent-text)">View all</a>
         </div>
         <div class="projects-grid">
           ${_allProjects.filter(p => !p.archived).slice(0, 8).map(projectCard).join('') ||
-            '<div class="empty-state"><div class="empty-state-title">No projects yet</div></div>'}
+            emptyState({ title: 'No projects yet', body: 'Create one to start tracking issues.',
+                         actionLabel: 'New project', onAction: `window.location.href='index.html'` })}
         </div>
       </section>`;
   }
 
-  function todaySection(title, issues, emptyText) {
+  // The badge used to print the full count over a list truncated to eight,
+  // with no way to reach the other fifteen. It now counts what is drawn and
+  // says how many more there are — and can show them.
+  function todaySection(key, title, issues, emptyText) {
+    const expanded = !!_todayExpanded[key];
+    const shown = expanded ? issues : issues.slice(0, TODAY_PAGE);
+    const rest = issues.length - shown.length;
     return `
       <section class="section">
         <div class="section-head">
           <h2 class="section-title">${esc(title)}</h2>
-          <span class="section-count">${issues.length}</span>
+          <span class="section-count">${rest > 0 ? `${shown.length} of ${issues.length}` : issues.length}</span>
           <div class="section-rule"></div>
         </div>
         ${issues.length
-          ? `<div class="issue-list">${issues.slice(0, 8).map(todayRow).join('')}</div>`
-          : `<div style="font-size:13px;color:var(--muted);padding:4px 2px">${esc(emptyText)}</div>`}
+          ? `<div class="issue-list">${shown.map(todayRow).join('')}</div>
+             ${rest > 0
+               ? `<button class="chip-clear" type="button" style="margin-top:8px"
+                    onclick="GRAFT._expandToday('${jsStr(key)}')">Show all ${issues.length}</button>`
+               : (expanded && issues.length > TODAY_PAGE
+                 ? `<button class="chip-clear" type="button" style="margin-top:8px"
+                      onclick="GRAFT._collapseToday('${jsStr(key)}')">Show fewer</button>` : '')}`
+          : `<div style="font-size:13px;color:var(--ink-2);padding:4px 2px">${esc(emptyText)}</div>`}
       </section>`;
   }
 
+  function _expandToday(key) { _todayExpanded[key] = true; renderToday(); }
+  function _collapseToday(key) { _todayExpanded[key] = false; renderToday(); }
+
   function todayRow(issue) {
-    const id = esc(issue.id);
+    const id = jsStr(issue.id);
     const due = milestoneDue(issue);
     const d = daysUntil(due);
     const flag = d !== null && d <= 2
       ? `<span class="${d < 0 ? 'due-flag' : 'age-flag'}">${esc(dueLabel(due))}</span>`
       : `<span class="age-flag">${esc(relTime(issue.updated_at))}</span>`;
     return `
-      <div class="today-row" data-priority="${esc(issue.priority)}" data-id="${id}"
+      <div class="today-row" data-priority="${esc(issue.priority)}" data-id="${esc(issue.id)}"
            tabindex="0" role="button" aria-label="${esc(issue.title)}"
            onclick="GRAFT._goToIssue('${id}')"
            onkeydown="if(event.key==='Enter'){GRAFT._goToIssue('${id}')}">
@@ -1179,322 +2796,133 @@
     window.location.href = `project.html?id=${encodeURIComponent(issue.project_id)}&issue=${encodeURIComponent(id)}`;
   }
 
-  // Shared project card — a progress bar answers "how far along" in a way
-  // two raw counts never did.
-  function projectCard(p) {
-    const c = p.issue_counts || {};
-    const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
-    const done = c.done || 0;
-    const total = open + done;
-    const donePct = total ? Math.round((done / total) * 100) : 0;
-    const doingPct = total ? Math.round(((c.in_progress || 0) / total) * 100) : 0;
-    const next = _allMilestones
-      .filter(m => m.project_id === p.id && m.due_date && daysUntil(m.due_date) !== null)
-      .sort((a, b) => a.due_date.localeCompare(b.due_date))[0];
-    return `
-      <div class="project-card ${p.archived ? 'project-card-archived' : ''}"
-           tabindex="0" role="link" aria-label="${esc(p.name)}"
-           onclick="window.location.href='project.html?id=${esc(p.id)}'"
-           onkeydown="if(event.key==='Enter'){window.location.href='project.html?id=${esc(p.id)}'}">
-        <div class="project-card-stripe" style="background:${esc(p.colour)}"></div>
-        <div class="project-card-body">
-          <div class="project-card-header">
-            ${p.icon ? `<span class="project-icon">${esc(p.icon)}</span>` : ''}
-            <span class="project-card-name">${esc(p.name)}</span>
-            ${p.archived
-              ? `<span class="project-card-status" style="background:var(--surface2);color:var(--muted)">archived</span>`
-              : `<span class="project-card-status status-${esc(p.status)}">${esc(p.status)}</span>`}
-          </div>
-          ${p.description ? `<div class="project-card-desc">${esc(p.description)}</div>` : ''}
-          <div class="progress-row">
-            <div class="progress" role="img" aria-label="${done} of ${total} done">
-              <span class="progress-done" style="width:${donePct}%"></span>
-              <span class="progress-doing" style="width:${doingPct}%"></span>
-            </div>
-            <span class="progress-label">${open} open · ${done} done</span>
-          </div>
-          ${next
-            ? `<div style="font-size:12px;color:var(--muted)">Next: <span style="color:var(--sage)">${esc(next.name)}</span> ${esc(dueLabel(next.due_date))}</div>`
-            : ''}
-        </div>
-      </div>`;
-  }
-
   // ══════════════════════════════════════════════════════════════
   //  PAGE: issues.html  (All issues)
   // ══════════════════════════════════════════════════════════════
-  // Filters live in one object so the chips, the count and the list can
-  // never disagree about what is being shown.
-  let _filters = { project: null, milestone: null, status: [], priority: [], assignee: null, search: '' };
-
-  const FILTER_DEFS = {
-    project:   { label: 'Project',   multi: false },
-    milestone: { label: 'Milestone', multi: false },
-    status:    { label: 'Status',    multi: true  },
-    priority:  { label: 'Priority',  multi: true  },
-    assignee:  { label: 'Assignee',  multi: false },
-  };
+  let _issuesLoaded = false;
 
   async function initIssues() {
     window._pageMode = 'issues';
     initTheme();
     initChrome('issues', { title: 'All issues', fab: { label: 'New issue', action: () => openNewIssue() } });
-    await renderSidebarProjects();
+    orgInit('issues');
+    initViewMode('issues');
+    document.getElementById('issue-list').innerHTML = skeleton('issue', 6);
+    renderRail();
+    await loadIssuesMeta();
+  }
+
+  async function loadIssuesMeta() {
     try {
-      const [projects, issues, milestones] = await Promise.all([
+      const [projects, milestones] = await Promise.all([
         api('GET', '/api/projects'),
-        api('GET', '/api/issues?archived=1'),
         api('GET', '/api/milestones'),
       ]);
       _allProjects = projects;
       _allMilestones = milestones;
-      const byId = Object.fromEntries(projects.map(p => [p.id, p]));
+    } catch {
+      document.getElementById('issue-list').innerHTML = errorState({
+        title: 'Can’t reach the Graft server',
+        body: 'Your issues are safe on the server — this device just couldn’t reach it.',
+        onRetry: 'GRAFT._retryIssues()',
+      });
+      return;
+    }
+    await Promise.all([loadAreas(), loadViews(), loadFacets()]);
+    renderOrgBar();
+    renderRail();
+    await loadIssuesPage();
+  }
+
+  // Retrying re-fetches; it must never rebuild the page chrome, or the
+  // top bar, the tab bar and the shortcut handler all arrive a second time.
+  async function _retryIssues() {
+    document.getElementById('issue-list').innerHTML = skeleton('issue', 6);
+    await loadIssuesMeta();
+  }
+
+  // Everything in the bar is a query parameter, so a filter change is one
+  // request and the server does the matching — including, at last, labels.
+  async function loadIssuesPage() {
+    const el = document.getElementById('issue-list');
+    try {
+      const issues = await api('GET', `/api/issues${orgQuery()}`);
+      const byId = Object.fromEntries(_allProjects.map(p => [p.id, p]));
       _allIssues = issues.map(i => ({
         ...i,
         project_name: byId[i.project_id]?.name,
         project_icon: byId[i.project_id]?.icon,
       }));
-      readFiltersFromURL();
-      applyFilters();
+      _issuesLoaded = true;
+      markFresh();
+      renderIssuesPage();
     } catch {
-      document.getElementById('issue-list').innerHTML =
-        `<div class="empty-state"><div class="empty-state-title">Can't reach the Graft server</div>
-         <div>Check the server is running, then reload.</div></div>`;
+      if (_issuesLoaded) { markStale(() => loadIssuesPage()); return; }
+      if (el) {
+        el.innerHTML = errorState({
+          title: 'Can’t reach the Graft server',
+          body: 'Your issues are safe on the server — this device just couldn’t reach it.',
+          onRetry: 'GRAFT._retryIssues()',
+        });
+      }
     }
   }
 
-  // Filters survive a reload and can be shared as a link.
-  function readFiltersFromURL() {
-    const q = new URLSearchParams(window.location.search);
-    if (q.get('project')) _filters.project = q.get('project');
-    if (q.get('milestone')) _filters.milestone = q.get('milestone');
-    if (q.get('status')) _filters.status = q.get('status').split(',').filter(Boolean);
-    if (q.get('priority')) _filters.priority = q.get('priority').split(',').filter(Boolean);
-    if (q.get('assignee')) _filters.assignee = q.get('assignee');
-    if (q.get('q')) _filters.search = q.get('q');
-    if (q.get('archived') === '1') _filters.archived = true;
+  // One unfiltered request per page load and per write, so the empty states
+  // can quote a real number. "0 issues are hidden by the filters above", over
+  // an empty database with no filters set, was the worst line in the client.
+  async function loadFacets() {
+    const scope = window._pageMode === 'project' && _currentProjectId
+      ? `?project_id=${encodeURIComponent(_currentProjectId)}&archived=1`
+      : '?archived=1';
+    try { _facetIssues = await api('GET', `/api/issues${scope}`); }
+    catch { /* keep the vocabulary we already have rather than emptying it */ }
   }
 
-  function writeFiltersToURL() {
-    const q = new URLSearchParams();
-    if (_filters.project) q.set('project', _filters.project);
-    if (_filters.milestone) q.set('milestone', _filters.milestone);
-    if (_filters.status.length) q.set('status', _filters.status.join(','));
-    if (_filters.priority.length) q.set('priority', _filters.priority.join(','));
-    if (_filters.assignee) q.set('assignee', _filters.assignee);
-    if (_filters.search) q.set('q', _filters.search);
-    if (_filters.archived) q.set('archived', '1');
-    const url = q.toString() ? `?${q}` : window.location.pathname;
-    history.replaceState(null, '', url);
+  function facetTotal() {
+    if (!_facetIssues.length) return _allIssues.length;
+    return _org.archived ? _facetIssues.length : _facetIssues.filter(i => !i.archived).length;
   }
 
-  function activeFilterCount() {
-    return (_filters.project ? 1 : 0) + (_filters.milestone ? 1 : 0) +
-           (_filters.status.length ? 1 : 0) + (_filters.priority.length ? 1 : 0) +
-           (_filters.assignee ? 1 : 0);
-  }
-
-  function filterValueLabel(key) {
-    const v = _filters[key];
-    if (key === 'project') return _allProjects.find(p => p.id === v)?.name || v;
-    if (key === 'milestone') return v === 'none' ? 'None' : (_allMilestones.find(m => m.id === v)?.name || v);
-    if (key === 'status') return v.map(x => STATUS_LABELS[x] || x).join(', ');
-    if (key === 'priority') return v.map(x => PRIORITY_LABELS[x] || x).join(', ');
-    return v;
-  }
-
-  function renderChips() {
-    const bar = document.getElementById('chip-bar');
-    if (!bar) return;
-    const chips = Object.keys(FILTER_DEFS)
-      .filter(k => Array.isArray(_filters[k]) ? _filters[k].length : _filters[k])
-      .map(k => `
-        <span class="chip">
-          <span class="chip-key">${FILTER_DEFS[k].label}</span> is
-          <span class="chip-val">${esc(filterValueLabel(k))}</span>
-          <button class="chip-x" type="button" aria-label="Remove ${FILTER_DEFS[k].label} filter"
-                  onclick="GRAFT._clearFilter('${k}')">${svg(NAV_ICONS.close, 11, 'stroke-width="2.5"')}</button>
-        </span>`).join('');
-
-    bar.innerHTML = `
-      <button class="chip-add" type="button" id="chip-add" aria-haspopup="menu">
-        ${svg(NAV_ICONS.plus, 13, 'stroke-width="2.5"')} Add filter
-      </button>
-      ${chips}
-      ${activeFilterCount() ? `<button class="chip-clear" type="button" onclick="GRAFT._clearAllFilters()">Clear all</button>` : ''}
-      <button class="switch-btn" type="button" aria-pressed="${!!_filters.archived}"
-              style="margin-left:auto" onclick="GRAFT._toggleArchivedFilter()">
-        <span class="switch-track"><span class="switch-knob"></span></span> Show archived
-      </button>`;
-    document.getElementById('chip-add').onclick = e => _openFilterMenu(e);
-  }
-
-  function _openFilterMenu(event) {
-    document.querySelector('.popover')?.remove();
-    const pop = document.createElement('div');
-    pop.className = 'popover';
-    pop.innerHTML = `<div class="popover-label">Filter by</div>` +
-      Object.entries(FILTER_DEFS).map(([k, d]) =>
-        `<button class="popover-item" type="button" data-key="${k}">${esc(d.label)}</button>`).join('');
-    document.body.appendChild(pop);
-    positionPopover(pop, event.currentTarget);
-    pop.querySelectorAll('[data-key]').forEach(b => {
-      b.onclick = e => { e.stopPropagation(); pop.remove(); _openFilterValues(event.currentTarget, b.dataset.key); };
-    });
-    dismissOnOutsideClick(pop);
-  }
-
-  function _openFilterValues(anchorEl, key) {
-    document.querySelector('.popover')?.remove();
-    let options = [];
-    if (key === 'project') options = _allProjects.map(p => ({ v: p.id, label: p.name }));
-    if (key === 'milestone') options = [{ v: 'none', label: 'No milestone' },
-      ..._allMilestones.map(m => ({ v: m.id, label: m.name }))];
-    if (key === 'status') options = STATUSES.map(x => ({ v: x, label: STATUS_LABELS[x] }));
-    if (key === 'priority') options = PRIORITIES.map(x => ({ v: x, label: PRIORITY_LABELS[x] }));
-    if (key === 'assignee') options = [...new Set(_allIssues.map(i => i.assignee).filter(Boolean))]
-      .map(a => ({ v: a, label: a }));
-
-    const pop = document.createElement('div');
-    pop.className = 'popover';
-    const multi = FILTER_DEFS[key].multi;
-    pop.innerHTML = `<div class="popover-label">${esc(FILTER_DEFS[key].label)}</div>` +
-      (options.length ? options.map(o => {
-        const on = multi ? _filters[key].includes(o.v) : _filters[key] === o.v;
-        return `<button class="popover-item" type="button" role="menuitemcheckbox" aria-checked="${on}" data-v="${esc(o.v)}">
-          ${key === 'status' ? statusIcon(o.v, 15) : ''}
-          <span>${esc(o.label)}</span>
-          <span class="popover-check">${svg('<path d="m5 12 5 5 9-10"/>', 14)}</span>
-        </button>`;
-      }).join('') : `<div class="palette-empty" style="padding:14px">Nothing to filter by yet</div>`);
-    document.body.appendChild(pop);
-    positionPopover(pop, anchorEl);
-    pop.querySelectorAll('[data-v]').forEach(b => {
-      b.onclick = e => {
-        e.stopPropagation();
-        const v = b.dataset.v;
-        if (multi) {
-          const list = _filters[key];
-          const at = list.indexOf(v);
-          if (at >= 0) list.splice(at, 1); else list.push(v);
-          b.setAttribute('aria-checked', String(list.includes(v)));
-        } else {
-          _filters[key] = _filters[key] === v ? null : v;
-          pop.remove();
-        }
-        applyFilters();
-      };
-    });
-    dismissOnOutsideClick(pop);
-  }
-
-  function positionPopover(pop, anchorEl) {
-    const r = anchorEl.getBoundingClientRect();
-    pop.style.top = `${r.bottom + 6 + window.scrollY}px`;
-    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - pop.offsetWidth - 12))}px`;
-  }
-
-  function dismissOnOutsideClick(pop) {
-    setTimeout(() => {
-      document.addEventListener('click', function off(ev) {
-        if (pop.contains(ev.target)) return;
-        pop.remove();
-        document.removeEventListener('click', off);
-      });
-    }, 0);
-  }
-
-  function _clearFilter(key) {
-    _filters[key] = FILTER_DEFS[key].multi ? [] : null;
-    applyFilters();
-  }
-
-  function _clearAllFilters() {
-    _filters = { project: null, milestone: null, status: [], priority: [], assignee: null,
-                 search: _filters.search, archived: _filters.archived };
-    applyFilters();
-  }
-
-  function _toggleArchivedFilter() {
-    _filters.archived = !_filters.archived;
-    applyFilters();
-  }
-
-  function _onSearchInput(value) {
-    _filters.search = value;
-    applyFilters();
-  }
-
-  function applyFilters() {
-    const search = (_filters.search || '').toLowerCase();
-    let issues = _allIssues;
-
-    if (!_filters.archived) issues = issues.filter(i => !i.archived);
-    if (_filters.project) issues = issues.filter(i => i.project_id === _filters.project);
-    if (_filters.milestone === 'none') issues = issues.filter(i => !i.milestone_id);
-    else if (_filters.milestone) issues = issues.filter(i => i.milestone_id === _filters.milestone);
-    if (_filters.status.length) issues = issues.filter(i => _filters.status.includes(i.status));
-    if (_filters.priority.length) issues = issues.filter(i => _filters.priority.includes(i.priority));
-    if (_filters.assignee) issues = issues.filter(i => i.assignee === _filters.assignee);
-    if (search) issues = issues.filter(i =>
-      i.title.toLowerCase().includes(search) || (i.description || '').toLowerCase().includes(search));
-
-    renderChips();
-    writeFiltersToURL();
-
-    const total = _allIssues.filter(i => _filters.archived || !i.archived).length;
-    const sub = document.getElementById('issues-subtitle');
-    if (sub) {
-      const n = activeFilterCount() + (search ? 1 : 0);
-      sub.innerHTML = issues.length === total
-        ? `<span class="result-count"><strong>${total}</strong> issue${total !== 1 ? 's' : ''}</span>`
-        : `<span class="result-count">Showing <strong>${issues.length}</strong> of ${total} · ${n} filter${n !== 1 ? 's' : ''} active</span>`;
-    }
-
+  function renderIssuesPage() {
     const el = document.getElementById('issue-list');
     if (!el) return;
-    if (!issues.length) {
-      el.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-state-title">No issues match these filters</div>
-          <div>${total} issue${total !== 1 ? 's' : ''} are hidden by the filters above.</div>
-          <button class="btn btn-ghost" type="button" style="margin-top:8px" onclick="GRAFT._clearAllFilters()">Clear filters</button>
-        </div>`;
+    const total = Math.max(facetTotal(), _allIssues.length);
+    orgCount(_allIssues.length, total);
+
+    if (!_allIssues.length) {
+      if (!total) {
+        el.innerHTML = emptyState({
+          icon: '🌱',
+          title: 'No issues anywhere yet',
+          body: 'Issues are the unit of work in Graft. Add the first one and it will show up here.',
+          actionLabel: 'New issue',
+          onAction: 'GRAFT.openNewIssue()',
+        });
+      } else {
+        el.innerHTML = noMatchState({
+          hidden: total,
+          summary: orgFilterSummary(),
+          onClear: 'GRAFT._clearAllFilters()',
+          noun: 'issues',
+        });
+      }
+      pruneSelection([]);
       return;
     }
-
-    // Grouped by project — the list reads as a set of projects, not 87 rows
-    const groups = new Map();
-    issues.forEach(i => {
-      const key = i.project_id;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(i);
-    });
-    el.innerHTML = [...groups.entries()].map(([pid, rows]) => {
-      const p = _allProjects.find(x => x.id === pid);
-      return `
-        <div class="section-head" style="margin:14px 0 8px">
-          <span style="font-size:12px">${esc(p?.icon || '')}</span>
-          <span style="font-size:12.5px;font-weight:600;color:var(--ink)">${esc(p?.name || 'Unknown project')}</span>
-          <span class="section-count">${rows.length}</span>
-          <div class="section-rule"></div>
-        </div>
-        ${rows.map(i => renderIssueRow(i)).join('')}`;
-    }).join('');
+    renderIssueSurface(el, _allIssues, { showProject: true, board: _viewMode === 'board' });
   }
 
   // ══════════════════════════════════════════════════════════════
   //  PAGE: project.html  (Single project)
   // ══════════════════════════════════════════════════════════════
-  let _currentView = 'board';
-  let _activeMilestoneFilter = null;
-  let _currentProject = null;
-  let _showArchivedIssues = false;
+  let _projectLoaded = false;
+  let _projectMissing = false;
 
   window.reloadPage = async function () {
     if (window._pageMode === 'project') await loadProjectPage();
-    else if (window._pageMode === 'issues') await initIssues();
-    else if (window._pageMode === 'today') await initToday();
+    else if (window._pageMode === 'issues') { await loadFacets(); await loadIssuesPage(); }
+    else if (window._pageMode === 'today') await loadToday();
     else await loadProjects();
   };
 
@@ -1506,7 +2934,14 @@
     if (!id) { window.location.href = 'index.html'; return; }
     _currentProjectId = id;
     initChrome('project', { title: 'Project', fab: { label: 'New issue', action: () => openNewIssue(_currentProjectId) } });
-    await renderSidebarProjects();
+    initColourPicker('colour-picker', 'project-colour');
+    orgInit('project');
+    initViewMode('project');
+    document.getElementById('project-issues').innerHTML =
+      _viewMode === 'board' ? boardSkeleton() : skeleton('issue', 6);
+    await Promise.all([loadAreas(), loadViews()]);
+    renderOrgBar();
+    renderRail();
     await loadProjectPage();
     // Deep link from Today, search or a shared URL
     const focus = params.get('issue');
@@ -1515,48 +2950,88 @@
 
   async function loadProjectPage() {
     try {
-      const issuesUrl = _showArchivedIssues
-        ? `/api/issues?project_id=${_currentProjectId}&archived=1`
-        : `/api/issues?project_id=${_currentProjectId}`;
-      [_allProjects, _currentProject, _allIssues, _allMilestones] = await Promise.all([
+      const [projects, project, milestones] = await Promise.all([
         api('GET', '/api/projects'),
         api('GET', `/api/projects/${_currentProjectId}`),
-        api('GET', issuesUrl),
         api('GET', `/api/milestones?project_id=${_currentProjectId}`),
       ]);
-      document.title = `${_currentProject.name} — Graft`;
-      document.getElementById('project-name-breadcrumb').textContent = _currentProject.name;
-      document.getElementById('project-name-title').textContent = (_currentProject.icon ? _currentProject.icon + ' ' : '') + _currentProject.name;
-      document.getElementById('project-description-text').textContent = _currentProject.description || '';
-      renderProjectProgress();
-      // Show archived badge if project is archived
-      const hdr = document.getElementById('project-header');
-      if (hdr) hdr.dataset.archived = _currentProject.archived ? '1' : '0';
-      renderMilestoneFilterBar();
-      const saved = localStorage.getItem('graft_view');
-      if (saved === 'list' && _currentView !== 'list') {
-        _currentView = 'list';
-        document.getElementById('btn-board')?.classList.remove('active');
-        document.getElementById('btn-list')?.classList.add('active');
-        document.getElementById('view-board').style.display = 'none';
-        document.getElementById('view-list').style.display = 'flex';
-      }
-      renderView();
+      _allProjects = projects;
+      _currentProject = project;
+      _allMilestones = milestones;
+      _projectMissing = false;
+      _projectLoaded = true;
+      renderProjectHeader();
+      renderOrgBar();
+      await Promise.all([loadFacets(), loadProjectIssues(), loadProjectLinks()]);
+      renderOrgBar();  // the assignee and label vocabularies just arrived
     } catch (err) {
-      document.getElementById('project-name-title').textContent = 'Project not found';
+      if (err.status === 404) {
+        // Nothing is left to show, and the caches above still hold the last
+        // project's issues — clear them or the old board reads as this one's.
+        _projectMissing = true;
+        _currentProject = null;
+        _allIssues = [];
+        _allMilestones = [];
+        renderProjectHeader();
+        renderProjectIssues();
+        return;
+      }
+      if (_projectLoaded) { markStale(() => loadProjectPage()); return; }
+      document.getElementById('project-issues').innerHTML = errorState({
+        title: 'Can’t reach the Graft server',
+        body: 'This project is safe on the server — this device just couldn’t reach it.',
+        onRetry: 'GRAFT._retryProject()',
+      });
     }
   }
 
-  // Board and List are ways of drawing the same issues; archived is a
-  // different set of issues. It stays a filter and keeps you in your view.
+  async function _retryProject() {
+    document.getElementById('project-issues').innerHTML =
+      _viewMode === 'board' ? boardSkeleton() : skeleton('issue', 6);
+    await loadProjectPage();
+  }
+
+  function renderProjectHeader() {
+    const title = document.getElementById('project-name-title');
+    const desc = document.getElementById('project-description-text');
+    const crumb = document.getElementById('project-name-breadcrumb');
+    if (_projectMissing) {
+      if (title) title.textContent = 'Project not found';
+      if (desc) desc.textContent = '';
+      if (crumb) crumb.textContent = 'Not found';
+      setTopbarTitle('Not found');
+      const prog = document.getElementById('project-progress');
+      if (prog) prog.innerHTML = '';
+      return;
+    }
+    if (!_currentProject) return;
+    document.title = `${_currentProject.name} — Graft`;
+    if (crumb) crumb.textContent = _currentProject.name;
+    if (title) title.textContent = (_currentProject.icon ? _currentProject.icon + ' ' : '') + _currentProject.name;
+    if (desc) desc.textContent = _currentProject.description || '';
+    // The phone header used to read "Project" on every project in the
+    // workspace, because #topbar-title was hard-coded and never updated.
+    setTopbarTitle(_currentProject.name);
+    setTopbarMenu([
+      { label: 'Milestones', onClick: () => openMilestones() },
+      { label: 'Edit project', onClick: () => editCurrentProject() },
+      { label: _currentProject.archived ? 'Unarchive project' : 'Archive project', onClick: () => archiveCurrentProject() },
+      { separator: true },
+      { label: 'Delete project', danger: true, onClick: () => deleteProjectById(_currentProject.id) },
+    ]);
+    const hdr = document.getElementById('project-header');
+    if (hdr) hdr.dataset.archived = _currentProject.archived ? '1' : '0';
+    renderProjectProgress();
+  }
+
   // "Are we going to make it" belongs in the header, not in two raw counts.
   function renderProjectProgress() {
     const el = document.getElementById('project-progress');
     if (!el || !_currentProject) return;
-    const live = _allIssues.filter(i => !i.archived);
-    const done = live.filter(i => i.status === 'done').length;
-    const doing = live.filter(i => i.status === 'in-progress').length;
-    const total = live.length;
+    const c = _currentProject.issue_counts || {};
+    const done = c.done || 0;
+    const doing = c.in_progress || 0;
+    const total = c.total || 0;
     if (!total) { el.innerHTML = ''; return; }
     const next = _allMilestones
       .filter(m => m.due_date)
@@ -1568,75 +3043,102 @@
         <span class="progress-doing" style="width:${Math.round(doing / total * 100)}%"></span>
       </div>
       <span class="progress-label">${done} of ${total} done${
-        next ? ` · <span style="color:var(--sage)">${esc(next.name)}</span> ${esc(dueLabel(next.due_date))}` : ''}</span>`;
+        next ? ` · <span style="color:var(--accent-text)">${esc(next.name)}</span> ${esc(dueLabel(next.due_date))}` : ''}</span>`;
   }
 
-  function toggleArchivedIssues(btn) {
-    _showArchivedIssues = !_showArchivedIssues;
-    btn.setAttribute('aria-pressed', String(_showArchivedIssues));
-    loadProjectPage();
+  async function loadProjectLinks() {
+    const box = document.getElementById('project-links');
+    if (!box) return;
+    box.innerHTML = skeleton('link', 2);
+    try {
+      await loadLinks(_currentProjectId);
+      renderLinks('project-links', _currentProjectId);
+    } catch {
+      box.innerHTML = errorState({
+        title: 'Couldn’t load links',
+        body: 'The server didn’t answer for this project’s links.',
+        onRetry: 'GRAFT._retryProjectLinks()',
+      });
+    }
   }
 
-  function renderMilestoneFilterBar() {
-    const bar = document.getElementById('milestone-filter-bar');
-    const btns = document.getElementById('milestone-filter-buttons');
-    if (!bar || !btns || !_allMilestones.length) { if (bar) bar.style.display = 'none'; return; }
-    bar.style.display = 'flex';
-    btns.innerHTML = `
-      <button class="filter-btn ${!_activeMilestoneFilter ? 'active' : ''}" onclick="GRAFT.setMilestoneFilter(null)">All</button>
-      <button class="filter-btn ${_activeMilestoneFilter === 'none' ? 'active' : ''}" onclick="GRAFT.setMilestoneFilter('none')">No milestone</button>
-      ${_allMilestones.map(m => `<button class="filter-btn ${_activeMilestoneFilter === m.id ? 'active' : ''}" onclick="GRAFT.setMilestoneFilter('${m.id}')">${m.name}</button>`).join('')}
-    `;
+  async function _retryProjectLinks() { await loadProjectLinks(); }
+
+  async function loadProjectIssues() {
+    if (_projectMissing) { renderProjectIssues(); return; }
+    try {
+      _allIssues = await api('GET', `/api/issues${orgQuery({ project_id: _currentProjectId })}`);
+      markFresh();
+      renderProjectIssues();
+    } catch {
+      if (_projectLoaded && _allIssues.length) { markStale(() => loadProjectIssues()); return; }
+      document.getElementById('project-issues').innerHTML = errorState({
+        title: 'Can’t reach the Graft server',
+        body: 'This project’s issues are safe on the server — this device just couldn’t reach it.',
+        onRetry: 'GRAFT._retryProject()',
+      });
+    }
   }
 
-  function setMilestoneFilter(id) {
-    _activeMilestoneFilter = id;
-    renderMilestoneFilterBar();
-    renderView();
+  // The board had no empty state and no error state at all: a fresh project,
+  // a filter that matched nothing and a 404 all rendered as five columns
+  // saying "Nothing here yet".
+  function renderProjectIssues() {
+    const el = document.getElementById('project-issues');
+    if (!el) return;
+
+    if (_projectMissing) {
+      el.innerHTML = errorState({
+        title: 'This project no longer exists',
+        body: 'It may have been deleted from another device. Your other projects are unaffected.',
+        onRetry: `window.location.href='index.html'`,
+      });
+      orgCount(0, 0);
+      return;
+    }
+
+    const total = Math.max(facetTotal(), (_currentProject?.issue_counts || {}).total || 0, _allIssues.length);
+    orgCount(_allIssues.length, total);
+
+    if (!_allIssues.length) {
+      if (!total) {
+        el.innerHTML = emptyState({
+          icon: '🌱',
+          title: 'No issues in this project yet',
+          body: 'Press C, or use New issue, to add the first one.',
+          actionLabel: 'New issue',
+          onAction: 'GRAFT.openNewIssue()',
+        });
+      } else {
+        el.innerHTML = noMatchState({
+          hidden: total,
+          summary: orgFilterSummary(),
+          onClear: 'GRAFT._clearAllFilters()',
+          noun: 'issues',
+        });
+      }
+      pruneSelection([]);
+      return;
+    }
+    renderIssueSurface(el, sortedProjectIssues(), { board: _viewMode === 'board' });
   }
 
-  function setView(view, btn) {
-    _currentView = view;
-    document.querySelectorAll('.view-btn').forEach(b => {
-      b.classList.remove('active');
-      b.setAttribute('aria-selected', 'false');
-    });
-    btn.classList.add('active');
-    btn.setAttribute('aria-selected', 'true');
-    localStorage.setItem('graft_view', view);
-    document.getElementById('view-board').style.display = view === 'board' ? 'flex' : 'none';
-    document.getElementById('view-list').style.display = view === 'list' ? 'flex' : 'none';
-    renderView();
-  }
-
-  function filteredIssues() {
-    let issues = _allIssues;
-    if (_activeMilestoneFilter === 'none') issues = issues.filter(i => !i.milestone_id);
-    else if (_activeMilestoneFilter) issues = issues.filter(i => i.milestone_id === _activeMilestoneFilter);
-    return issues;
-  }
-
-  function renderView() {
-    if (_currentView === 'board') renderBoard();
-    else renderList();
+  // The server already sorted these. Manual order is re-applied here because
+  // a card dropped into a new place has to stay there on the optimistic
+  // re-render instead of snapping back to where it was.
+  function sortedProjectIssues() {
+    if (_org.sort !== 'manual') return _allIssues;
+    return [..._allIssues].sort((a, b) =>
+      (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+      String(a.created_at || '').localeCompare(String(b.created_at || '')));
   }
 
   // Soft limit — the column colours itself when work in progress piles up.
   const WIP_LIMIT = 3;
 
-  const STATUS_COL_COLORS = {
-    backlog: '#4a5a49', todo: '#96b86e', 'in-progress': '#c8903f',
-    review: '#9b7fc9', done: '#5eaa8e',
-  };
-
-  function renderBoard() {
-    const board = document.getElementById('view-board');
-    if (!board) return;
-    const issues = filteredIssues();
-    const statuses = ['backlog', 'todo', 'in-progress', 'review', 'done'];
-    board.innerHTML = statuses.map(status => {
+  function renderBoardInto(el, issues, { showProject = false } = {}) {
+    el.innerHTML = `<div class="kanban-board">${STATUSES.map(status => {
       const col = issues.filter(i => i.status === status);
-      const dotColor = STATUS_COL_COLORS[status];
       return `
         <div class="kanban-col"
              data-status="${status}"
@@ -1645,21 +3147,57 @@
              ondragleave="GRAFT._dragLeave(event)"
              ondrop="GRAFT._drop(event)">
           <div class="kanban-col-header">
-            <span class="col-status-dot" style="background:${dotColor}"></span>
+            ${statusIcon(status, 14)}
             <span class="col-name">${STATUS_LABELS[status]}</span>
             <span class="col-count"${status === 'in-progress' && col.length > WIP_LIMIT
-              ? ' style="color:var(--amber);border-color:var(--amber);background:rgba(200,144,63,.12)" title="More work in progress than the limit of ' + WIP_LIMIT + '"'
+              ? ' style="color:var(--amber);border-color:var(--amber)" title="More work in progress than the limit of ' + WIP_LIMIT + '"'
               : ''}>${col.length}${status === 'in-progress' ? ' / ' + WIP_LIMIT : ''}</span>
           </div>
           ${col.length
-            ? col.map(i => renderKanbanCard(i)).join('')
-            : `<div style="font-size:12.5px;color:var(--dim);padding:10px 4px 6px">Nothing here yet</div>`}
-          <button class="kanban-add-btn" onclick="GRAFT._addIssueInStatus('${status}')">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            ? col.map(i => renderKanbanCard(i, { showProject })).join('')
+            : `<div class="kanban-col-empty" style="font-size:12.5px;color:var(--ink-3);padding:10px 4px 6px">Nothing in ${STATUS_LABELS[status].toLowerCase()}</div>`}
+          <button class="kanban-add-btn" type="button" onclick="GRAFT._addIssueInStatus('${status}')">
+            ${svg(NAV_ICONS.plus, 12, 'stroke-width="2.5"')}
             Add issue
           </button>
         </div>`;
-    }).join('');
+    }).join('')}</div>`;
+  }
+
+  function _addIssueInStatus(status) {
+    openNewIssue(_currentProjectId);
+    setTimeout(() => { document.getElementById('issue-status').value = status; }, 50);
+  }
+
+  function editCurrentProject() {
+    if (!_currentProject) return;
+    document.getElementById('project-edit-id').value = _currentProject.id;
+    document.getElementById('project-name').value = _currentProject.name;
+    document.getElementById('project-description').value = _currentProject.description || '';
+    document.getElementById('project-status').value = _currentProject.status;
+    document.getElementById('project-icon').value = _currentProject.icon || '';
+    setColour('colour-picker', 'project-colour', _currentProject.colour);
+    initIconPicker('icon-picker', 'project-icon');
+    fillAreaSelect(_currentProject.area_id || '');
+    const archBtn = document.getElementById('archive-project-btn');
+    if (archBtn) archBtn.textContent = _currentProject.archived ? 'Unarchive' : 'Archive';
+    openModal('modal-edit-project');
+  }
+
+  async function archiveCurrentProject() {
+    if (!_currentProject) return;
+    const id = _currentProject.id;
+    try {
+      const updated = await api('PATCH', `/api/projects/${id}/archive`);
+      _currentProject = updated;
+      closeModal('modal-edit-project');
+      undoToast(`Project ${updated.archived ? 'archived' : 'unarchived'}`, async () => {
+        await api('PATCH', `/api/projects/${id}/archive`);
+        window.location.href = `project.html?id=${id}`;
+      });
+      if (updated.archived) setTimeout(() => { window.location.href = 'index.html'; }, 600);
+      else if (typeof reloadPage === 'function') reloadPage();
+    } catch { toast('Could not archive project'); }
   }
 
   // ── Drag and drop ────────────────────────────────────────────────
@@ -1687,19 +3225,13 @@
   function _dragOver(e) {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    // Show insertion indicator: find card we're hovering over
     const col = e.currentTarget;
     const afterCard = _getDragAfterCard(col, e.clientY);
-    const placeholder = col.querySelector('.drag-placeholder');
-    if (placeholder) placeholder.remove();
+    col.querySelector('.drag-placeholder')?.remove();
     const ph = document.createElement('div');
     ph.className = 'drag-placeholder';
-    if (afterCard) {
-      col.insertBefore(ph, afterCard);
-    } else {
-      const addBtn = col.querySelector('.kanban-add-btn');
-      col.insertBefore(ph, addBtn);
-    }
+    if (afterCard) col.insertBefore(ph, afterCard);
+    else col.insertBefore(ph, col.querySelector('.kanban-add-btn'));
   }
 
   function _dragEnter(e) {
@@ -1711,8 +3243,7 @@
     // Only remove if leaving the column itself, not a child
     if (!e.currentTarget.contains(e.relatedTarget)) {
       e.currentTarget.classList.remove('drop-target');
-      const ph = e.currentTarget.querySelector('.drag-placeholder');
-      if (ph) ph.remove();
+      e.currentTarget.querySelector('.drag-placeholder')?.remove();
     }
   }
 
@@ -1720,39 +3251,42 @@
     e.preventDefault();
     const col = e.currentTarget;
     col.classList.remove('drop-target');
-    const ph = col.querySelector('.drag-placeholder');
-    if (ph) ph.remove();
+    col.querySelector('.drag-placeholder')?.remove();
 
     const newStatus = col.dataset.status;
     if (!_dragId) return;
 
-    // Find new sort_order: cards currently in this col, figure out where placeholder landed
-    const cards = [...col.querySelectorAll('.kanban-card[data-id]')];
-    const afterCard = _getDragAfterCard(col, e.clientY);
-    let newOrder;
-    if (afterCard) {
-      const idx = cards.indexOf(afterCard);
-      newOrder = idx;
-    } else {
-      newOrder = cards.length;
-    }
-
-    // Optimistically update local data
     const issue = _allIssues.find(i => i.id === _dragId);
     if (!issue) return;
     const statusChanged = issue.status !== newStatus;
+
+    // Where the card landed, among the ids already drawn in this column
+    const afterCard = _getDragAfterCard(col, e.clientY);
+    const ids = [...col.querySelectorAll('.kanban-card[data-id]')]
+      .map(c => c.dataset.id)
+      .filter(cid => cid !== _dragId);
+    const at = afterCard ? ids.indexOf(afterCard.dataset.id) : -1;
+    ids.splice(at < 0 ? ids.length : at, 0, _dragId);
+
+    // Every card in the column is renumbered, not just the dragged one:
+    // issues created on the web all arrive with sort_order 0, so a single
+    // card's number means nothing until its neighbours have one too.
+    const order = ids.map((cid, n) => ({ id: cid, sort_order: n }));
+
     issue.status = newStatus;
-    issue.sort_order = newOrder;
+    order.forEach(({ id, sort_order }) => {
+      const card = _allIssues.find(i => i.id === id);
+      if (card) card.sort_order = sort_order;
+    });
 
-    // Re-render immediately (snappy feel)
-    renderBoard();
+    rerenderCurrentView();
 
-    // Persist to API
     try {
-      await api('PUT', `/api/issues/${_dragId}`, { status: newStatus, sort_order: newOrder });
+      if (statusChanged) await api('PUT', `/api/issues/${_dragId}`, { status: newStatus });
+      await api('PATCH', '/api/issues/reorder', { issues: order });
     } catch {
-      toast('Failed to save — refreshing');
-      await loadProjectPage();
+      toast('That move didn’t save — reloading the board');
+      if (typeof reloadPage === 'function') reloadPage();
     }
   }
 
@@ -1768,58 +3302,6 @@
     }, {}).element ?? null;
   }
 
-  function renderList() {
-    const list = document.getElementById('view-list');
-    if (!list) return;
-    const issues = filteredIssues();
-    if (!issues.length) {
-      const filtered = _activeMilestoneFilter || _showArchivedIssues;
-      list.innerHTML = `<div class="empty-state">
-        <div class="empty-state-icon">🌱</div>
-        <div class="empty-state-title">${filtered ? 'Nothing matches this filter' : 'No issues yet'}</div>
-        <div>${filtered ? 'Try clearing the milestone filter.' : 'Press C, or use New issue, to add the first one.'}</div>
-      </div>`;
-      return;
-    }
-    list.innerHTML = issues.map(i => renderIssueRow(i)).join('');
-  }
-
-  function _addIssueInStatus(status) {
-    openNewIssue(_currentProjectId);
-    setTimeout(() => { document.getElementById('issue-status').value = status; }, 50);
-  }
-
-  function editCurrentProject() {
-    if (!_currentProject) return;
-    document.getElementById('project-edit-id').value = _currentProject.id;
-    document.getElementById('project-name').value = _currentProject.name;
-    document.getElementById('project-description').value = _currentProject.description || '';
-    document.getElementById('project-status').value = _currentProject.status;
-    document.getElementById('project-icon').value = _currentProject.icon || '';
-    setColour('colour-picker', 'project-colour', _currentProject.colour);
-    initIconPicker('icon-picker', 'project-icon');
-    // Update archive button label
-    const archBtn = document.getElementById('archive-project-btn');
-    if (archBtn) archBtn.textContent = _currentProject.archived ? 'Unarchive' : 'Archive';
-    openModal('modal-edit-project');
-  }
-
-  async function archiveCurrentProject() {
-    if (!_currentProject) return;
-    const id = _currentProject.id;
-    try {
-      const updated = await api('PATCH', `/api/projects/${id}/archive`);
-      _currentProject = updated;
-      closeModal('modal-edit-project');
-      undoToast(`Project ${updated.archived ? 'archived' : 'unarchived'}`, async () => {
-        await api('PATCH', `/api/projects/${id}/archive`);
-        window.location.href = `project.html?id=${id}`;
-      });
-      if (updated.archived) setTimeout(() => { window.location.href = 'index.html'; }, 600);
-      else if (typeof reloadPage === 'function') reloadPage();
-    } catch { toast('Could not archive project'); }
-  }
-
   // ── Milestones CRUD ─────────────────────────────────────────────
   function openMilestones() {
     renderMilestonesList();
@@ -1831,19 +3313,22 @@
     const el = document.getElementById('milestones-list');
     if (!el) return;
     if (!_allMilestones.length) {
-      el.innerHTML = `<div class="loading-state" style="padding:12px 0">No milestones yet.</div>`;
+      el.innerHTML = `<div class="empty-state" style="padding:18px 0">
+        <div class="empty-state-title">No milestones yet</div>
+        <div class="empty-state-body">A milestone gives this project's issues a due date to sort by. Add one below.</div>
+      </div>`;
       return;
     }
     el.innerHTML = _allMilestones.map(m => `
-      <div class="milestone-row" id="ms-row-${m.id}">
-        <span class="milestone-row-name">${m.name}</span>
-        ${m.due_date ? `<span class="milestone-row-due">${m.due_date}</span>` : ''}
+      <div class="milestone-row" id="ms-row-${esc(m.id)}">
+        <span class="milestone-row-name">${esc(m.name)}</span>
+        ${m.due_date ? `<span class="milestone-row-due">${esc(m.due_date)}</span>` : ''}
         <div class="milestone-row-actions">
-          <button class="icon-btn" onclick="GRAFT._editMilestone('${m.id}')" title="Edit">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          <button class="icon-btn" type="button" onclick="GRAFT._editMilestone('${jsStr(m.id)}')" title="Edit" aria-label="Edit ${esc(m.name)}">
+            ${svg(NAV_ICONS.edit, 14)}
           </button>
-          <button class="icon-btn" onclick="GRAFT._deleteMilestone('${m.id}')" title="Delete">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+          <button class="icon-btn" type="button" onclick="GRAFT._deleteMilestone('${jsStr(m.id)}')" title="Delete" aria-label="Delete ${esc(m.name)}">
+            ${svg('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>', 14)}
           </button>
         </div>
       </div>`).join('');
@@ -1888,10 +3373,10 @@
       else await api('POST', '/api/milestones', body);
       _allMilestones = await api('GET', `/api/milestones?project_id=${_currentProjectId}`);
       renderMilestonesList();
-      renderMilestoneFilterBar();
+      renderOrgBar();  // the milestone filter's options just changed
       clearMilestoneForm();
       toast(editId ? 'Milestone updated' : 'Milestone added');
-    } catch { toast('Error saving milestone'); }
+    } catch { toast('Could not save the milestone'); }
   }
 
   async function _deleteMilestone(id) {
@@ -1910,11 +3395,13 @@
     try {
       await api('DELETE', `/api/milestones/${id}`);
       _allMilestones = await api('GET', `/api/milestones?project_id=${_currentProjectId}`);
-      if (_activeMilestoneFilter === id) _activeMilestoneFilter = null;
+      const at = _org.filters.milestone_id.indexOf(id);
+      if (at >= 0) _org.filters.milestone_id.splice(at, 1);
       renderMilestonesList();
-      renderMilestoneFilterBar();
+      renderOrgBar();
+      loadProjectIssues();
       toast('Milestone deleted');
-    } catch { toast('Error deleting milestone'); }
+    } catch { toast('Could not delete the milestone'); }
   }
 
   // ── Theme toggle ─────────────────────────────────────────────────
@@ -1930,8 +3417,8 @@
     localStorage.setItem(THEME_KEY, theme);
     document.querySelectorAll('.theme-toggle-btn').forEach(btn => {
       btn.innerHTML = theme === 'light'
-        ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> Dark mode`
-        : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> Light mode`;
+        ? `${svg('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>', 14)} Dark mode`
+        : `${svg('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>', 14)} Light mode`;
     });
   }
 
@@ -1957,7 +3444,7 @@
     container.innerHTML = `
       ${PROJECT_ICONS.map(icon => `
         <button type="button" class="icon-btn-pick ${icon === current ? 'selected' : ''}"
-                data-icon="${icon}"
+                data-icon="${icon}" aria-label="Use ${icon} as the project icon"
                 onclick="GRAFT._pickIcon('${containerId}','${inputId}','${icon}')">${icon}</button>
       `).join('')}
       <button type="button" class="icon-clear" onclick="GRAFT._pickIcon('${containerId}','${inputId}','')">None</button>
@@ -1988,6 +3475,7 @@
   };
 
   let _page = 'projects';
+  let _topbarMenu = [];
 
   // Builds the phone chrome the desktop sidebar can't provide: a top bar,
   // a drawer holding the same navigation, a tab bar and one primary action.
@@ -2003,17 +3491,25 @@
     const main = document.querySelector('.main');
     if (main && !main.id) main.id = 'main';
 
-    // Top bar
+    // The phone header. `.page-header-mobile` existed in the stylesheet and
+    // was applied by nothing, so below 768px the project name, the progress
+    // bar, Milestones, Edit project and the search field all disappeared and
+    // there was no way to manage milestones on a phone at all.
+    document.querySelectorAll('.page-header').forEach(h => h.classList.add('page-header-mobile'));
+
     if (main) {
       const bar = document.createElement('div');
       bar.className = 'mobile-topbar';
       bar.innerHTML = `
         <button class="topbar-btn" type="button" aria-label="Open navigation" data-act="menu">${svg(NAV_ICONS.menu, 20)}</button>
         <span class="topbar-title" id="topbar-title">${esc(opts.title || 'Graft')}</span>
-        <button class="topbar-btn" type="button" aria-label="Search" data-act="search">${svg(NAV_ICONS.search, 20)}</button>`;
+        <button class="topbar-btn" type="button" aria-label="Search" data-act="search">${svg(NAV_ICONS.search, 20)}</button>
+        <button class="header-more" type="button" aria-label="More actions" aria-haspopup="menu"
+                data-act="more" style="display:none">${svg(DOTS_ICON, 20)}</button>`;
       main.prepend(bar);
       bar.querySelector('[data-act="menu"]').onclick = openDrawer;
       bar.querySelector('[data-act="search"]').onclick = openPalette;
+      bar.querySelector('[data-act="more"]').onclick = e => openMenu(e.currentTarget, _topbarMenu);
     }
 
     // Drawer — the same nav the sidebar shows, reachable on a phone
@@ -2058,13 +3554,32 @@
     initShortcuts();
   }
 
+  function setTopbarTitle(text) {
+    const el = document.getElementById('topbar-title');
+    if (el) el.textContent = text;
+    const drawerEl = document.getElementById('drawer-topbar-title');
+    if (drawerEl) drawerEl.textContent = text;
+  }
+
+  // The overflow menu is where everything the desktop header shows in full
+  // lives on a phone: milestones, edit, archive, delete.
+  function setTopbarMenu(items) {
+    _topbarMenu = items || [];
+    const btn = document.querySelector('.mobile-topbar [data-act="more"]');
+    if (btn) btn.style.display = _topbarMenu.length ? '' : 'none';
+  }
+
   // Mirrors the sidebar into the drawer, so the project list added later
-  // by renderSidebarProjects() shows up in both.
+  // by renderRail() shows up in both.
   function syncDrawer() {
     const drawer = document.getElementById('drawer');
     const sidebar = document.querySelector('.sidebar');
     if (!drawer || !sidebar) return;
     drawer.innerHTML = sidebar.innerHTML;
+    // A straight copy would repeat every id the sidebar has. Prefix them so
+    // the document stays valid and getElementById still finds the original —
+    // the drawer is refreshed from the sidebar, never populated directly.
+    drawer.querySelectorAll('[id]').forEach(el => { el.id = `drawer-${el.id}`; });
     const brand = drawer.querySelector('.sidebar-brand');
     if (brand) {
       const close = document.createElement('button');
@@ -2077,17 +3592,29 @@
       brand.appendChild(close);
     }
     drawer.querySelectorAll('.theme-toggle-btn').forEach(b => { b.onclick = toggleTheme; });
+    setDrawerInert(!drawer.classList.contains('open'));
+  }
+
+  // Closed, the drawer is a complete invisible copy of the navigation sitting
+  // in the tab order. inert takes it out of it.
+  function setDrawerInert(off) {
+    const drawer = document.getElementById('drawer');
+    if (!drawer) return;
+    if (off) drawer.setAttribute('inert', '');
+    else drawer.removeAttribute('inert');
   }
 
   function openDrawer() {
     document.getElementById('drawer')?.classList.add('open');
     document.getElementById('drawer-scrim')?.classList.add('open');
+    setDrawerInert(false);
     document.body.style.overflow = 'hidden';
   }
 
   function closeDrawer() {
     document.getElementById('drawer')?.classList.remove('open');
     document.getElementById('drawer-scrim')?.classList.remove('open');
+    setDrawerInert(true);
     document.body.style.overflow = '';
   }
 
@@ -2101,7 +3628,6 @@
     overlay.className = 'modal-overlay';
     overlay.id = 'palette-overlay';
     overlay.style.display = 'block';
-    overlay.style.background = 'rgba(0,0,0,.5)';
     overlay.onclick = closePalette;
     document.body.appendChild(overlay);
 
@@ -2109,34 +3635,55 @@
     el.className = 'palette';
     el.id = 'palette';
     el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
     el.setAttribute('aria-label', 'Search');
     el.innerHTML = `
       <input class="palette-input" id="palette-input" placeholder="Search issues and projects…"
              autocomplete="off" spellcheck="false" aria-label="Search issues and projects">
-      <div class="palette-results" id="palette-results">
-        <div class="palette-empty">Loading…</div>
-      </div>`;
+      <div class="palette-results" id="palette-results">${skeleton('issue', 3)}</div>`;
     document.body.appendChild(el);
     document.body.style.overflow = 'hidden';
+    trapFocus(el);
     document.getElementById('palette-input').focus();
+    document.getElementById('palette-input').addEventListener('input', e => renderPalette(e.target.value));
 
-    if (!_paletteData) {
-      try {
-        const [projects, issues] = await Promise.all([
-          api('GET', '/api/projects'),
-          api('GET', '/api/issues'),
-        ]);
-        const names = Object.fromEntries(projects.map(p => [p.id, p.name]));
-        _paletteData = {
-          projects,
-          issues: issues.map(i => ({ ...i, project_name: names[i.project_id] })),
-        };
-      } catch {
-        _paletteData = { projects: [], issues: [] };
+    if (!_paletteData) await fetchPaletteData();
+    else renderPalette('');
+  }
+
+  // A failed fetch used to be cached as {projects: [], issues: []} for the
+  // rest of the session, so a dead server looked exactly like an empty
+  // workspace — and kept looking like one until you reloaded the page.
+  // Nothing is cached unless it actually arrived.
+  async function fetchPaletteData() {
+    const box = document.getElementById('palette-results');
+    try {
+      const [projects, issues] = await Promise.all([
+        api('GET', '/api/projects'),
+        api('GET', '/api/issues'),
+      ]);
+      const names = Object.fromEntries(projects.map(p => [p.id, p.name]));
+      _paletteData = {
+        projects,
+        issues: issues.map(i => ({ ...i, project_name: names[i.project_id] })),
+      };
+      renderPalette(document.getElementById('palette-input')?.value || '');
+    } catch {
+      _paletteData = null;
+      if (box) {
+        box.innerHTML = errorState({
+          title: 'Search is unavailable',
+          body: 'Graft couldn’t reach the server, so this isn’t an empty workspace — it’s an unreachable one.',
+          onRetry: 'GRAFT._retryPalette()',
+        });
       }
     }
-    renderPalette('');
-    document.getElementById('palette-input').addEventListener('input', e => renderPalette(e.target.value));
+  }
+
+  async function _retryPalette() {
+    const box = document.getElementById('palette-results');
+    if (box) box.innerHTML = skeleton('issue', 3);
+    await fetchPaletteData();
   }
 
   function renderPalette(query) {
@@ -2155,7 +3702,9 @@
     _paletteIndex = 0;
 
     if (!items.length) {
-      box.innerHTML = `<div class="palette-empty">${q ? 'Nothing matches “' + esc(query) + '”' : 'Type to search'}</div>`;
+      box.innerHTML = `<div class="palette-empty">${q
+        ? 'Nothing matches “' + esc(query) + '”'
+        : 'Nothing here yet — create a project to search across it'}</div>`;
       return;
     }
     box.innerHTML = items.map((it, n) => `
@@ -2176,7 +3725,9 @@
   }
 
   function closePalette() {
-    document.getElementById('palette')?.remove();
+    const el = document.getElementById('palette');
+    if (el) releaseFocus(el);
+    el?.remove();
     document.getElementById('palette-overlay')?.remove();
     document.body.style.overflow = '';
   }
@@ -2214,16 +3765,28 @@
       }
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault(); openPalette(); return;
+        e.preventDefault();
+        // The bar's search field is the search on a list surface, and the
+        // palette is the one that crosses the whole workspace.
+        const field = document.getElementById('org-q');
+        if (field) { field.focus(); field.select(); }
+        else openPalette();
+        return;
       }
       if (e.key === 'Escape') {
+        // A popover is the shallowest thing on screen, so it closes first.
+        if (document.querySelector('.popover')) { closeMenus(); return; }
         if (document.getElementById('drawer')?.classList.contains('open')) { closeDrawer(); return; }
         if (document.getElementById('issue-slideover')?.style.display === 'flex') { closeSlideover(); return; }
         const open = [...document.querySelectorAll('.modal-overlay')].find(m => m.style.display === 'flex');
-        if (open?.id) closeModal(open.id);
+        if (open?.id) { closeModal(open.id); return; }
+        if (_selection.size) { clearSelection(); return; }
         return;
       }
-      if (isTyping(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+      // The old guard only asked whether the focused element was a field, so
+      // clicking any non-field part of an open Edit issue modal and pressing
+      // "c" blanked every field in the form you were filling in.
+      if (isTyping(e) || anyModalOpen() || e.metaKey || e.ctrlKey || e.altKey) return;
 
       if (e.key === '/') { e.preventDefault(); openPalette(); return; }
       if (e.key.toLowerCase() === 'c') {
@@ -2237,11 +3800,10 @@
   // ── Public API ──────────────────────────────────────────────────
   window.GRAFT = {
     init, initIssues, initProject, initToday,
-    filterProjects, applyFilters,
     openNewProject, openNewIssue, openEditIssue,
     submitProject, deleteProject, submitIssue, deleteIssue,
     archiveCurrentProject,
-    setView, setMilestoneFilter, toggleArchivedIssues,
+    setView,
     openMilestones, submitMilestone, cancelMilestone,
     openIssueSlideover, closeSlideover,
     editCurrentProject,
@@ -2254,9 +3816,18 @@
     toggleTheme, initIconPicker, _pickIcon,
     _renderProjectSection, _toggleProjectSection, _soProjectSave,
     // chrome
-    openDrawer, closeDrawer, openPalette, closePalette,
-    // issues page filters
-    _clearFilter, _clearAllFilters, _toggleArchivedFilter, _onSearchInput,
+    openDrawer, closeDrawer, openPalette, closePalette, _retryPalette,
+    // the organisation bar
+    _clearFilter, _clearAllFilters, _toggleArchived, _onSearchInput,
+    // areas, links, views
+    createArea, _areaMenu, _toggleArea, _toggleRailArea,
+    _addLink, _editLink, _linkMenu, _removeLink,
+    _applyView: applySavedView, _deleteView: deleteSavedView,
+    // retries
+    _retryRail, _retryProjects, _retryIssues, _retryProject, _retryToday,
+    _retryProjectLinks, _retrySlideoverLinks,
+    // today
+    _expandToday, _collapseToday,
     // rows, status, selection
     _openStatusMenu, setIssueStatus, _toggleSelect, clearSelection,
     archiveIssue, deleteIssueById, _goToIssue,

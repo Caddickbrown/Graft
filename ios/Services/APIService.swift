@@ -1,18 +1,22 @@
 import Foundation
 
-// MARK: - InsecureSessionDelegate
-
-final class InsecureSessionDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let serverTrust = challenge.protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: serverTrust))
-        } else {
-            completionHandler(.performDefaultHandling, nil)
-        }
-    }
-}
+// MARK: - Certificate handling
+//
+// There is deliberately no `URLSessionDelegate` here any more.
+//
+// This file used to carry an `InsecureSessionDelegate` that answered every
+// server-trust challenge with `.useCredential` and the server's own trust
+// object — that is, it accepted *any* certificate from *any* host, which is
+// the whole of TLS turned off. It made the app's HTTPS decorative, and it made
+// the Settings screen's certificate instructions a lie: nothing the user did
+// with the mkcert root could have changed the outcome, because the app was
+// never going to check.
+//
+// The Pi's certificate comes from the user's own mkcert development CA, and the
+// supported way to trust it is the supported way: install the root on the
+// device and enable it under Certificate Trust Settings. Settings spells out
+// both steps. Until that is done, syncing fails — visibly, through the sync
+// strip — which is the correct outcome rather than a silent downgrade.
 
 // MARK: - APIService
 

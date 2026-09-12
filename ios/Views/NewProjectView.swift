@@ -8,9 +8,15 @@ struct NewProjectView: View {
     @State private var description = ""
     @State private var selectedColour = Color.indigo
     @State private var status = "active"
+    @State private var areaId = ""
     @State private var isSaving = false
 
     let statuses = ["active", "paused", "done"]
+
+    private var hasDraft: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+            || !description.trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
     var body: some View {
         NavigationStack {
@@ -19,6 +25,10 @@ struct NewProjectView: View {
                     TextField("Name", text: $name)
                     TextField("Description (optional)", text: $description, axis: .vertical)
                         .lineLimit(3...6)
+                }
+
+                Section("Area") {
+                    AreaPicker(areaId: $areaId)
                 }
 
                 Section("Appearance") {
@@ -49,6 +59,8 @@ struct NewProjectView: View {
                 }
             }
             .disabled(isSaving)
+            // A swipe-down used to throw the draft away silently.
+            .interactiveDismissDisabled(hasDraft)
         }
     }
 
@@ -56,7 +68,13 @@ struct NewProjectView: View {
         isSaving = true
         defer { isSaving = false }
         let hex = selectedColour.toHex()
-        try? await store.createProject(name: name, description: description, colour: hex, status: status)
+        try? await store.createProject(
+            name: name,
+            description: description,
+            colour: hex,
+            status: status,
+            areaId: areaId
+        )
         dismiss()
     }
 
@@ -83,9 +101,20 @@ struct EditProjectView: View {
     @State private var selectedColour = Color.indigo
     @State private var status = "active"
     @State private var icon = ""
+    @State private var areaId = ""
     @State private var isSaving = false
+    @State private var loaded = false
 
     let statuses = ["active", "paused", "done"]
+
+    /// Anything changed from what the project currently says.
+    private var hasDraft: Bool {
+        name != project.name
+            || description != project.description
+            || status != project.status
+            || icon != project.icon
+            || areaId != project.areaKey
+    }
 
     var body: some View {
         NavigationStack {
@@ -94,6 +123,10 @@ struct EditProjectView: View {
                     TextField("Name", text: $name)
                     TextField("Description (optional)", text: $description, axis: .vertical)
                         .lineLimit(3...6)
+                }
+
+                Section("Area") {
+                    AreaPicker(areaId: $areaId)
                 }
 
                 Section("Icon") {
@@ -124,11 +157,16 @@ struct EditProjectView: View {
             .navigationTitle("Edit project")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
+                // Guarded: a second `onAppear` would put the stored values back
+                // over whatever has been typed since the first one.
+                guard !loaded else { return }
+                loaded = true
                 name = project.name
                 description = project.description
                 status = project.status
                 selectedColour = Color(hex: project.colour)
                 icon = project.icon
+                areaId = project.areaKey
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -143,6 +181,7 @@ struct EditProjectView: View {
                 }
             }
             .disabled(isSaving)
+            .interactiveDismissDisabled(hasDraft)
         }
     }
 
@@ -155,6 +194,7 @@ struct EditProjectView: View {
         updated.status = status
         updated.colour = selectedColour.toHex()
         updated.icon = icon
+        updated.areaId = areaId
         try? await store.updateProject(updated)
         dismiss()
     }
