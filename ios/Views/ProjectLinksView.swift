@@ -147,7 +147,7 @@ struct ProjectLinksSection: View {
                             .foregroundStyle(Color.gAccentText)
                             .frame(width: 22)
                         Text(links.isEmpty ? "Add a link — repo, docs, deploy" : "Add a link")
-                            .font(.system(size: GraftType.body))
+                            .font(GraftFont.text(GraftType.body))
                             .foregroundStyle(Color.gAccentText)
                         Spacer(minLength: 0)
                     }
@@ -204,11 +204,11 @@ private struct LinkRow: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(link.label.isEmpty ? link.host : link.label)
-                    .font(.system(size: GraftType.body))
+                    .font(GraftFont.text(GraftType.body))
                     .foregroundStyle(Color.gInk)
                     .lineLimit(1)
                 Text(link.host)
-                    .font(.system(size: GraftType.caption))
+                    .font(GraftFont.text(GraftType.caption))
                     .foregroundStyle(Color.gInk2)
                     .lineLimit(1)
             }
@@ -246,6 +246,7 @@ struct LinkFormView: View {
     @State private var kindChosenByHand = false
     @State private var isSaving = false
     @State private var loaded = false
+    @FocusState private var focus: GraftFormField?
 
     private var isEditing: Bool { link != nil }
 
@@ -259,43 +260,50 @@ struct LinkFormView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Link") {
-                    TextField("Label (e.g. Repo)", text: $label)
-                    TextField("https://…", text: $url)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .onChange(of: url) { _, newValue in
-                            guard !kindChosenByHand else { return }
-                            kind = GraftLinkKind.detect(from: newValue)
-                        }
-                }
+        GraftFormScaffold(
+            title: isEditing ? "Edit link" : "Add link",
+            confirmLabel: isEditing ? "Save" : "Add",
+            confirmDisabled: trimmedURL.isEmpty,
+            isBusy: isSaving,
+            onCancel: { dismiss() },
+            onConfirm: { Task { await save() } }
+        ) {
+            GraftSection(title: "Link") {
+                GraftTextField(label: "Label", placeholder: "e.g. Repo",
+                               text: $label, focused: $focus, field: .label)
+                GraftRowDivider()
+                GraftTextField(label: "Address", placeholder: "https://…",
+                               text: $url, focused: $focus, field: .url)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .onChange(of: url) { _, newValue in
+                        guard !kindChosenByHand else { return }
+                        kind = GraftLinkKind.detect(from: newValue)
+                    }
+            }
 
-                Section {
-                    // A hand-written binding rather than `.onChange(of: kind)`:
-                    // auto-detection also writes `kind`, and an observer could
-                    // not tell the two apart — it would latch on the first
-                    // keystroke and then never detect again.
-                    Picker("Kind", selection: Binding(
+            GraftSection(title: "Kind",
+                         footnote: "Guessed from the address. Change it if the guess is wrong.") {
+                // A hand-written binding rather than `.onChange(of: kind)`:
+                // auto-detection also writes `kind`, and an observer could not
+                // tell the two apart — it would latch on the first keystroke
+                // and then never detect again.
+                GraftChoiceRow(
+                    label: "",
+                    options: GraftLinkKind.allCases,
+                    selection: Binding(
                         get: { kind },
                         set: { newKind in
                             kind = newKind
                             kindChosenByHand = true
                         }
-                    )) {
-                        ForEach(GraftLinkKind.allCases) { k in
-                            Label(k.label, systemImage: k.systemImage).tag(k)
-                        }
-                    }
-                } footer: {
-                    Text("Guessed from the address. Change it if the guess is wrong.")
-                }
+                    ),
+                    title: { $0.label }
+                )
             }
-            .navigationTitle(isEditing ? "Edit link" : "Add link")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
+        }
+        .onAppear {
                 // Guarded: `onAppear` fires again when the sheet comes back from
                 // a keyboard or a backgrounded app, and re-hydrating would wipe
                 // what has been typed since.
@@ -308,22 +316,9 @@ struct LinkFormView: View {
                     kindChosenByHand = true
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isEditing ? "Save" : "Add") {
-                        Task { await save() }
-                    }
-                    .fontWeight(.semibold)
-                    .disabled(trimmedURL.isEmpty || isSaving)
-                }
-            }
-            .disabled(isSaving)
-            // A swipe-down used to throw the draft away without a word.
-            .interactiveDismissDisabled(hasDraft)
-        }
+        .disabled(isSaving)
+        // A swipe-down used to throw the draft away without a word.
+        .interactiveDismissDisabled(hasDraft)
     }
 
     private func save() async {

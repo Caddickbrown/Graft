@@ -226,11 +226,11 @@ struct SyncStrip: View {
                 .foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.system(size: GraftType.caption, weight: .medium))
+                    .font(GraftFont.text(GraftType.caption, .medium))
                     .foregroundStyle(Color.gInk)
                 if let detail {
                     Text(detail)
-                        .font(.system(size: GraftType.micro))
+                        .font(GraftFont.text(GraftType.micro))
                         .foregroundStyle(Color.gInk2)
                         .lineLimit(1)
                 }
@@ -238,7 +238,7 @@ struct SyncStrip: View {
             Spacer(minLength: GraftMetrics.spaceXS)
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
-                    .font(.system(size: GraftType.caption, weight: .semibold))
+                    .font(GraftFont.text(GraftType.caption, .semibold))
                     .foregroundStyle(Color.gAccentText)
                     // The rule: 44pt on the smallest axis, whatever the strip
                     // looks like.
@@ -272,7 +272,7 @@ struct GraftScreenSubtitle: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: GraftType.secondary))
+            .font(GraftFont.text(GraftType.secondary))
             .foregroundStyle(Color.gInk2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, GraftMetrics.gutter)
@@ -289,25 +289,35 @@ struct GraftSectionHeader: View {
     let title: String
     var count: Int? = nil
     var trailing: AnyView? = nil
+    /// Screens carry the gutter themselves; a form has already applied it.
+    var inset: Bool = true
 
     var body: some View {
         HStack(spacing: GraftMetrics.spaceXS) {
             Text(title.uppercased())
-                .font(.system(size: GraftType.micro, weight: .semibold))
+                .font(GraftFont.text(GraftType.micro, .semibold))
                 .kerning(GraftType.microTracking)
                 .foregroundStyle(Color.gInk2)
+                .fixedSize()
             if let count {
                 Text("\(count)")
-                    .font(.system(size: GraftType.micro))
-                    .foregroundStyle(Color.gInk2)
-                    .padding(.horizontal, 7)
+                    .font(GraftFont.mono(GraftType.micro))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.gInk3)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Color.gSurface2, in: Capsule())
+                    .fixedSize()
             }
-            Spacer(minLength: 0)
-            if let trailing { trailing }
+            // The rule to the right edge. This is the web client's section head
+            // and it is most of what stops a list of groups reading as a plain
+            // iOS table with grey captions.
+            Rectangle()
+                .fill(Color.gHairline)
+                .frame(height: GraftMetrics.border)
+            if let trailing { trailing.fixedSize() }
         }
-        .padding(.horizontal, GraftMetrics.gutter)
+        .padding(.horizontal, inset ? GraftMetrics.gutter : 0)
         .padding(.top, GraftMetrics.spaceXXS)
         .padding(.bottom, GraftMetrics.spaceXS)
     }
@@ -324,7 +334,7 @@ struct GraftSectionEmpty: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: GraftType.secondary))
+            .font(GraftFont.text(GraftType.secondary))
             .foregroundStyle(Color.gInk3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, GraftMetrics.spaceS)

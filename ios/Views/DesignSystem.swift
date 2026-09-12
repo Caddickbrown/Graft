@@ -135,6 +135,89 @@ enum GraftType {
     static let microTracking: CGFloat = 0.6
 }
 
+// MARK: - Font
+//
+// The three families the web client loads from Google Fonts, bundled so both
+// clients render the design in the same type (see Fonts/README.md). Everything
+// the app *writes* goes through here; SF Symbols deliberately do not, because a
+// symbol is a glyph in the system font and asking for it in Geist loses it.
+//
+// `fixedSize:` rather than `size:` on purpose: `Font.custom(_:size:)` scales
+// with Dynamic Type, and this system's control heights (30/34/38/44) are fixed,
+// so scaling text inside them clips. Matching `.system(size:)` keeps the layout
+// the design was drawn against. Honouring Dynamic Type properly means making
+// those heights flexible first — worth doing, but not silently here.
+
+enum GraftFont {
+
+    /// Body and UI text — Geist. The default for anything the user reads.
+    static func text(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+        .custom(geist(weight), fixedSize: size)
+    }
+
+    /// Display face — Bricolage Grotesque. The wordmark and screen titles only;
+    /// it has real personality at 20pt and up and gets noisy below that.
+    static func display(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {
+        .custom(bricolage(weight), fixedSize: size)
+    }
+
+    /// Geist Mono, for counts and anything that should line up in a column.
+    /// Pair with `.monospacedDigit()` at the call site for tabular figures.
+    static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+        .custom(size: size, weight >= .medium ? "GeistMono-Medium" : "GeistMono-Regular")
+    }
+
+    // MARK: Weight -> PostScript name
+    //
+    // SwiftUI addresses a custom face by PostScript name and will not drive a
+    // variable font's axes, which is why Fonts/ holds one static file per weight.
+
+    private static func geist(_ w: Font.Weight) -> String {
+        switch w {
+        case .ultraLight, .thin, .light: return "Geist-Light"
+        case .medium:                    return "Geist-Medium"
+        case .semibold:                  return "Geist-SemiBold"
+        case .bold, .heavy, .black:      return "Geist-Bold"
+        default:                         return "Geist-Regular"
+        }
+    }
+
+    private static func bricolage(_ w: Font.Weight) -> String {
+        switch w {
+        case .bold, .heavy, .black: return "BricolageGrotesque-Bold"
+        default:                    return "BricolageGrotesque-SemiBold"
+        }
+    }
+}
+
+private extension Font {
+    /// Argument-order helper so `mono` reads the same way as its siblings.
+    static func custom(size: CGFloat, _ name: String) -> Font {
+        .custom(name, fixedSize: size)
+    }
+}
+
+extension Font.Weight: @retroactive Comparable {
+    /// Only used to pick between the two mono weights that ship.
+    public static func < (lhs: Font.Weight, rhs: Font.Weight) -> Bool {
+        order(lhs) < order(rhs)
+    }
+    private static func order(_ w: Font.Weight) -> Int {
+        switch w {
+        case .ultraLight: return 0
+        case .thin:       return 1
+        case .light:      return 2
+        case .regular:    return 3
+        case .medium:     return 4
+        case .semibold:   return 5
+        case .bold:       return 6
+        case .heavy:      return 7
+        case .black:      return 8
+        default:          return 3
+        }
+    }
+}
+
 // MARK: - Metrics
 
 enum GraftMetrics {
@@ -404,7 +487,7 @@ struct StatusBadge: View {
         HStack(spacing: GraftMetrics.spaceXXS) {
             StatusRing(status: s, size: 12)
             Text(s.label)
-                .font(.system(size: GraftType.caption, weight: .medium))
+                .font(GraftFont.text(GraftType.caption, .medium))
         }
         .foregroundStyle(s.color)
         .padding(.horizontal, GraftMetrics.spaceXS)
@@ -458,7 +541,7 @@ struct MilestoneTag: View {
             Image(systemName: "flag.fill")
                 .font(.system(size: 9))
             Text(name)
-                .font(.system(size: GraftType.caption, weight: .medium))
+                .font(GraftFont.text(GraftType.caption, .medium))
         }
         .foregroundStyle(Color.gInk2)
         .padding(.horizontal, 7)
@@ -478,7 +561,7 @@ struct GraftLabelChip: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.system(size: GraftType.caption, weight: .medium))
+            .font(GraftFont.text(GraftType.caption, .medium))
             .foregroundStyle(Color.gInk2)
             .lineLimit(1)
             .padding(.horizontal, 7)
@@ -509,17 +592,17 @@ struct GraftEmptyState: View {
                 .font(.system(size: 36, weight: .light))
                 .foregroundStyle(Color.gInk3)
             Text(title)
-                .font(.system(size: GraftType.heading, weight: .semibold))
+                .font(GraftFont.display(GraftType.heading))
                 .foregroundStyle(Color.gInk)
             Text(subtitle)
-                .font(.system(size: GraftType.body))
+                .font(GraftFont.text(GraftType.body))
                 .foregroundStyle(Color.gInk2)
                 .multilineTextAlignment(.center)
 
             if let actionTitle, let action {
                 Button(action: action) {
                     Text(actionTitle)
-                        .font(.system(size: GraftType.body, weight: .semibold))
+                        .font(GraftFont.text(GraftType.body, .semibold))
                         .foregroundStyle(Color.gOnAccent)
                         .padding(.horizontal, GraftMetrics.spaceL)
                         .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
@@ -558,7 +641,7 @@ struct PriorityBadge: View {
                 Image(systemName: p.icon)
                     .font(.system(size: 11))
                 Text(p.label)
-                    .font(.system(size: GraftType.caption, weight: .semibold))
+                    .font(GraftFont.text(GraftType.caption, .semibold))
             }
             .foregroundStyle(p.color)
             .padding(.horizontal, 9)
@@ -595,7 +678,7 @@ struct GraftAvatar: View {
                     )
             } else {
                 Text(initials)
-                    .font(.system(size: size * 0.40, weight: .semibold))
+                    .font(GraftFont.text(size * 0.40, .semibold))
                     .foregroundStyle(Color.gInk2)
                     .frame(width: size, height: size)
                     .background(Color.gSurface2, in: Circle())
@@ -629,13 +712,13 @@ struct UndoBanner: View {
                 .font(.system(size: 15))
                 .foregroundStyle(Color.gInk2)
             Text(action.message)
-                .font(.system(size: GraftType.body))
+                .font(GraftFont.text(GraftType.body))
                 .foregroundStyle(Color.gInk)
             Spacer(minLength: GraftMetrics.spaceXS)
             Button("Undo") {
                 Task { await action.undo(); dismiss() }
             }
-            .font(.system(size: GraftType.body, weight: .semibold))
+            .font(GraftFont.text(GraftType.body, .semibold))
             .foregroundStyle(Color.gAccentText)
             .frame(minHeight: GraftMetrics.tap)
         }
@@ -708,7 +791,7 @@ struct GraftIssueRow: View {
 
                 VStack(alignment: .leading, spacing: 7) {
                     Text(issue.title)
-                        .font(.system(size: GraftType.title, weight: .medium))
+                        .font(GraftFont.text(GraftType.title, .medium))
                         .foregroundStyle(done ? Color.gInk2 : Color.gInk)
                         .strikethrough(done, color: Color.gInk2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -718,7 +801,7 @@ struct GraftIssueRow: View {
                         PriorityBadge(priority: issue.priority)
                         if let due {
                             Text(due)
-                                .font(.system(size: GraftType.caption))
+                                .font(GraftFont.text(GraftType.caption))
                                 .foregroundStyle(overdue ? Color.gRed : Color.gInk2)
                         }
                         if let milestone = issue.milestoneName {
@@ -726,7 +809,7 @@ struct GraftIssueRow: View {
                         }
                         if showProject, let project {
                             Text(project.name)
-                                .font(.system(size: GraftType.caption))
+                                .font(GraftFont.text(GraftType.caption))
                                 .foregroundStyle(Color.gInk2)
                                 .lineLimit(1)
                         }
@@ -741,7 +824,7 @@ struct GraftIssueRow: View {
                             }
                             if labels.count > maxLabels {
                                 Text("+\(labels.count - maxLabels)")
-                                    .font(.system(size: GraftType.caption, weight: .medium))
+                                    .font(GraftFont.text(GraftType.caption, .medium))
                                     .foregroundStyle(Color.gInk3)
                             }
                             Spacer(minLength: 0)
@@ -862,5 +945,121 @@ extension Color {
         var r: CGFloat = 0; var g: CGFloat = 0; var b: CGFloat = 0; var a: CGFloat = 0
         c.getRed(&r, green: &g, blue: &b, alpha: &a)
         return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
+    }
+}
+
+// MARK: - The mark
+//
+// The splice: two offset bars bridged by a 45° diagonal, the graft join. This
+// is the same 18×18 source the app icon is drawn from (see make_icon.swift), so
+// the mark in the app and the mark on the home screen cannot drift apart. The
+// web client draws the identical path in `.brand-mark`.
+
+struct GraftMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        // Stroke sits on the centreline, so inset by half of it to keep the
+        // painted extent inside `rect` at any size.
+        let u = min(rect.width, rect.height) / 18
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * u, y: rect.minY + y * u)
+        }
+        var path = Path()
+        // Upper bar: rises on the left, turns right across the top.
+        path.move(to: p(2.5, 13.5))
+        path.addArc(tangent1End: p(2.5, 4.2), tangent2End: p(6.6, 4.2), radius: 2 * u)
+        path.addLine(to: p(6.6, 4.2))
+        // Lower bar: the same shape rotated 180° about the centre.
+        path.move(to: p(15.5, 4.5))
+        path.addArc(tangent1End: p(15.5, 13.8), tangent2End: p(11.4, 13.8), radius: 2 * u)
+        path.addLine(to: p(11.4, 13.8))
+        // The join itself.
+        path.move(to: p(6.1, 11.9))
+        path.addLine(to: p(11.9, 6.1))
+        return path
+    }
+}
+
+/// The mark at a given size, stroked in the accent. Weight scales with the box,
+/// exactly as in the icon: 2.6 units of the 18-unit grid.
+struct GraftMarkView: View {
+    var size: CGFloat = 20
+    var colour: Color = .gAccent
+
+    var body: some View {
+        GraftMark()
+            .stroke(colour, style: StrokeStyle(lineWidth: size * 2.6 / 18,
+                                               lineCap: .round, lineJoin: .round))
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Mark plus wordmark, the way the web client's rail draws it.
+struct GraftWordmark: View {
+    var size: CGFloat = 20
+
+    var body: some View {
+        HStack(spacing: GraftMetrics.spaceXS) {
+            GraftMarkView(size: size)
+            Text("Graft")
+                .font(GraftFont.display(size * 1.05, .bold))
+                .foregroundStyle(Color.gInk)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Graft")
+    }
+}
+
+// MARK: - Project colours
+//
+// One muted family, not the stock Tailwind 500s the app shipped with. A project
+// colour is painted as a stripe or a dot on both the light and the dark surface,
+// so each entry clears 3:1 against *both* — the old palette's yellow and cyan
+// did not, and its indigo default sat completely outside the system.
+//
+// Shared verbatim with the web client's swatch picker and with the server's
+// colour remap, so a project looks the same wherever it is opened.
+
+enum GraftPalette {
+    struct Swatch: Identifiable, Equatable {
+        let name: String
+        let hex: String
+        var id: String { hex }
+        var colour: Color { Color(hex: hex) }
+    }
+
+    static let swatches: [Swatch] = [
+        .init(name: "Clay",    hex: "#C2705A"),
+        .init(name: "Ochre",   hex: "#B58234"),
+        .init(name: "Olive",   hex: "#848E3E"),
+        .init(name: "Moss",    hex: "#4F9A6A"),
+        .init(name: "Teal",    hex: "#3E9A93"),
+        .init(name: "Harbour", hex: "#5388C0"),
+        .init(name: "Iris",    hex: "#7C7FC4"),
+        .init(name: "Plum",    hex: "#9A6BA8"),
+        .init(name: "Rose",    hex: "#C06784"),
+        .init(name: "Stone",   hex: "#8A9098"),
+    ]
+
+    /// What a new project gets. Deliberately not the green: the accent has to
+    /// keep meaning "action" or "done", and every project stripe wearing it
+    /// would spend the one colour this system has.
+    static let fallback = "#7C7FC4"
+
+    /// Nearest swatch to an arbitrary stored hex, so a project saved by an old
+    /// client still lights up a swatch in the picker instead of showing none.
+    static func nearest(to hex: String) -> Swatch {
+        func rgb(_ h: String) -> (Double, Double, Double) {
+            let s = h.trimmingCharacters(in: .init(charactersIn: "#"))
+            let v = UInt64(s, radix: 16) ?? 0
+            return (Double((v >> 16) & 0xFF), Double((v >> 8) & 0xFF), Double(v & 0xFF))
+        }
+        let target = rgb(hex)
+        return swatches.min {
+            let a = rgb($0.hex), b = rgb($1.hex)
+            let da = pow(a.0 - target.0, 2) + pow(a.1 - target.1, 2) + pow(a.2 - target.2, 2)
+            let db = pow(b.0 - target.0, 2) + pow(b.1 - target.1, 2) + pow(b.2 - target.2, 2)
+            return da < db
+        } ?? swatches[6]
     }
 }

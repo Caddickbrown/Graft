@@ -145,13 +145,13 @@ struct MilestoneRowView: View {
 
             VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS) {
                 Text(milestone.name)
-                    .font(.system(size: GraftType.title, weight: .medium))
+                    .font(GraftFont.text(GraftType.title, .medium))
                     .foregroundStyle(Color.gInk)
                     .multilineTextAlignment(.leading)
 
                 if !milestone.description.isEmpty {
                     Text(milestone.description)
-                        .font(.system(size: GraftType.secondary))
+                        .font(GraftFont.text(GraftType.secondary))
                         .foregroundStyle(Color.gInk2)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
@@ -160,18 +160,18 @@ struct MilestoneRowView: View {
                 HStack(spacing: GraftMetrics.spaceXS) {
                     if let due {
                         Text(due)
-                            .font(.system(size: GraftType.caption))
+                            .font(GraftFont.text(GraftType.caption))
                             .foregroundStyle(overdue ? Color.gRed : Color.gInk2)
                     } else {
                         Text("no due date")
-                            .font(.system(size: GraftType.caption))
+                            .font(GraftFont.text(GraftType.caption))
                             .foregroundStyle(Color.gInk3)
                     }
                     Text("·")
-                        .font(.system(size: GraftType.caption))
+                        .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk3)
                     Text("\(issueCount) issue\(issueCount == 1 ? "" : "s")")
-                        .font(.system(size: GraftType.caption))
+                        .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk2)
                 }
             }
@@ -209,6 +209,7 @@ struct MilestoneFormView: View {
     @State private var dueDate = Date()
     @State private var isSaving = false
     @State private var loaded = false
+    @FocusState private var focus: GraftFormField?
 
     var isEditing: Bool { milestone != nil }
 
@@ -226,25 +227,37 @@ struct MilestoneFormView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Milestone details") {
-                    TextField("Name", text: $name)
-                    TextField("Description (optional)", text: $description, axis: .vertical)
-                        .lineLimit(3...6)
-                }
+        GraftFormScaffold(
+            title: isEditing ? "Edit milestone" : "New milestone",
+            confirmLabel: isEditing ? "Save" : "Add",
+            confirmDisabled: name.trimmingCharacters(in: .whitespaces).isEmpty,
+            onCancel: { dismiss() },
+            onConfirm: { Task { await save() } }
+        ) {
+            GraftSection(title: "Milestone details") {
+                GraftTextField(label: "Name", placeholder: "What is the milestone?",
+                               text: $name, focused: $focus, field: .name)
+                GraftRowDivider()
+                GraftTextField(label: "Description", placeholder: "Optional",
+                               text: $description, axis: .vertical, lineLimit: 3...6,
+                               focused: $focus, field: .description)
+            }
 
-                Section("Due date") {
-                    Toggle("Set due date", isOn: $hasDueDate.animation())
+            GraftSection(title: "Due date") {
+                GraftToggleRow(label: "Set due date", isOn: $hasDueDate.animation())
+                if hasDueDate {
+                    GraftRowDivider()
+                    // The wheel itself stays the system's — it is a good control
+                    // and nobody gains from a hand-rolled calendar.
+                    DatePicker("Due", selection: $dueDate, displayedComponents: .date)
+                        .datePickerStyle(.compact)
+                        .font(GraftFont.text(GraftType.body))
+                        .foregroundStyle(Color.gInk)
                         .tint(Color.gAccent)
-                    if hasDueDate {
-                        DatePicker("Due", selection: $dueDate, displayedComponents: .date)
-                            .datePickerStyle(.compact)
-                    }
+                        .frame(minHeight: GraftMetrics.tap)
                 }
             }
-            .navigationTitle(isEditing ? "Edit milestone" : "New milestone")
-            .navigationBarTitleDisplayMode(.inline)
+        }
             .onAppear {
                 // Guarded: re-hydrating on a second `onAppear` would discard
                 // whatever has been typed since the first one.
@@ -263,23 +276,10 @@ struct MilestoneFormView: View {
                     }
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isEditing ? "Save" : "Add") {
-                        Task { await save() }
-                    }
-                    .fontWeight(.semibold)
-                    .disabled(name.isEmpty || isSaving)
-                }
-            }
-            .disabled(isSaving)
-            // A swipe-down used to throw an in-progress milestone away without
-            // a word. None of the app's sheets guarded against that.
-            .interactiveDismissDisabled(hasDraft)
-        }
+        .disabled(isSaving)
+        // A swipe-down used to throw an in-progress milestone away without a
+        // word. None of the app's sheets guarded against that.
+        .interactiveDismissDisabled(hasDraft)
     }
 
     private func save() async {

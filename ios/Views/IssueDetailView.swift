@@ -135,18 +135,18 @@ struct IssueDetailView: View {
 
         case .saving:
             Text("Saving…")
-                .font(.system(size: GraftType.secondary))
+                .font(GraftFont.text(GraftType.secondary))
                 .foregroundStyle(Color.gInk2)
 
         case .savedLocally:
             Label("Saved on phone", systemImage: "iphone")
-                .font(.system(size: GraftType.secondary))
+                .font(GraftFont.text(GraftType.secondary))
                 .foregroundStyle(Color.gInk2)
                 .accessibilityLabel("Saved on this phone. No server is linked.")
 
         case .synced:
             Label("Saved", systemImage: "checkmark")
-                .font(.system(size: GraftType.secondary))
+                .font(GraftFont.text(GraftType.secondary))
                 .foregroundStyle(Color.gAccentText)
 
         case .queued(let count):
@@ -155,7 +155,7 @@ struct IssueDetailView: View {
             } label: {
                 Label(count > 1 ? "Queued (\(count))" : "Queued",
                       systemImage: "arrow.up.circle")
-                    .font(.system(size: GraftType.secondary))
+                    .font(GraftFont.text(GraftType.secondary))
                     .foregroundStyle(Color.gAmber)
                     .frame(minHeight: GraftMetrics.tap)
                     .contentShape(Rectangle())
@@ -167,7 +167,7 @@ struct IssueDetailView: View {
                 retrySave()
             } label: {
                 Label("Retry", systemImage: "exclamationmark.triangle")
-                    .font(.system(size: GraftType.secondary))
+                    .font(GraftFont.text(GraftType.secondary))
                     .foregroundStyle(Color.gRed)
                     .frame(minHeight: GraftMetrics.tap)
                     .contentShape(Rectangle())
@@ -204,7 +204,7 @@ struct IssueDetailView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(tint)
             Text(text)
-                .font(.system(size: GraftType.caption))
+                .font(GraftFont.text(GraftType.caption))
                 .foregroundStyle(Color.gInk2)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -217,14 +217,14 @@ struct IssueDetailView: View {
     private var identity: some View {
         HStack(spacing: 8) {
             Text(issue.id.replacingOccurrences(of: "iss_", with: "#"))
-                .font(.system(size: GraftType.caption, design: .monospaced))
+                .font(GraftFont.mono(GraftType.caption))
                 .foregroundStyle(Color.gInk2)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(Color.gSurface2, in: RoundedRectangle(cornerRadius: 5))
             if let project = store.project(issue.projectId) {
                 Text(project.name)
-                    .font(.system(size: GraftType.caption))
+                    .font(GraftFont.text(GraftType.caption))
                     .foregroundStyle(Color.gInk2)
             }
             Spacer()
@@ -233,7 +233,7 @@ struct IssueDetailView: View {
 
     private var titleField: some View {
         TextField("Issue title", text: $title, axis: .vertical)
-            .font(.system(size: 24, weight: .semibold))
+            .font(GraftFont.text(24, .semibold))
             .foregroundStyle(Color.gInk)
             .textFieldStyle(.plain)
             .onChange(of: title) { _, _ in scheduleSave() }
@@ -243,13 +243,13 @@ struct IssueDetailView: View {
         ZStack(alignment: .topLeading) {
             if description.isEmpty {
                 Text("Add a description…")
-                    .font(.system(size: GraftType.body))
+                    .font(GraftFont.text(GraftType.body))
                     .foregroundStyle(Color.gInk3)
                     .padding(.top, 8)
                     .padding(.leading, 5)
             }
             TextEditor(text: $description)
-                .font(.system(size: GraftType.body))
+                .font(GraftFont.text(GraftType.body))
                 .foregroundStyle(Color.gInk2)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 90)
@@ -274,7 +274,7 @@ struct IssueDetailView: View {
                             // client, and a picker is where people learn it.
                             StatusRing(status: status, size: GraftMetrics.ring)
                             Text(status.label)
-                                .font(.system(size: GraftType.micro, weight: selected ? .bold : .regular))
+                                .font(GraftFont.text(GraftType.micro, selected ? .bold : .regular))
                                 .foregroundStyle(selected ? status.color : Color.gInk2)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
@@ -309,7 +309,7 @@ struct IssueDetailView: View {
                         // The shape, not a symbol: priority reads by shape as
                         // well as colour everywhere else in the system.
                         PriorityDot(priority: p.rawValue, size: 12)
-                        Text(p.label).font(.system(size: GraftType.body))
+                        Text(p.label).font(GraftFont.text(GraftType.body))
                     }
                     .foregroundStyle((IssuePriority(rawValue: current.priority) ?? .normal).color)
                 }
@@ -323,14 +323,14 @@ struct IssueDetailView: View {
                     }
                 } label: {
                     Text(store.milestone(current.milestoneId)?.name ?? "None")
-                        .font(.system(size: GraftType.body))
+                        .font(GraftFont.text(GraftType.body))
                         .foregroundStyle(current.milestoneId == nil ? Color.gInk2 : Color.gAccentText)
                 }
             }
             divider
             propertyRow("Assignee") {
                 TextField("Unassigned", text: $assignee)
-                    .font(.system(size: GraftType.body))
+                    .font(GraftFont.text(GraftType.body))
                     .foregroundStyle(Color.gInk)
                     .multilineTextAlignment(.trailing)
                     .onChange(of: assignee) { _, _ in scheduleSave() }
@@ -338,7 +338,7 @@ struct IssueDetailView: View {
             divider
             propertyRow("Labels") {
                 TextField("bug, frontend", text: $labelsText)
-                    .font(.system(size: GraftType.body))
+                    .font(GraftFont.text(GraftType.body))
                     .foregroundStyle(Color.gInk)
                     .multilineTextAlignment(.trailing)
                     .onChange(of: labelsText) { _, _ in scheduleSave() }
@@ -371,7 +371,7 @@ struct IssueDetailView: View {
             Text("Updated \(GraftDate.relative(current.updatedAt))")
             Spacer()
         }
-        .font(.system(size: GraftType.caption))
+        .font(GraftFont.text(GraftType.caption))
         .foregroundStyle(Color.gInk3)
     }
 
@@ -381,7 +381,7 @@ struct IssueDetailView: View {
                 archive()
             } label: {
                 Label(current.archived ? "Unarchive" : "Archive", systemImage: "archivebox")
-                    .font(.system(size: GraftType.body, weight: .semibold))
+                    .font(GraftFont.text(GraftType.body, .semibold))
                     .foregroundStyle(Color.gInk2)
                     .frame(maxWidth: .infinity, minHeight: 48)
                     .background(Color.gSurface2, in: RoundedRectangle(cornerRadius: GraftMetrics.radius))
@@ -393,7 +393,7 @@ struct IssueDetailView: View {
             } label: {
                 Label(current.status == "done" ? "Reopen" : "Mark done",
                       systemImage: current.status == "done" ? "arrow.uturn.backward" : "checkmark")
-                    .font(.system(size: GraftType.body, weight: .bold))
+                    .font(GraftFont.text(GraftType.body, .bold))
                     .foregroundStyle(Color.gOnAccent)
                     .frame(maxWidth: .infinity, minHeight: 48)
                     .background(current.status == "done" ? Color.gInk2 : Color.gAccent,
@@ -411,7 +411,7 @@ struct IssueDetailView: View {
 
     private func sectionLabel(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(.system(size: 12, weight: .semibold))
+            .font(GraftFont.text(12, .semibold))
             .kerning(0.6)
             .foregroundStyle(Color.gInk2)
     }
@@ -423,7 +423,7 @@ struct IssueDetailView: View {
     private func propertyRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 12) {
             Text(label)
-                .font(.system(size: GraftType.body))
+                .font(GraftFont.text(GraftType.body))
                 .foregroundStyle(Color.gInk2)
                 .frame(width: 88, alignment: .leading)
             Spacer(minLength: 0)

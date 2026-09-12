@@ -10,12 +10,20 @@ struct AreaPicker: View {
     @Binding var areaId: String
 
     var body: some View {
-        Picker("Area", selection: $areaId) {
-            Text("No area").tag("")
-            ForEach(store.sortedAreas) { area in
-                Text(area.name).tag(area.id)
-            }
-        }
+        // A menu rather than a `Picker`: inside a stock `Form` the picker drew
+        // its own grey row, which is exactly the look the sheets moved off.
+        // '' and nil both mean "no area" — the store stores the empty string,
+        // the row speaks Optional.
+        GraftMenuRow(
+            label: "Area",
+            options: store.sortedAreas,
+            selection: Binding(
+                get: { areaId.isEmpty ? nil : areaId },
+                set: { areaId = $0 ?? "" }
+            ),
+            title: { $0.name },
+            emptyTitle: "No area"
+        )
     }
 }
 
@@ -36,65 +44,104 @@ struct AreasView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    if store.areas.isEmpty {
-                        Text("No areas yet. An area is a shelf for projects — \u{201C}Work\u{201D}, \u{201C}Home\u{201D}, \u{201C}Someday\u{201D}.")
-                            .font(.system(size: GraftType.secondary))
-                            .foregroundStyle(Color.gInk2)
-                    }
-                    ForEach(store.sortedAreas) { area in
-                        Button {
-                            renaming = area
-                            renameText = area.name
-                        } label: {
-                            HStack {
-                                Text(area.name)
-                                    .foregroundStyle(Color.gInk)
-                                Spacer()
-                                Text("\(projectCount(area))")
-                                    .font(.system(size: GraftType.caption))
-                                    .foregroundStyle(Color.gInk2)
-                            }
-                            .frame(minHeight: GraftMetrics.tap)
-                            .contentShape(Rectangle())
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                pendingDelete = area
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                    }
-                } header: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: GraftMetrics.spaceXXL) {
                     Text("Areas")
-                } footer: {
-                    Text("Deleting an area never deletes its projects — they move back to \u{201C}No area\u{201D}.")
-                }
+                        .font(GraftFont.display(GraftType.display, .bold))
+                        .foregroundStyle(Color.gInk)
+                        .padding(.top, GraftMetrics.spaceXS)
 
-                Section("Add an area") {
-                    HStack {
-                        TextField("Name", text: $newName)
-                        Button("Add") {
-                            let name = newName.trimmingCharacters(in: .whitespaces)
-                            newName = ""
-                            guard !name.isEmpty else { return }
-                            Task { try? await store.createArea(name: name) }
+                    GraftSection(title: "Areas",
+                                 footnote: "Deleting an area never deletes its projects — they move back to \u{201C}No area\u{201D}.") {
+                        if store.areas.isEmpty {
+                            Text("No areas yet. An area is a shelf for projects — \u{201C}Work\u{201D}, \u{201C}Home\u{201D}, \u{201C}Someday\u{201D}.")
+                                .font(GraftFont.text(GraftType.secondary))
+                                .foregroundStyle(Color.gInk2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.vertical, GraftMetrics.spaceXS)
                         }
-                        .fontWeight(.semibold)
-                        .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
-                        .frame(minHeight: GraftMetrics.tap)
+                        // Delete is an explicit button: `swipeActions` needs a
+                        // `List`, and this screen is no longer one.
+                        ForEach(Array(store.sortedAreas.enumerated()), id: \.element.id) { index, area in
+                            if index > 0 { GraftRowDivider() }
+                            HStack(spacing: GraftMetrics.spaceXS) {
+                                Button {
+                                    renaming = area
+                                    renameText = area.name
+                                } label: {
+                                    HStack {
+                                        Text(area.name)
+                                            .font(GraftFont.text(GraftType.body))
+                                            .foregroundStyle(Color.gInk)
+                                        Spacer(minLength: 0)
+                                        Text("\(projectCount(area))")
+                                            .font(GraftFont.mono(GraftType.caption))
+                                            .monospacedDigit()
+                                            .foregroundStyle(Color.gInk3)
+                                    }
+                                    .frame(minHeight: GraftMetrics.tap)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                Button { pendingDelete = area } label: {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(Color.gInk3)
+                                        .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Delete \(area.name)")
+                            }
+                        }
+                    }
+
+                    GraftSection(title: "Add an area") {
+                        HStack(spacing: GraftMetrics.spaceS) {
+                            TextField("Name", text: $newName)
+                                .font(GraftFont.text(GraftType.title))
+                                .foregroundStyle(Color.gInk)
+                                .tint(Color.gAccent)
+                                .padding(.vertical, GraftMetrics.spaceXS)
+                                .overlay(alignment: .bottom) {
+                                    Rectangle().fill(Color.gLine2)
+                                        .frame(height: GraftMetrics.border)
+                                }
+
+                            Button("Add") {
+                                let name = newName.trimmingCharacters(in: .whitespaces)
+                                newName = ""
+                                guard !name.isEmpty else { return }
+                                Task { try? await store.createArea(name: name) }
+                            }
+                            .font(GraftFont.text(GraftType.secondary, .semibold))
+                            .foregroundStyle(newName.trimmingCharacters(in: .whitespaces).isEmpty
+                                             ? Color.gInk3 : Color.gOnAccent)
+                            .padding(.horizontal, GraftMetrics.spaceS)
+                            .frame(height: GraftMetrics.controlSmall)
+                            .background(newName.trimmingCharacters(in: .whitespaces).isEmpty
+                                        ? Color.gSurface2 : Color.gAccent, in: Capsule())
+                            .buttonStyle(.plain)
+                            .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .frame(minHeight: GraftMetrics.tap)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, GraftMetrics.gutter)
+                .padding(.bottom, GraftMetrics.space3XL)
             }
-            .navigationTitle("Areas")
+            .background(Color.gBg)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Color.gBg, for: .navigationBar)
             // A half-typed area name is worth as much as a half-typed issue.
             .interactiveDismissDisabled(!newName.trimmingCharacters(in: .whitespaces).isEmpty)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }.fontWeight(.semibold)
+                    Button("Done") { dismiss() }
+                        .font(GraftFont.text(GraftType.secondary, .semibold))
+                        .foregroundStyle(Color.gAccentText)
                 }
             }
             .alert("Rename area", isPresented: Binding(

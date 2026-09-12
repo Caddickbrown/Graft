@@ -53,7 +53,9 @@ struct SettingsView: View {
                 .scrollContentBackground(.hidden)
             }
             .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
+            // Large, like the other tab roots — the appearance proxy draws it
+            // in the display face.
+            .navigationBarTitleDisplayMode(.large)
             .toolbarBackground(Color.gBg, for: .navigationBar)
             .toolbar {
                 // No "Done" here. This is a tab root, so `dismiss()` did
@@ -93,10 +95,10 @@ struct SettingsView: View {
                         .foregroundStyle(Color.gAmber)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(pendingCount) change\(pendingCount == 1 ? "" : "s") waiting to sync")
-                            .font(.system(size: GraftType.secondary))
+                            .font(GraftFont.text(GraftType.secondary))
                             .foregroundStyle(Color.gInk)
                         Text(piEnabled ? "Will sync when the Pi is reachable" : "Link a Pi server below to sync")
-                            .font(.system(size: GraftType.caption))
+                            .font(GraftFont.text(GraftType.caption))
                             .foregroundStyle(Color.gInk2)
                     }
                     Spacer()
@@ -123,7 +125,7 @@ struct SettingsView: View {
                         .foregroundStyle(Color.gInk2)
                         .frame(width: 18)
                     Text("Link to Pi server")
-                        .font(.system(size: GraftType.secondary))
+                        .font(GraftFont.text(GraftType.secondary))
                         .foregroundStyle(Color.gInk)
                     Spacer()
                     Toggle("", isOn: $piEnabled)
@@ -136,7 +138,7 @@ struct SettingsView: View {
                     Divider().background(Color.gHairline)
 
                     Text("Data is stored on this phone. The Pi syncs changes when reachable.")
-                        .font(.system(size: GraftType.caption))
+                        .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk2)
                         .padding(.top, 10)
                         .padding(.bottom, 6)
@@ -176,7 +178,7 @@ struct SettingsView: View {
         SettingsSection(title: "Certificate") {
             VStack(alignment: .leading, spacing: GraftMetrics.spaceS) {
                 Text("The Pi uses a certificate from your own mkcert development CA. For this phone to trust it:")
-                    .font(.system(size: GraftType.secondary))
+                    .font(GraftFont.text(GraftType.secondary))
                     .foregroundStyle(Color.gInk)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -185,7 +187,7 @@ struct SettingsView: View {
                 step(3, "Turn it on: Settings › General › About › Certificate Trust Settings, and enable full trust for the mkcert root.")
 
                 Text("Step 3 is separate from step 2 and is easy to miss — installing the profile alone is not enough, and until it is done every sync fails as if the Pi were offline.")
-                    .font(.system(size: GraftType.caption))
+                    .font(GraftFont.text(GraftType.caption))
                     .foregroundStyle(Color.gInk2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -195,12 +197,12 @@ struct SettingsView: View {
     private func step(_ number: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: GraftMetrics.spaceXS) {
             Text("\(number)")
-                .font(.system(size: GraftType.micro, weight: .bold))
+                .font(GraftFont.text(GraftType.micro, .bold))
                 .foregroundStyle(Color.gOnAccent)
                 .frame(width: 18, height: 18)
                 .background(Color.gAccent, in: Circle())
             Text(text)
-                .font(.system(size: GraftType.caption))
+                .font(GraftFont.text(GraftType.caption))
                 .foregroundStyle(Color.gInk2)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -217,11 +219,11 @@ struct SettingsView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(Color.gInk2)
                     Text("Last synced")
-                        .font(.system(size: GraftType.secondary))
+                        .font(GraftFont.text(GraftType.secondary))
                         .foregroundStyle(Color.gInk)
                     Spacer()
                     Text(lastSyncedString)
-                        .font(.system(size: GraftType.caption))
+                        .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk2)
                 }
                 .padding(.horizontal, GraftMetrics.spaceS + 2)
@@ -245,7 +247,7 @@ struct SettingsView: View {
                                 .font(.system(size: GraftType.secondary, weight: .medium))
                         }
                         Text(isSyncing ? "Syncing…" : "Sync now")
-                            .font(.system(size: GraftType.secondary, weight: .semibold))
+                            .font(GraftFont.text(GraftType.secondary, .semibold))
                     }
                     .foregroundStyle(Color.gOnAccent)
                     .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap)
@@ -257,14 +259,14 @@ struct SettingsView: View {
 
                 if let err = store.errorMessage {
                     Text(err)
-                        .font(.system(size: GraftType.caption))
+                        .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gRed)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let err = store.syncEngine.lastFlushError {
                     Text("⚠ \(err)")
-                        .font(.system(size: GraftType.caption))
+                        .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gRed)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -275,11 +277,11 @@ struct SettingsView: View {
                 if !store.syncEngine.droppedOps.isEmpty {
                     VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS + 2) {
                         Text("Changes that couldn't be saved")
-                            .font(.system(size: GraftType.caption, weight: .semibold))
+                            .font(GraftFont.text(GraftType.caption, .semibold))
                             .foregroundStyle(Color.gInk)
                         ForEach(store.syncEngine.droppedOps) { op in
                             Text("\(op.method) \(op.path) — \(op.reason)")
-                                .font(.system(size: GraftType.caption))
+                                .font(GraftFont.text(GraftType.caption))
                                 .foregroundStyle(Color.gInk2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -287,7 +289,7 @@ struct SettingsView: View {
                             store.syncEngine.clearDropped()
                         } label: {
                             Text("Dismiss")
-                                .font(.system(size: GraftType.secondary, weight: .semibold))
+                                .font(GraftFont.text(GraftType.secondary, .semibold))
                                 .foregroundStyle(Color.gAccentText)
                                 // Was a ~16pt target sitting inside a warning
                                 // box, which is not a thing anyone can hit.
@@ -316,10 +318,10 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Graft")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(GraftFont.text(15, .semibold))
                         .foregroundStyle(Color.gInk)
                     Text("Tend your work. Watch it grow.")
-                        .font(.system(size: GraftType.caption))
+                        .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk2)
                 }
 
@@ -327,10 +329,10 @@ struct SettingsView: View {
 
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("v\(appVersion)")
-                        .font(.system(size: GraftType.caption, weight: .medium))
+                        .font(GraftFont.text(GraftType.caption, .medium))
                         .foregroundStyle(Color.gInk2)
                     Text(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")
-                        .font(.system(size: GraftType.micro))
+                        .font(GraftFont.text(GraftType.micro))
                         .foregroundStyle(Color.gInk3)
                 }
             }
@@ -352,26 +354,14 @@ struct SettingsView: View {
 
 // MARK: - Settings Section Container
 
+/// Settings' own section, now just the shared one — it used to draw a card,
+/// which is what the whole app has moved off.
 struct SettingsSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.system(size: GraftType.micro, weight: .semibold))
-                .foregroundStyle(Color.gInk2)
-                .tracking(GraftType.microTracking)
-
-            content
-                .padding(GraftMetrics.spaceS + 2)
-                .background(Color.gSurface)
-                .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radius))
-                .overlay(
-                    RoundedRectangle(cornerRadius: GraftMetrics.radius)
-                        .stroke(Color.gHairline, lineWidth: GraftMetrics.border)
-                )
-        }
+        GraftSection(title: title) { content }
     }
 }
 
@@ -391,13 +381,13 @@ struct SettingsURLField: View {
                 .foregroundStyle(Color.gInk2)
                 .frame(width: 18)
             Text(label)
-                .font(.system(size: GraftType.secondary))
+                .font(GraftFont.text(GraftType.secondary))
                 .foregroundStyle(Color.gInk)
             Spacer()
             TextField(placeholder, text: $text)
                 .multilineTextAlignment(.trailing)
                 .foregroundStyle(Color.gAccentText)
-                .font(.system(size: GraftType.caption))
+                .font(GraftFont.text(GraftType.caption))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .keyboardType(.URL)

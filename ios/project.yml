@@ -27,7 +27,7 @@ targets:
     sources:
       - path: .
         excludes:
-          - '*.md'
+          - '**/*.md'
           - 'project.yml'
           - 'make_icon.swift'
           - '.git'

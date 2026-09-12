@@ -2565,7 +2565,7 @@
     document.getElementById('project-description').value = '';
     document.getElementById('project-status').value = 'active';
     document.getElementById('project-icon').value = '';
-    setColour('colour-picker', 'project-colour', '#6366f1');
+    setColour('colour-picker', 'project-colour', '#7C7FC4');
     initIconPicker('icon-picker', 'project-icon');
     fillAreaSelect(areaId || '');
     document.getElementById('modal-project-title').textContent = 'New project';

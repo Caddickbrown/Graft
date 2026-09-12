@@ -123,14 +123,14 @@ struct ProjectDetailView: View {
                     // No `.colorScheme(.dark)` here any more. It was the only
                     // appearance override in the codebase, and in light mode it
                     // drew a dark segmented control on a white screen.
-                    Picker("View", selection: viewModeBinding) {
-                        ForEach(ViewMode.allCases, id: \.self) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, GraftMetrics.gutter)
-                    .padding(.vertical, 10)
+                    // Chips, not `.pickerStyle(.segmented)`: the segmented
+                    // control cannot take the accent and is the most recognisable
+                    // stock-iOS control there is.
+                    GraftChoiceRow(label: "", options: ViewMode.allCases,
+                                   selection: viewModeBinding,
+                                   title: { $0.rawValue })
+                        .padding(.horizontal, GraftMetrics.gutter)
+                        .padding(.vertical, 10)
 
                     issuesContent
                 }
@@ -219,7 +219,7 @@ struct ProjectDetailView: View {
         HStack(spacing: GraftMetrics.spaceS) {
             if !currentProject.icon.isEmpty {
                 Text(currentProject.icon)
-                    .font(.system(size: 28))
+                    .font(GraftFont.text(28))
                     .frame(width: 36, height: 36)
             } else {
                 RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall)
@@ -230,14 +230,14 @@ struct ProjectDetailView: View {
             VStack(alignment: .leading, spacing: 3) {
                 if !currentProject.description.isEmpty {
                     Text(currentProject.description)
-                        .font(.system(size: GraftType.secondary))
+                        .font(GraftFont.text(GraftType.secondary))
                         .foregroundStyle(Color.gInk2)
                 }
                 HStack(spacing: GraftMetrics.spaceXS) {
                     projectStatusChip(currentProject.status)
                     if let area = store.area(currentProject.areaId) {
                         Text(area.name)
-                            .font(.system(size: GraftType.caption, weight: .medium))
+                            .font(GraftFont.text(GraftType.caption, .medium))
                             .foregroundStyle(Color.gInk2)
                             .padding(.horizontal, GraftMetrics.spaceXS)
                             .padding(.vertical, GraftMetrics.spaceXXS)
@@ -251,7 +251,7 @@ struct ProjectDetailView: View {
                             Image(systemName: "flag.fill")
                                 .font(.system(size: 10))
                             Text("Milestones")
-                                .font(.system(size: GraftType.caption, weight: .medium))
+                                .font(GraftFont.text(GraftType.caption, .medium))
                         }
                         .foregroundStyle(Color.gAccentText)
                         .padding(.horizontal, GraftMetrics.spaceXS)
@@ -411,11 +411,11 @@ struct ProjectDetailView: View {
         return HStack(spacing: GraftMetrics.spaceXS) {
             StatusRing(status: s, size: 12)
             Text(s.label)
-                .font(.system(size: GraftType.micro, weight: .semibold))
+                .font(GraftFont.text(GraftType.micro, .semibold))
                 .kerning(GraftType.microTracking)
                 .foregroundStyle(Color.gInk2)
             Text("\(count)")
-                .font(.system(size: GraftType.micro))
+                .font(GraftFont.text(GraftType.micro))
                 .foregroundStyle(Color.gInk2)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 1)
@@ -459,7 +459,7 @@ struct ProjectDetailView: View {
             }
         }()
         Text(status)
-            .font(.system(size: GraftType.caption, weight: .medium))
+            .font(GraftFont.text(GraftType.caption, .medium))
             .foregroundStyle(color)
             .padding(.horizontal, GraftMetrics.spaceXS)
             .padding(.vertical, GraftMetrics.spaceXXS)
@@ -484,12 +484,12 @@ struct KanbanColumn: View {
             HStack(spacing: GraftMetrics.spaceXXS + 2) {
                 StatusRing(status: statusInfo, size: 12)
                 Text(statusInfo.label)
-                    .font(.system(size: GraftType.micro, weight: .semibold))
+                    .font(GraftFont.text(GraftType.micro, .semibold))
                     .kerning(GraftType.microTracking)
                     .foregroundStyle(Color.gInk2)
                 Spacer()
                 Text("\(issues.count)")
-                    .font(.system(size: GraftType.micro))
+                    .font(GraftFont.text(GraftType.micro))
                     .foregroundStyle(Color.gInk2)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -512,7 +512,7 @@ struct KanbanColumn: View {
                         Image(systemName: "plus")
                             .font(.system(size: 12, weight: .medium))
                         Text("Add issue")
-                            .font(.system(size: GraftType.secondary))
+                            .font(GraftFont.text(GraftType.secondary))
                     }
                     .foregroundStyle(Color.gInk2)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -559,7 +559,7 @@ struct KanbanCard: View {
                             .frame(width: 3, height: 14)
                             .padding(.trailing, 6)
                         Text(issue.title)
-                            .font(.system(size: GraftType.secondary, weight: .medium))
+                            .font(GraftFont.text(GraftType.secondary, .medium))
                             .foregroundStyle(Color.gInk)
                             .lineLimit(3)
                             .multilineTextAlignment(.leading)
@@ -573,7 +573,7 @@ struct KanbanCard: View {
                             }
                             if labels.count > 2 {
                                 Text("+\(labels.count - 2)")
-                                    .font(.system(size: GraftType.caption, weight: .medium))
+                                    .font(GraftFont.text(GraftType.caption, .medium))
                                     .foregroundStyle(Color.gInk3)
                             }
                             Spacer(minLength: 0)
@@ -586,7 +586,7 @@ struct KanbanCard: View {
                         }
                         if !issue.assignee.isEmpty {
                             Text("@\(issue.assignee)")
-                                .font(.system(size: GraftType.caption))
+                                .font(GraftFont.text(GraftType.caption))
                                 .foregroundStyle(Color.gInk2)
                         }
                         Spacer(minLength: 0)
@@ -608,7 +608,7 @@ struct KanbanCard: View {
                     let s = IssueStatus(rawValue: issue.status) ?? .backlog
                     StatusRing(status: s, size: 10)
                     Text(s.label)
-                        .font(.system(size: GraftType.micro, weight: .medium))
+                        .font(GraftFont.text(GraftType.micro, .medium))
                         .foregroundStyle(s.color)
                 }
                 .padding(.horizontal, 6)
@@ -654,7 +654,7 @@ struct MilestoneFilterChip: View {
                         .font(.system(size: 10))
                 }
                 Text(title)
-                    .font(.system(size: GraftType.secondary, weight: isSelected ? .semibold : .regular))
+                    .font(GraftFont.text(GraftType.secondary, isSelected ? .semibold : .regular))
             }
             .foregroundStyle(isSelected ? Color.gAccentText : Color.gInk2)
             .padding(.horizontal, 10)

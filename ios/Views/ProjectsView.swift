@@ -83,10 +83,16 @@ struct ProjectsView: View {
 
                 GraftFAB(label: "New project") { showNewProject = true }
             }
+            // The wordmark rather than a large title in SF: this is the one
+            // screen that carries the brand, and the mark existed only on the
+            // home-screen icon until now. Same lockup as the web client's rail.
             .navigationTitle("Graft")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color.gBg, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    GraftWordmark(size: 19)
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     scopeMenu
                 }
@@ -160,7 +166,7 @@ struct ProjectsView: View {
             HStack(spacing: GraftMetrics.spaceXXS) {
                 Image(systemName: store.projectScope.systemImage)
                 Text(store.projectScope.label)
-                    .font(.system(size: GraftType.caption, weight: .medium))
+                    .font(GraftFont.text(GraftType.caption, .medium))
             }
             .foregroundStyle(Color.gAccentText)
             .frame(minHeight: GraftMetrics.tap)
@@ -323,11 +329,11 @@ struct ProjectsView: View {
                     ProjectColourDot(hex: area.colour, size: 8)
                 }
                 Text((area?.name ?? "No area").uppercased())
-                    .font(.system(size: GraftType.micro, weight: .semibold))
+                    .font(GraftFont.text(GraftType.micro, .semibold))
                     .kerning(GraftType.microTracking)
                     .foregroundStyle(Color.gInk2)
                 Text("\(count)")
-                    .font(.system(size: GraftType.micro))
+                    .font(GraftFont.text(GraftType.micro))
                     .foregroundStyle(Color.gInk2)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 1)
@@ -371,14 +377,14 @@ struct ProjectCardView: View {
                 HStack(alignment: .firstTextBaseline) {
                     if !project.icon.isEmpty {
                         Text(project.icon)
-                            .font(.system(size: 18))
+                            .font(GraftFont.text(18))
                     }
                     Text(project.name)
-                        .font(.system(size: GraftType.title, weight: .semibold))
+                        .font(GraftFont.text(GraftType.title, .semibold))
                         .foregroundStyle(Color.gInk)
                     Spacer()
                     Text(project.status)
-                        .font(.system(size: GraftType.caption, weight: .medium))
+                        .font(GraftFont.text(GraftType.caption, .medium))
                         .foregroundStyle(projectStatusColor)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -389,7 +395,7 @@ struct ProjectCardView: View {
                 // Description
                 if !project.description.isEmpty {
                     Text(project.description)
-                        .font(.system(size: GraftType.secondary))
+                        .font(GraftFont.text(GraftType.secondary))
                         .foregroundStyle(Color.gInk2)
                         .lineLimit(2)
                 }
@@ -413,7 +419,7 @@ struct ProjectCardView: View {
                             .clipShape(Capsule())
 
                             Text("\(open) open · \(counts.done) done")
-                                .font(.system(size: GraftType.caption))
+                                .font(GraftFont.text(GraftType.caption))
                                 .foregroundStyle(Color.gInk2)
                                 .fixedSize()
                         }

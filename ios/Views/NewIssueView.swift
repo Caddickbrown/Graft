@@ -5,6 +5,11 @@ import SwiftUI
 /// The project is a choice, not a given: the Inbox opens this sheet without any
 /// project context, so a fixed, display-only project meant every issue created
 /// from there was filed into whichever project happened to come back first.
+///
+/// Built from FormKit. It was a stock `Form` of five `Picker` rows, which is the
+/// screen you hit most often in the app and the one that looked least like it —
+/// status and priority in particular are colour-carrying ideas everywhere else
+/// in Graft and were plain grey menu rows here.
 struct NewIssueView: View {
     @Environment(GraftStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -26,6 +31,7 @@ struct NewIssueView: View {
     /// `onAppear` fires again whenever the sheet comes back to the front, and
     /// re-seeding would move the issue to a different project mid-edit.
     @State private var loaded = false
+    @FocusState private var focus: GraftFormField?
 
     let statuses = ["backlog", "todo", "in-progress", "review", "done"]
     let priorities = ["urgent", "high", "normal", "low"]
@@ -48,105 +54,118 @@ struct NewIssueView: View {
         store.milestones.filter { $0.projectId == selectedProjectId }
     }
 
+    private var canSave: Bool {
+        !title.trimmingCharacters(in: .whitespaces).isEmpty && !selectedProjectId.isEmpty
+    }
+
     var body: some View {
-        NavigationStack {
-            Group {
-                if availableProjects.isEmpty {
-                    // The app's own empty state rather than the stock one, so
-                    // this sheet does not look like a different product from
-                    // the screen that opened it.
+        Group {
+            if availableProjects.isEmpty {
+                // The app's own empty state rather than the stock one, so this
+                // sheet does not look like a different product from the screen
+                // that opened it.
+                NavigationStack {
                     GraftEmptyState(
                         title: "No projects yet",
                         subtitle: "Every issue lives in a project. Make one on the Projects tab first.",
                         systemImage: "leaf"
                     )
-                } else {
-                    form
-                }
-            }
-            .navigationTitle("New issue")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                guard !loaded else { return }
-                loaded = true
-                status = defaultStatus
-                let opened = availableProjects.contains(where: { $0.id == projectId })
-                selectedProjectId = opened ? projectId : (availableProjects.first?.id ?? "")
-            }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        Task { await save() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.gBg)
+                    .navigationTitle("New issue")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { dismiss() }
+                                .font(GraftFont.text(GraftType.body))
+                                .foregroundStyle(Color.gInk2)
+                        }
                     }
-                    .fontWeight(.semibold)
-                    .disabled(title.isEmpty || selectedProjectId.isEmpty || isSaving)
                 }
+            } else {
+                form
             }
-            .disabled(isSaving)
-            // Every create/edit sheet in the app used to lose in-progress text
-            // to a swipe-down, with no warning and no way back.
-            .interactiveDismissDisabled(hasDraft)
         }
+        .onAppear {
+            guard !loaded else { return }
+            loaded = true
+            status = defaultStatus
+            let opened = availableProjects.contains(where: { $0.id == projectId })
+            selectedProjectId = opened ? projectId : (availableProjects.first?.id ?? "")
+        }
+        .disabled(isSaving)
+        // Every create/edit sheet in the app used to lose in-progress text to a
+        // swipe-down, with no warning and no way back.
+        .interactiveDismissDisabled(hasDraft)
     }
 
     private var form: some View {
-        Form {
-            Section("Details") {
-                TextField("Title", text: $title)
-                ZStack(alignment: .topLeading) {
-                    if description.isEmpty {
-                        Text("Description (optional)")
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 8)
-                            .padding(.leading, 4)
-                    }
-                    TextEditor(text: $description)
-                        .frame(minHeight: 80)
-                }
+        GraftFormScaffold(
+            title: "New issue",
+            confirmLabel: "Add",
+            confirmDisabled: !canSave,
+            isBusy: isSaving,
+            onCancel: { dismiss() },
+            onConfirm: { Task { await save() } }
+        ) {
+            GraftSection(title: "Details") {
+                GraftTextField(label: "Title", placeholder: "What needs doing?",
+                               text: $title, focused: $focus, field: .title)
+                GraftRowDivider()
+                GraftTextField(label: "Description", placeholder: "Optional",
+                               text: $description, axis: .vertical, lineLimit: 3...8,
+                               focused: $focus, field: .description)
             }
 
-            Section("Project") {
-                Picker("Project", selection: $selectedProjectId) {
-                    ForEach(availableProjects) { project in
-                        Text(project.name).tag(project.id)
-                    }
-                }
+            GraftSection(title: "Project") {
+                GraftMenuRow(
+                    label: "Project",
+                    options: availableProjects,
+                    selection: Binding(
+                        get: { selectedProjectId.isEmpty ? nil : selectedProjectId },
+                        set: { selectedProjectId = $0 ?? "" }
+                    ),
+                    title: { $0.name },
+                    emptyTitle: "Choose a project"
+                )
                 // Milestones belong to one project, so a selection made before
                 // switching would attach the issue to a milestone in a project
                 // it is no longer in.
                 .onChange(of: selectedProjectId) { _, _ in milestoneId = "" }
             }
 
-            Section("Status & Priority") {
-                Picker("Status", selection: $status) {
-                    ForEach(statuses, id: \.self) { s in
-                        Text(statusLabel(s)).tag(s)
-                    }
-                }
-                Picker("Priority", selection: $priority) {
-                    ForEach(priorities, id: \.self) { p in
-                        Text(priorityLabel(p)).tag(p)
-                    }
-                }
+            GraftSection(title: "Status & priority") {
+                GraftChoiceRow(label: "Status", options: statuses, selection: $status,
+                               title: statusLabel,
+                               dot: { IssueStatus(rawValue: $0)?.color })
+                GraftRowDivider()
+                GraftChoiceRow(label: "Priority", options: priorities, selection: $priority,
+                               title: priorityLabel,
+                               dot: { IssuePriority(rawValue: $0)?.color })
             }
 
             if !projectMilestones.isEmpty {
-                Section("Milestone") {
-                    Picker("Milestone", selection: $milestoneId) {
-                        Text("None").tag("")
-                        ForEach(projectMilestones) { m in
-                            Text(m.name).tag(m.id)
-                        }
-                    }
+                GraftSection(title: "Milestone") {
+                    GraftMenuRow(
+                        label: "Milestone",
+                        options: projectMilestones,
+                        selection: Binding(
+                            get: { milestoneId.isEmpty ? nil : milestoneId },
+                            set: { milestoneId = $0 ?? "" }
+                        ),
+                        title: { $0.name },
+                        emptyTitle: "None"
+                    )
                 }
             }
 
-            Section("Assignment") {
-                TextField("Assignee", text: $assignee)
-                TextField("Labels (comma-separated)", text: $labelsText)
+            GraftSection(title: "Assignment",
+                         footnote: "Labels are comma-separated.") {
+                GraftTextField(label: "Assignee", placeholder: "Optional",
+                               text: $assignee, focused: $focus, field: .name)
+                GraftRowDivider()
+                GraftTextField(label: "Labels", placeholder: "design, backend",
+                               text: $labelsText, focused: $focus, field: .label)
             }
         }
     }

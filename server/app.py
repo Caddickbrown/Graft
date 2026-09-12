@@ -63,7 +63,7 @@ def init_db():
             name        TEXT NOT NULL,
             description TEXT DEFAULT '',
             status      TEXT DEFAULT 'active',
-            colour      TEXT DEFAULT '#6366f1',
+            colour      TEXT DEFAULT '#7C7FC4',
             icon        TEXT DEFAULT '',
             archived    INTEGER DEFAULT 0,
             created_at  TEXT NOT NULL,
@@ -169,6 +169,7 @@ def _migrate_db():
     finally:
         db.close()
     _backfill_repo_links()
+    _remap_project_colours()
 
 
 def _backfill_repo_links():
@@ -217,6 +218,43 @@ def _backfill_repo_links():
                     ("link_" + str(uuid4())[:8], pid, "Repo", repo_url, "github", 0, ts, ts),
                 )
             db.execute("UPDATE projects SET repo_url='' WHERE id=?", (pid,))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _remap_project_colours():
+    """Move projects off the old stock-Tailwind palette onto Porcelain / One Green.
+
+    The redesign replaced the project swatches with one muted family tuned to sit
+    on both the light and the dark surface (every one clears 3:1 on each). Rows
+    written before it still held the Tailwind 500s, so a project card's stripe —
+    the most prominent colour on the Projects screen — stayed off-system.
+
+    The mapping is hue-preserving and 1:1, so a project keeps the colour its owner
+    picked; only the exact old hexes are touched, which makes this idempotent and
+    leaves any hand-set colour alone.
+    """
+    remap = {
+        "#6366f1": "#7C7FC4",  # indigo  -> iris
+        "#8b5cf6": "#9A6BA8",  # violet  -> plum
+        "#ec4899": "#C06784",  # pink    -> rose
+        "#ef4444": "#C2705A",  # red     -> clay
+        "#f97316": "#B58234",  # orange  -> ochre
+        "#eab308": "#848E3E",  # yellow  -> olive
+        "#22c55e": "#4F9A6A",  # green   -> moss
+        "#06b6d4": "#3E9A93",  # cyan    -> teal
+        "#3b82f6": "#5388C0",  # blue    -> harbour
+        "#64748b": "#8A9098",  # slate   -> stone
+    }
+    db = sqlite3.connect(DB_PATH)
+    try:
+        for old, new in remap.items():
+            # COLLATE NOCASE: the picker wrote lowercase, but a hand-edited row
+            # or an older client may hold the same colour upper-cased.
+            db.execute(
+                "UPDATE projects SET colour=? WHERE colour=? COLLATE NOCASE", (new, old)
+            )
         db.commit()
     finally:
         db.close()
@@ -399,7 +437,7 @@ def create_project():
              data.get("name", "Untitled"),
              data.get("description", ""),
              data.get("status", "active"),
-             data.get("colour", "#6366f1"),
+             data.get("colour", "#7C7FC4"),
              data.get("icon", ""),
              repo_url,
              area_id,

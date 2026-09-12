@@ -45,20 +45,26 @@ struct FilterSortSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                sortSection
-                groupSection
-                filterSections
-                archivedSection
-                savedViewsSection
-                resetSection
+            ScrollView {
+                VStack(alignment: .leading, spacing: GraftMetrics.spaceXL) {
+                    sortSection
+                    groupSection
+                    filterSections
+                    archivedSection
+                    savedViewsSection
+                    resetSection
+                }
+                .padding(.horizontal, GraftMetrics.gutter)
+                .padding(.vertical, GraftMetrics.spaceM)
             }
+            .background(Color.gBg)
             .navigationTitle("Filter & sort")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .fontWeight(.semibold)
+                        .font(GraftFont.text(GraftType.body, .semibold))
+                        .foregroundStyle(Color.gAccentText)
                 }
             }
             .alert("Save this view", isPresented: $showSaveView) {
@@ -80,34 +86,22 @@ struct FilterSortSheet: View {
     // MARK: - Sort
 
     private var sortSection: some View {
-        Section("Sort") {
-            Picker("Sort by", selection: $query.sort) {
-                ForEach(IssueSort.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            Picker("Direction", selection: $query.dir) {
-                ForEach(IssueSortDirection.allCases, id: \.self) { dir in
-                    Text(dir.label).tag(dir)
-                }
-            }
-            .pickerStyle(.segmented)
+        GraftSection(title: "Sort") {
+            GraftChoiceRow(label: "", options: IssueSort.allCases,
+                           selection: $query.sort, title: { $0.label })
+            GraftRowDivider()
+            GraftChoiceRow(label: "Direction", options: IssueSortDirection.allCases,
+                           selection: $query.dir, title: { $0.label })
         }
     }
 
     // MARK: - Group
 
     private var groupSection: some View {
-        Section {
-            Picker("Group by", selection: $query.group) {
-                ForEach(IssueGrouping.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-        } header: {
-            Text("Group")
-        } footer: {
-            Text("Grouping is applied on the phone, so it works offline too.")
+        GraftSection(title: "Group",
+                     footnote: "Grouping is applied on the phone, so it works offline too.") {
+            GraftChoiceRow(label: "", options: IssueGrouping.allCases,
+                           selection: $query.group, title: { $0.label })
         }
     }
 
@@ -118,13 +112,15 @@ struct FilterSortSheet: View {
         multiSection(
             title: "Status",
             options: IssueStatus.allCases.map { FilterOption($0.rawValue, $0.label) },
-            selection: $query.filters.status
+            selection: $query.filters.status,
+            dot: { IssueStatus(rawValue: $0)?.color }
         )
 
         multiSection(
             title: "Priority",
             options: IssuePriority.allCases.map { FilterOption($0.rawValue, $0.label) },
-            selection: $query.filters.priority
+            selection: $query.filters.priority,
+            dot: { IssuePriority(rawValue: $0)?.color }
         )
 
         multiSection(title: "Assignee", options: assigneeOptions, selection: $query.filters.assignee)
@@ -172,71 +168,101 @@ struct FilterSortSheet: View {
     }
 
     private var archivedSection: some View {
-        Section {
-            Toggle("Show archived", isOn: $query.archived)
-                .tint(Color.gAccent)
-        } footer: {
-            Text("Archived issues stay on the phone either way — this only decides whether they are listed.")
+        GraftSection(title: "Archived",
+                     footnote: "Archived issues stay on the phone either way — this only decides whether they are listed.") {
+            GraftToggleRow(label: "Show archived", isOn: $query.archived)
         }
     }
 
     // MARK: - Saved views
 
     private var savedViewsSection: some View {
-        Section("Saved views") {
+        GraftSection(title: "Saved views") {
+            // Delete is a button, not a swipe: `swipeActions` only works inside
+            // a `List`, and this sheet is no longer one. A hidden gesture is a
+            // bad trade for a stock container anyway.
             ForEach(store.savedViews) { view in
-                Button {
-                    query = IssueQuery.from(json: view.query)
-                    dismiss()
-                } label: {
-                    HStack {
-                        Image(systemName: "bookmark")
-                            .foregroundStyle(Color.gAccentText)
-                        Text(view.name)
-                            .foregroundStyle(Color.gInk)
-                        Spacer()
+                HStack(spacing: GraftMetrics.spaceXS) {
+                    Button {
+                        query = IssueQuery.from(json: view.query)
+                        dismiss()
+                    } label: {
+                        HStack(spacing: GraftMetrics.spaceXS) {
+                            Image(systemName: "bookmark")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.gAccentText)
+                            Text(view.name)
+                                .font(GraftFont.text(GraftType.body))
+                                .foregroundStyle(Color.gInk)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: GraftMetrics.tap)
+                        .contentShape(Rectangle())
                     }
-                    .frame(minHeight: GraftMetrics.tap)
-                    .contentShape(Rectangle())
-                }
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
+                    .buttonStyle(.plain)
+
+                    Button {
                         Task { try? await store.deleteSavedView(id: view.id) }
                     } label: {
-                        Label("Delete", systemImage: "trash")
+                        Image(systemName: "trash")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.gInk3)
+                            .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Delete \(view.name)")
                 }
+
+                if !store.savedViews.isEmpty { GraftRowDivider() }
             }
 
             Button {
                 showSaveView = true
             } label: {
-                HStack {
+                HStack(spacing: GraftMetrics.spaceXS) {
                     Image(systemName: "plus.circle")
+                        .font(.system(size: 13))
                     Text("Save current view…")
-                    Spacer()
+                        .font(GraftFont.text(GraftType.body))
+                    Spacer(minLength: 0)
                 }
                 .foregroundStyle(Color.gAccentText)
                 .frame(minHeight: GraftMetrics.tap)
                 .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
     }
 
     private var resetSection: some View {
-        Section {
-            Button(role: .destructive) {
+        Group {
+            Button {
                 query.reset()
             } label: {
                 Text("Reset filters and sort")
-                    .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap)
+                    .font(GraftFont.text(GraftType.body, .medium))
+                    .foregroundStyle(canReset ? Color.gRed : Color.gInk3)
+                    .frame(maxWidth: .infinity, minHeight: GraftMetrics.controlPrimary + 6)
+                    .background(Color.gSurface, in: RoundedRectangle(cornerRadius: GraftMetrics.radius))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: GraftMetrics.radius)
+                            .stroke(Color.gHairline, lineWidth: GraftMetrics.border)
+                    )
                     .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             // Grouping is deliberately not part of "reset": it is a way of
             // looking, not a way of narrowing, and losing it is a surprise.
-            .disabled(query.badgeCount == 0 && !query.hasSearch
-                      && query.sort == .manual && query.dir == .asc)
+            .disabled(!canReset)
         }
+    }
+
+    /// Grouping is deliberately not part of "reset": it is a way of looking, not
+    /// a way of narrowing, and losing it is a surprise.
+    private var canReset: Bool {
+        query.badgeCount > 0 || query.hasSearch || query.sort != .manual || query.dir != .asc
     }
 
     // MARK: - Multi-select section
@@ -248,45 +274,11 @@ struct FilterSortSheet: View {
     private func multiSection(
         title: String,
         options: [FilterOption],
-        selection: Binding<[String]>
+        selection: Binding<[String]>,
+        dot: @escaping (String) -> Color? = { _ in nil }
     ) -> some View {
-        Section {
-            ForEach(options) { option in
-                let isOn = selection.wrappedValue.contains(option.id)
-                Button {
-                    var next = selection.wrappedValue
-                    if let idx = next.firstIndex(of: option.id) {
-                        next.remove(at: idx)
-                    } else {
-                        next.append(option.id)
-                    }
-                    selection.wrappedValue = next
-                } label: {
-                    HStack {
-                        Text(option.label)
-                            .foregroundStyle(Color.gInk)
-                        Spacer()
-                        if isOn {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(Color.gAccentText)
-                        }
-                    }
-                    .frame(minHeight: GraftMetrics.tap)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityAddTraits(isOn ? [.isSelected] : [])
-            }
-        } header: {
-            HStack {
-                Text(title)
-                Spacer()
-                if !selection.wrappedValue.isEmpty {
-                    Button("Clear") { selection.wrappedValue = [] }
-                        .font(.system(size: GraftType.micro, weight: .semibold))
-                        .foregroundStyle(Color.gAccentText)
-                }
-            }
-        }
+        GraftMultiChoiceRow(label: title, options: options,
+                            selection: selection, dot: dot)
     }
 }
 
@@ -307,7 +299,7 @@ struct FilterButton: View {
                       : "line.3.horizontal.decrease.circle")
                 if query.badgeCount > 0 {
                     Text("\(query.badgeCount)")
-                        .font(.system(size: GraftType.micro, weight: .semibold))
+                        .font(GraftFont.text(GraftType.micro, .semibold))
                 }
             }
             .foregroundStyle(query.badgeCount > 0 ? Color.gAccentText : Color.gInk2)

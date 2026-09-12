@@ -172,14 +172,14 @@ select, input, textarea { font-family: inherit; font-size: 14px; }
   margin-bottom: 8px;
 }
 
+/* The splice — two offset bars bridged by a 45° diagonal, the graft join.
+   Same 18x18 source as the app icon (ios/make_icon.swift), so the mark in the
+   rail and the mark on the home screen cannot drift apart. */
 .brand-mark {
-  font-family: var(--font-display);
-  font-size: 19px;
-  font-weight: 700;
+  width: 19px;
+  height: 19px;
+  flex-shrink: 0;
   color: var(--accent);
-  letter-spacing: -0.02em;
-  line-height: 1;
-  padding-bottom: 1px;
 }
 
 .brand-name {
