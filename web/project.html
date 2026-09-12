@@ -63,6 +63,17 @@
          which had no UI anywhere in the client. -->
     <section class="links-section" id="project-links"></section>
 
+    <!-- Project notes — freeform, saved to description -->
+    <div class="project-notes-wrap" id="project-notes-wrap">
+      <div class="project-notes"
+           id="project-notes"
+           contenteditable="true"
+           spellcheck="true"
+           placeholder="Add notes about this project…"
+           onblur="GRAFT._saveProjectNotes(this)"
+           onkeydown="if(event.key==='Escape'){this.blur()}"></div>
+    </div>
+
     <!-- The same organisation bar as Projects and All issues: the milestone
          pill bar and the archived switch are both filters in it now. -->
     <div class="org-bar" id="org-bar"></div>

@@ -971,6 +971,55 @@ button.area-header-name:hover { color: var(--ink); }
 
 /* ── Project links ──────────────────────────────────────────────── */
 .links-section { margin-bottom: 32px; }
+
+/* ── Project notes ──────────────────────────────────────────────── */
+.project-notes-wrap {
+  margin-bottom: 28px;
+}
+.project-notes {
+  min-height: 60px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  outline: none;
+  transition: border-color .15s, background .15s, color .15s;
+  white-space: pre-wrap;
+}
+.project-notes:hover { border-color: var(--line); background: var(--surface-2); color: var(--ink); }
+.project-notes:focus { border-color: var(--accent); background: var(--surface-2); color: var(--ink); }
+.project-notes:empty::before { content: attr(placeholder); color: var(--ink-3); pointer-events: none; }
+
+/* ── Area page ──────────────────────────────────────────────────── */
+.area-page-body { padding: 0; }
+.area-notes-section { margin-bottom: 32px; }
+.area-projects-section { margin-bottom: 32px; }
+.area-notes-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.area-notes {
+  min-height: 80px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  outline: none;
+  transition: border-color .15s, background .15s, color .15s;
+  white-space: pre-wrap;
+}
+.area-notes:hover { border-color: var(--line-2); color: var(--ink); }
+.area-notes:focus { border-color: var(--accent); background: var(--surface-2); color: var(--ink); }
+.area-notes:empty::before { content: attr(placeholder); color: var(--ink-3); pointer-events: none; }
 /* Same block inside the slideover, where there is far less room */
 .so-links:not(:empty) { margin-top: 20px; padding-top: 4px; border-top: 1px solid var(--line); }
 .so-links .link-row-url { display: none; }

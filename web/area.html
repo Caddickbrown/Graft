@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Area — Graft</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <a href="index.html" style="display:flex;align-items:center;gap:10px;text-decoration:none;color:inherit">
+        <svg class="brand-mark" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 13.5V6.2a2 2 0 0 1 2-2h2.1"/><path d="M15.5 4.5v7.3a2 2 0 0 1-2 2h-2.1"/><path d="M6.1 11.9 11.9 6.1"/></svg>
+        <span class="brand-name">Graft</span>
+      </a>
+    </div>
+    <div class="nav-section">
+      <a href="today.html" class="nav-item" data-page="today">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        Today
+      </a>
+      <a href="index.html" class="nav-item active" data-page="projects">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="9" height="9" rx="1"/><rect x="13" y="3" width="9" height="9" rx="1"/><rect x="2" y="13" width="9" height="9" rx="1"/><rect x="13" y="13" width="9" height="9" rx="1"/></svg>
+        Projects
+      </a>
+      <a href="issues.html" class="nav-item" data-page="issues">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        All issues
+      </a>
+    </div>
+    <div class="nav-section nav-projects" id="sidebar-projects"></div>
+    <div class="theme-toggle">
+      <button class="theme-toggle-btn" onclick="GRAFT.toggleTheme()"></button>
+    </div>
+  </nav>
+
+  <main class="main">
+    <header class="page-header">
+      <div>
+        <div class="breadcrumb"><a href="index.html">Projects</a> <span>/</span> <span id="area-name">…</span></div>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-primary" onclick="GRAFT.openNewProject()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          New project
+        </button>
+      </div>
+    </header>
+
+    <div id="area-content" class="area-page-body">
+
+      <!-- Notes block -->
+      <section class="area-notes-section">
+        <div class="area-notes-label">About this area</div>
+        <div class="area-notes"
+             id="area-description"
+             contenteditable="true"
+             spellcheck="true"
+             data-area-id=""
+             placeholder="Write some notes about this area…"
+             onblur="GRAFT._saveAreaNotes(this)"
+             onkeydown="if(event.key==='Escape'){this.blur()}"></div>
+      </section>
+
+      <!-- Projects -->
+      <section class="area-projects-section">
+        <div class="area-notes-label">Projects</div>
+        <div id="area-projects"></div>
+      </section>
+
+    </div>
+
+    <!-- Mobile topbar (injected by initChrome) -->
+    <div id="mobile-topbar"></div>
+  </main>
+</div>
+
+<!-- Modals (new project) -->
+<div class="modal-overlay" id="modal-new-project" role="dialog" aria-modal="true" aria-label="New project" onclick="if(event.target===this)GRAFT.closeModal('modal-new-project')">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-project-title">New project</h2>
+      <button class="modal-close" type="button" onclick="GRAFT.closeModal('modal-new-project')" aria-label="Close">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <form class="modal-body" onsubmit="GRAFT.submitProject(event)">
+      <input type="hidden" id="project-edit-id">
+      <div class="form-group">
+        <label class="form-label">Name</label>
+        <input type="text" class="form-input" id="project-name" placeholder="Project name" required autofocus>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea class="form-input form-textarea" id="project-description" placeholder="What is this project?"></textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Status</label>
+          <select class="form-input" id="project-status">
+            <option value="active">Active</option>
+            <option value="paused">Paused</option>
+            <option value="done">Done</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Area</label>
+          <select class="form-input" id="project-area"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Icon</label>
+          <input type="text" class="form-input" id="project-icon" placeholder="Emoji or leave blank">
+          <div id="icon-picker"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Colour</label>
+          <div id="colour-picker"></div>
+          <input type="hidden" id="project-colour" value="#7C7FC4">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tags</label>
+        <div class="tag-input-wrap" id="project-tags"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-new-project')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create project</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="slideover-overlay" style="display:none" onclick="GRAFT.closeSlideover()"></div>
+<div id="issue-slideover" class="slideover" style="display:none"></div>
+<div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+<script src="app.js"></script>
+<script>GRAFT.initArea();</script>
+</body>
+</html>

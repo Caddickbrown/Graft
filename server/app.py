@@ -165,6 +165,10 @@ def _migrate_db():
         # tags: JSON array of strings, free-text with autocomplete.
         if "tags" not in proj_cols:
             db.execute("ALTER TABLE projects ADD COLUMN tags TEXT DEFAULT '[]'")
+        # area descriptions — freeform notes about an area
+        area_cols = {row[1] for row in db.execute("PRAGMA table_info(areas)").fetchall()}
+        if "description" not in area_cols:
+            db.execute("ALTER TABLE areas ADD COLUMN description TEXT DEFAULT ''")
         db.commit()
     except sqlite3.OperationalError as exc:
         if "duplicate column name" not in str(exc):
@@ -630,6 +634,15 @@ def list_areas():
     return jsonify([row_to_dict(r) for r in rows])
 
 
+@app.get("/api/areas/<aid>")
+def get_area(aid):
+    db = get_db()
+    row = db.execute("SELECT * FROM areas WHERE id=?", (aid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(row_to_dict(row))
+
+
 @app.post("/api/areas")
 def create_area():
     data = request.get_json(force=True)
@@ -666,7 +679,7 @@ def update_area(aid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["name", "colour", "sort_order"]
+    fields = ["name", "colour", "sort_order", "description"]
     updates = {f: data[f] for f in fields if f in data}
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)

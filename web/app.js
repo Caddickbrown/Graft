@@ -2695,6 +2695,8 @@
             <span class="area-header-count">${s.rows.length}</span>
             <div class="area-header-rule"></div>
             <div class="area-header-actions">
+              ${s.id ? `<a class="icon-btn" href="area.html?id=${esc(s.id)}" title="Open area" aria-label="Open ${esc(s.name)} area"
+                     onclick="event.stopPropagation()">${svg('<path d="M9 18l6-6-6-6"/>', 16)}</a>` : ''}
               ${s.menu ? `<button class="icon-btn" type="button" aria-haspopup="menu"
                      aria-label="Actions for ${esc(s.name)}"
                      onclick="GRAFT._areaMenu(event,'${jsStr(s.id)}')">${svg(DOTS_ICON, 16)}</button>` : ''}
@@ -3293,6 +3295,9 @@
     if (crumb) crumb.textContent = _currentProject.name;
     if (title) title.textContent = (_currentProject.icon ? _currentProject.icon + ' ' : '') + _currentProject.name;
     if (desc) desc.textContent = _currentProject.description || '';
+    // Also populate the notes block on the page
+    const notes = document.getElementById('project-notes');
+    if (notes) notes.textContent = _currentProject.description || '';
     // The phone header used to read "Project" on every project in the
     // workspace, because #topbar-title was hard-coded and never updated.
     setTopbarTitle(_currentProject.name);
@@ -3451,6 +3456,24 @@
   function _addIssueInStatus(status) {
     openNewIssue(_currentProjectId);
     setTimeout(() => { document.getElementById('issue-status').value = status; }, 50);
+  }
+
+  async function _saveProjectNotes(el) {
+    if (!_currentProject) return;
+    const description = el.textContent.trim();
+    if (description === (_currentProject.description || '')) return;
+    const prev = _currentProject.description;
+    _currentProject.description = description;
+    // Keep the header subtitle in sync
+    const subtitle = document.getElementById('project-description-text');
+    if (subtitle) subtitle.textContent = description;
+    try {
+      await api('PUT', `/api/projects/${_currentProject.id}`, { description });
+    } catch {
+      _currentProject.description = prev;
+      el.textContent = prev;
+      toast('Could not save notes');
+    }
   }
 
   function editCurrentProject() {
@@ -4082,12 +4105,82 @@
     });
   }
 
+  // ══════════════════════════════════════════════════════════════
+  //  PAGE: area.html  (Single area)
+  // ══════════════════════════════════════════════════════════════
+  let _currentArea = null;
+  let _areaNotesTimer = null;
+
+  async function initArea() {
+    window._pageMode = 'area';
+    initTheme();
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('id');
+    if (!id) { window.location.href = 'index.html'; return; }
+    initChrome('area', { title: 'Area' });
+    try {
+      const [area, projects] = await Promise.all([
+        api('GET', `/api/areas/${id}`),
+        api('GET', '/api/projects'),
+      ]);
+      _currentArea = area;
+      _allProjects = projects;
+      _renderAreaPage();
+    } catch (err) {
+      document.getElementById('area-content').innerHTML = errorState({
+        title: 'Area not found',
+        body: 'This area may have been deleted.',
+        onRetry: '',
+      });
+    }
+  }
+
+  function _renderAreaPage() {
+    const a = _currentArea;
+    if (!a) return;
+    document.title = `${a.name} — Graft`;
+    setTopbarTitle(a.name);
+
+    const nameEl = document.getElementById('area-name');
+    const descEl = document.getElementById('area-description');
+    const gridEl = document.getElementById('area-projects');
+    if (nameEl) {
+      nameEl.textContent = a.name;
+      if (a.colour) nameEl.style.borderLeftColor = a.colour;
+    }
+    if (descEl) {
+      descEl.textContent = a.description || '';
+      descEl.dataset.areaId = a.id;
+    }
+    if (gridEl) {
+      const areaProjects = _allProjects.filter(p => p.area_id === a.id && !p.archived);
+      gridEl.innerHTML = areaProjects.length
+        ? `<div class="projects-grid">${areaProjects.map(projectCard).join('')}</div>`
+        : `<div class="empty-state"><div class="empty-state-title">No projects in this area yet</div>
+             <div class="empty-state-body">Assign projects to this area from their edit form.</div></div>`;
+    }
+  }
+
+  async function _saveAreaNotes(el) {
+    const id = el.dataset.areaId;
+    if (!id || !_currentArea) return;
+    const description = el.textContent.trim();
+    if (description === (_currentArea.description || '')) return;
+    _currentArea.description = description;
+    try {
+      await api('PUT', `/api/areas/${id}`, { description });
+    } catch {
+      toast('Could not save notes');
+    }
+  }
+
   // ── Public API ──────────────────────────────────────────────────
   window.GRAFT = {
-    init, initIssues, initProject, initToday,
+    init, initIssues, initProject, initArea, initToday,
     openNewProject, openNewIssue, openEditIssue,
     submitProject, deleteProject, submitIssue, deleteIssue,
     archiveCurrentProject,
+    _saveAreaNotes, _saveProjectNotes,
     setView,
     openMilestones, submitMilestone, cancelMilestone,
     openIssueSlideover, closeSlideover,
