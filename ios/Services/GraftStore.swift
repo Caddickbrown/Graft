@@ -327,7 +327,7 @@ final class GraftStore {
         projects.append(project)
         saveCachedData()
 
-        var bodyDict: [String: Any] = [
+        let bodyDict: [String: Any] = [
             "id": project.id, "name": name, "description": description,
             "colour": colour, "status": status, "icon": icon,
             "area_id": areaId, "tags": tags,
