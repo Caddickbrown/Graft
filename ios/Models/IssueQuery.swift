@@ -78,9 +78,14 @@ struct IssueQuery: Codable, Equatable {
         var projectId: [String] = []
         var milestoneId: [String] = []
         var areaId: [String] = []
+        /// Stored as a *window* rather than as the two dates it resolves to.
+        /// A saved view holding `due_before=2026-09-13` is right for one day
+        /// and quietly wrong forever after; "overdue" is right every morning.
+        var due: DueWindow = .any
+        var repeats: RepeatFilter = .any
 
         enum CodingKeys: String, CodingKey {
-            case status, priority, assignee, label
+            case status, priority, assignee, label, due, repeats
             case projectId = "project_id"
             case milestoneId = "milestone_id"
             case areaId = "area_id"
@@ -97,6 +102,12 @@ struct IssueQuery: Codable, Equatable {
             projectId = try c.decodeIfPresent([String].self, forKey: .projectId) ?? []
             milestoneId = try c.decodeIfPresent([String].self, forKey: .milestoneId) ?? []
             areaId = try c.decodeIfPresent([String].self, forKey: .areaId) ?? []
+            // Via the raw string, like `sort` below: a window written by a
+            // newer build degrades to "any" rather than failing the view.
+            let dueRaw = try c.decodeIfPresent(String.self, forKey: .due) ?? ""
+            due = DueWindow(rawValue: dueRaw) ?? .any
+            let repeatsRaw = try c.decodeIfPresent(String.self, forKey: .repeats) ?? ""
+            repeats = RepeatFilter(rawValue: repeatsRaw) ?? .any
         }
 
         /// Nothing selected anywhere — used to tell "no results because of a
@@ -104,11 +115,101 @@ struct IssueQuery: Codable, Equatable {
         var isEmpty: Bool {
             status.isEmpty && priority.isEmpty && assignee.isEmpty && label.isEmpty
                 && projectId.isEmpty && milestoneId.isEmpty && areaId.isEmpty
+                && due == .any && repeats == .any
         }
 
         var activeCount: Int {
             status.count + priority.count + assignee.count + label.count
                 + projectId.count + milestoneId.count + areaId.count
+                + (due == .any ? 0 : 1) + (repeats == .any ? 0 : 1)
+        }
+    }
+
+    // MARK: - Date window
+    //
+    // The server's six date bounds are single-value on purpose — "due before X"
+    // has exactly one X — so these must never go through the comma-joining
+    // `multi()` helper that every other filter uses. See the note above the
+    // bounds loop in `list_issues`.
+
+    /// A due-date filter, held as a relative window and resolved to concrete
+    /// bounds at the moment a request is built.
+    enum DueWindow: String, CaseIterable, Codable, Hashable {
+        case any
+        case overdue
+        case today
+        case week
+
+        var label: String {
+            switch self {
+            case .any: return "Any date"
+            case .overdue: return "Overdue"
+            case .today: return "Due today"
+            case .week: return "Due in 7 days"
+            }
+        }
+
+        /// `(due_after, due_before)`, both inclusive, both `yyyy-MM-dd` or nil.
+        /// Resolved against `today` rather than `Date()` so the caller decides
+        /// what "today" means and this stays testable.
+        func bounds(from today: Date = Date()) -> (after: String?, before: String?) {
+            let cal = Calendar.current
+            func day(_ offset: Int) -> String {
+                GraftDate.dayString(from: cal.date(byAdding: .day, value: offset, to: today) ?? today)
+            }
+            switch self {
+            case .any:     return (nil, nil)
+            // Strictly before today. The bound is inclusive, so yesterday.
+            case .overdue: return (nil, day(-1))
+            case .today:   return (day(0), day(0))
+            case .week:    return (day(0), day(7))
+            }
+        }
+
+        /// The same question asked of one issue, for the offline path.
+        func matches(_ dueAt: String) -> Bool {
+            guard self != .any else { return true }
+            // An issue with no due date is not due — the server's guard, and
+            // without it every undated issue would satisfy every bound.
+            guard let days = GraftDate.daysUntil(dueAt), !dueAt.isEmpty else { return false }
+            switch self {
+            case .any:     return true
+            case .overdue: return days < 0
+            case .today:   return days == 0
+            case .week:    return days >= 0 && days <= 7
+            }
+        }
+    }
+
+    /// `?recurring=`. "A recurring issue is one carrying a rule, not one that
+    /// happens to be a spawned occurrence" — an occurrence carries the rule too.
+    enum RepeatFilter: String, CaseIterable, Codable, Hashable {
+        case any
+        case only
+        case never
+
+        var label: String {
+            switch self {
+            case .any: return "All issues"
+            case .only: return "Repeating"
+            case .never: return "One-off"
+            }
+        }
+
+        var param: String? {
+            switch self {
+            case .any: return nil
+            case .only: return "true"
+            case .never: return "false"
+            }
+        }
+
+        func matches(_ issue: GraftIssue) -> Bool {
+            switch self {
+            case .any: return true
+            case .only: return issue.repeats
+            case .never: return !issue.repeats
+            }
         }
     }
 
@@ -204,6 +305,17 @@ struct IssueQuery: Codable, Equatable {
         multi("project_id", filters.projectId)
         multi("milestone_id", filters.milestoneId)
         multi("area_id", filters.areaId)
+
+        // Deliberately NOT through `multi`. The date bounds are single-value on
+        // the server — comma-joining them would send `due_before=a,b`, which is
+        // not a set the server ever splits, and the whole filter would silently
+        // match nothing.
+        let bounds = filters.due.bounds()
+        if let after = bounds.after { items.append(URLQueryItem(name: "due_after", value: after)) }
+        if let before = bounds.before { items.append(URLQueryItem(name: "due_before", value: before)) }
+        if let recurring = filters.repeats.param {
+            items.append(URLQueryItem(name: "recurring", value: recurring))
+        }
 
         items.append(URLQueryItem(name: "sort", value: sort.rawValue))
         items.append(URLQueryItem(name: "dir", value: dir.rawValue))

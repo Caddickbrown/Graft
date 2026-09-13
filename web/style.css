@@ -747,6 +747,55 @@ button.area-header-name:hover { color: var(--ink); }
   padding: 2px 6px;
 }
 
+/* A due date sits in the same chip family as the milestone tag, so a row keeps
+   one rhythm. Only the two states that ask for attention are coloured — a date
+   three weeks out is information, not a warning, and colouring it would spend
+   the row's only loud colour on nothing. Overdue reuses --p-urgent, the colour
+   .due-flag already gives lateness on Today. */
+.due-chip {
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: var(--r-xs);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.due-chip.soon { color: var(--ink); }
+.due-chip.overdue { color: var(--p-urgent); }
+
+/* The repeat marker is a glyph, not a word: it sits beside a due chip that is
+   already carrying the text, and "every Mon, Thu" on every row of a chore list
+   would be the same sentence over and over. The rule is in the tooltip and the
+   screen-reader label. */
+.recur-chip {
+  display: inline-flex; align-items: center;
+  color: var(--ink-3);
+  margin-left: -4px;
+}
+
+/* Weekday toggles on the issue form. Buttons rather than checkboxes so seven of
+   them fit on a phone without a column of labels. */
+.recur-days { display: flex; flex-wrap: wrap; gap: 4px; }
+.recur-day {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.recur-day:hover { border-color: var(--line-2); color: var(--ink); }
+/* Washed rather than a solid accent fill: seven of these sit in a row, and the
+   note on .chip above is right that seven accent pills spend the whole screen's
+   green at once. The border and the text carry the state instead. */
+.recur-day.on {
+  background: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
 .label-chip {
   font-size: 11px;
   color: var(--ink-2);
@@ -832,6 +881,7 @@ button.area-header-name:hover { color: var(--ink); }
 .tbl-project { width: 130px; }
 .tbl-priority { width: 100px; }
 .tbl-assignee { width: 120px; }
+.tbl-due { width: 140px; }
 .tbl-milestone { width: 150px; }
 .tbl-actions { width: 36px; text-align: center; }
 .tbl-select, .tbl-input {

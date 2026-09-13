@@ -118,19 +118,304 @@ struct GraftIssue: Codable, Identifiable {
     var priority: String // urgent/high/normal/low
     var labels: [String]
     var assignee: String
+    /// `yyyy-MM-dd`, `""` for "no date". The server stores `''` rather than
+    /// NULL for both dates — see the migration note in `app.py` — so `""` is
+    /// the only empty this ever has to recognise.
+    var startAt: String
+    var dueAt: String
+    /// An RRULE subset, `""` for "does not repeat". See `Recurrence`.
+    var recurrence: String
+    /// `schedule` or `completion`. Never a third state on a real row: an issue
+    /// that recurs always has an anchor, and the column defaults to `schedule`.
+    var recurrenceAnchor: String
+    /// The id of the series root; `""` on the root itself.
+    var recurrenceParent: String
     var sortOrder: Int
     @FlexibleBool var archived: Bool
     var createdAt: String
     var updatedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, title, description, status, priority, labels, assignee, archived
+        case id, title, description, status, priority, labels, assignee, archived, recurrence
         case projectId = "project_id"
         case milestoneId = "milestone_id"
         case milestoneName = "milestone_name"
+        case startAt = "start_at"
+        case dueAt = "due_at"
+        case recurrenceAnchor = "recurrence_anchor"
+        case recurrenceParent = "recurrence_parent"
         case sortOrder = "sort_order"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+
+    init(
+        id: String,
+        projectId: String,
+        milestoneId: String? = nil,
+        milestoneName: String? = nil,
+        title: String,
+        description: String,
+        status: String,
+        priority: String,
+        labels: [String],
+        assignee: String,
+        startAt: String = "",
+        dueAt: String = "",
+        recurrence: String = "",
+        recurrenceAnchor: String = "schedule",
+        recurrenceParent: String = "",
+        sortOrder: Int,
+        archived: Bool,
+        createdAt: String,
+        updatedAt: String
+    ) {
+        self.id = id
+        self.projectId = projectId
+        self.milestoneId = milestoneId
+        self.milestoneName = milestoneName
+        self.title = title
+        self.description = description
+        self.status = status
+        self.priority = priority
+        self.labels = labels
+        self.assignee = assignee
+        self.startAt = startAt
+        self.dueAt = dueAt
+        self.recurrence = recurrence
+        self.recurrenceAnchor = recurrenceAnchor
+        self.recurrenceParent = recurrenceParent
+        self.sortOrder = sortOrder
+        self._archived = FlexibleBool(wrappedValue: archived)
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    /// Hand-written for the same reason `GraftArea.init(from:)` is, but with the
+    /// whole app at stake rather than one tab.
+    ///
+    /// This was the synthesised decoder, which treats an absent key as an error
+    /// for any non-optional property. The moment the scheduling fields were
+    /// added as non-optional `String`s, every response from a server that has
+    /// not run the migration — and every `graft_data.json` written by the build
+    /// before this one — would fail to decode *as a whole array*, and the issues
+    /// list would go empty with nothing on screen to explain it. Only `id` is
+    /// required below; everything else falls back.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        /// `decodeIfPresent` throws on an explicit `null` for a non-optional
+        /// type, so the new columns — which a hand-edited or pre-default row
+        /// can hold as NULL — go through `try?` as well as `??`.
+        func text(_ key: CodingKeys, _ fallback: String) -> String {
+            ((try? c.decodeIfPresent(String.self, forKey: key)) ?? nil) ?? fallback
+        }
+        id = try c.decode(String.self, forKey: .id)
+        projectId = text(.projectId, "")
+        milestoneId = (try? c.decodeIfPresent(String.self, forKey: .milestoneId)) ?? nil
+        milestoneName = (try? c.decodeIfPresent(String.self, forKey: .milestoneName)) ?? nil
+        title = text(.title, "")
+        description = text(.description, "")
+        status = text(.status, "backlog")
+        priority = text(.priority, "normal")
+        labels = ((try? c.decodeIfPresent([String].self, forKey: .labels)) ?? nil) ?? []
+        assignee = text(.assignee, "")
+        startAt = text(.startAt, "")
+        dueAt = text(.dueAt, "")
+        recurrence = text(.recurrence, "")
+        recurrenceAnchor = text(.recurrenceAnchor, "schedule")
+        recurrenceParent = text(.recurrenceParent, "")
+        sortOrder = ((try? c.decodeIfPresent(Int.self, forKey: .sortOrder)) ?? nil) ?? 0
+        _archived = ((try? c.decodeIfPresent(FlexibleBool.self, forKey: .archived)) ?? nil)
+            ?? FlexibleBool(wrappedValue: false)
+        createdAt = text(.createdAt, "")
+        updatedAt = text(.updatedAt, "")
+    }
+
+    /// True when this issue carries a rule. A spawned occurrence carries it
+    /// too, so the series is visible from any member of it — which is what the
+    /// server's `?recurring=true` means as well.
+    var repeats: Bool { !recurrence.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// The series this issue belongs to. `recurrence_parent` is `""` on the
+    /// root, so the root is its own series.
+    var seriesRoot: String { recurrenceParent.isEmpty ? id : recurrenceParent }
+}
+
+// MARK: - Issue mutation response
+//
+// `PUT /api/issues/:id` answered with the issue and nothing else. A PUT that
+// moves a *recurring* issue to `done` now answers with the issue **plus** a
+// `spawned` key carrying its replacement, because the server archives the one
+// you finished and creates the next occurrence in the same request.
+//
+// Decoding that straight into `GraftIssue` would not throw — Codable ignores
+// keys it has no property for — but it would drop the new occurrence on the
+// floor, and the board would keep showing the finished one until a full pull.
+// So the decode target is this, and it tolerates `spawned` being absent, null
+// or something this build cannot read, because none of those are a reason for
+// a completion to read as a failed write.
+
+struct GraftIssueMutation: Decodable {
+    /// The issue as it now stands — archived, when a replacement was spawned.
+    let issue: GraftIssue
+    /// The next occurrence, when this write completed a recurring issue.
+    let spawned: GraftIssue?
+
+    private enum SpawnKeys: String, CodingKey { case spawned }
+
+    init(from decoder: Decoder) throws {
+        issue = try GraftIssue(from: decoder)
+        let c = try decoder.container(keyedBy: SpawnKeys.self)
+        spawned = ((try? c.decodeIfPresent(GraftIssue.self, forKey: .spawned)) ?? nil)
+    }
+}
+
+// MARK: - GraftIssueSeries
+//
+// `GET /api/issues/:id/series`. Archived rows are included and not optional —
+// a completed occurrence *is* archived, so a series that hid them would be
+// almost entirely empty and would answer the opposite of the question asked.
+
+struct GraftIssueSeries: Decodable {
+    let root: String
+    let count: Int
+    let completed: Int
+    let issues: [GraftIssue]
+
+    enum CodingKeys: String, CodingKey { case root, count, completed, issues }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        root = try c.decodeIfPresent(String.self, forKey: .root) ?? ""
+        issues = try c.decodeIfPresent([GraftIssue].self, forKey: .issues) ?? []
+        count = try c.decodeIfPresent(Int.self, forKey: .count) ?? issues.count
+        completed = try c.decodeIfPresent(Int.self, forKey: .completed)
+            ?? issues.filter { $0.status == "done" }.count
+    }
+}
+
+// MARK: - GraftNotification
+//
+// One row of `GET /api/notifications`: what a client should be telling the user
+// and when. The server ranks nothing — it returns everything in `fire_at`
+// order — because only the client knows about iOS's 64-pending cap. The ranking
+// lives in `NotificationScheduler`.
+//
+// `fire_at` is UTC, and whole-day dates have had a 09:00 (08:00 for the digest)
+// time attached server-side. Scheduling it as written would fire at the wrong
+// hour everywhere but Greenwich.
+
+struct GraftNotification: Decodable, Identifiable, Hashable {
+    let id: String
+    /// `""` on a digest row, which is about the day rather than any one issue.
+    var issueId: String
+    /// due | starting | overdue | assigned | digest
+    var kind: String
+    var fireAt: String
+    var deliveredAt: String?
+    var dismissedAt: String?
+    /// Joined from the issue by the server, so the scheduler can write a useful
+    /// body without the issue being cached. Absent on a digest row.
+    var issueTitle: String?
+    var issueStatus: String?
+    var issuePriority: String?
+    var issueProjectId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind
+        case issueId = "issue_id"
+        case fireAt = "fire_at"
+        case deliveredAt = "delivered_at"
+        case dismissedAt = "dismissed_at"
+        case issueTitle = "issue_title"
+        case issueStatus = "issue_status"
+        case issuePriority = "issue_priority"
+        case issueProjectId = "issue_project_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func text(_ key: CodingKeys) -> String? {
+            ((try? c.decodeIfPresent(String.self, forKey: key)) ?? nil)
+        }
+        id = try c.decode(String.self, forKey: .id)
+        issueId = text(.issueId) ?? ""
+        kind = text(.kind) ?? ""
+        fireAt = text(.fireAt) ?? ""
+        deliveredAt = text(.deliveredAt)
+        dismissedAt = text(.dismissedAt)
+        issueTitle = text(.issueTitle)
+        issueStatus = text(.issueStatus)
+        issuePriority = text(.issuePriority)
+        issueProjectId = text(.issueProjectId)
+    }
+
+    var isHandled: Bool { deliveredAt != nil || dismissedAt != nil }
+}
+
+// MARK: - GraftDigest
+//
+// `GET /api/digest`. A plain read with no side effects: it answers "what does
+// today look like", which is a question about issues, and asking it must not
+// rewrite the notifications table.
+
+struct GraftDigest: Decodable {
+    var date: String
+    var assignee: String
+    var dueToday: [GraftIssue]
+    var startingToday: [GraftIssue]
+    var overdue: [GraftIssue]
+    var inReview: [GraftIssue]
+    /// Empty unless `?assignee=` was sent — without a "you" there is nobody to
+    /// be waiting on anyone, and the server returns nothing rather than guess.
+    var waitingOnYou: [GraftIssue]
+    var counts: Counts
+
+    struct Counts: Decodable {
+        var dueToday: Int = 0
+        var startingToday: Int = 0
+        var overdue: Int = 0
+        var inReview: Int = 0
+        var waitingOnYou: Int = 0
+
+        enum CodingKeys: String, CodingKey {
+            case overdue
+            case dueToday = "due_today"
+            case startingToday = "starting_today"
+            case inReview = "in_review"
+            case waitingOnYou = "waiting_on_you"
+        }
+
+        init() { }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            dueToday = try c.decodeIfPresent(Int.self, forKey: .dueToday) ?? 0
+            startingToday = try c.decodeIfPresent(Int.self, forKey: .startingToday) ?? 0
+            overdue = try c.decodeIfPresent(Int.self, forKey: .overdue) ?? 0
+            inReview = try c.decodeIfPresent(Int.self, forKey: .inReview) ?? 0
+            waitingOnYou = try c.decodeIfPresent(Int.self, forKey: .waitingOnYou) ?? 0
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case date, assignee, overdue, counts
+        case dueToday = "due_today"
+        case startingToday = "starting_today"
+        case inReview = "in_review"
+        case waitingOnYou = "waiting_on_you"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decodeIfPresent(String.self, forKey: .date) ?? ""
+        assignee = try c.decodeIfPresent(String.self, forKey: .assignee) ?? ""
+        dueToday = try c.decodeIfPresent([GraftIssue].self, forKey: .dueToday) ?? []
+        startingToday = try c.decodeIfPresent([GraftIssue].self, forKey: .startingToday) ?? []
+        overdue = try c.decodeIfPresent([GraftIssue].self, forKey: .overdue) ?? []
+        inReview = try c.decodeIfPresent([GraftIssue].self, forKey: .inReview) ?? []
+        waitingOnYou = try c.decodeIfPresent([GraftIssue].self, forKey: .waitingOnYou) ?? []
+        counts = try c.decodeIfPresent(Counts.self, forKey: .counts) ?? Counts()
     }
 }
 

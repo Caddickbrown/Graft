@@ -24,6 +24,17 @@ struct IssueDetailView: View {
     @State private var description = ""
     @State private var assignee = ""
     @State private var labelsText = ""
+    /// `""` for "no date". See `GraftDateRow` for why these are strings and not
+    /// `Date`s — `DatePicker` has no empty, and defaulting to today would give
+    /// every issue a deadline it was never given.
+    @State private var startAt = ""
+    @State private var dueAt = ""
+    @State private var recurrence = ""
+    @State private var recurrenceAnchor = RecurrenceAnchor.schedule.rawValue
+    /// Set when completing this issue made the server spawn its replacement.
+    /// Worth saying out loud: the one just ticked off is now archived, and
+    /// without a word about it the completion reads as the issue vanishing.
+    @State private var spawned: GraftIssue?
     @State private var saveState: SaveState = .idle
     @State private var showDeleteConfirm = false
     @State private var undo: UndoAction?
@@ -71,7 +82,9 @@ struct IssueDetailView: View {
                     titleField
                     descriptionField
                     statusPicker
+                    spawnNotice
                     properties
+                    schedule
                     saveExplanation
                     metadata
                     Color.clear.frame(height: 88)
@@ -365,6 +378,88 @@ struct IssueDetailView: View {
         )
     }
 
+    // MARK: - Schedule
+    //
+    // Dates and the repeat rule, in the same card treatment as `properties`.
+    // Both write through the same debounced save as everything else on this
+    // screen, so the recurrence and the title cannot end up in two different
+    // queued PUTs racing each other.
+
+    private var schedule: some View {
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceM) {
+            GraftDateRow(label: "Start", value: $startAt)
+                .onChange(of: startAt) { _, _ in scheduleSave() }
+            Rectangle().fill(Color.gHairline).frame(height: GraftMetrics.border)
+            GraftDateRow(label: "Due", value: $dueAt)
+                .onChange(of: dueAt) { _, _ in scheduleSave() }
+            Rectangle().fill(Color.gHairline).frame(height: GraftMetrics.border)
+            RecurrenceEditor(rule: $recurrence, anchor: $recurrenceAnchor)
+                .onChange(of: recurrence) { _, _ in scheduleSave() }
+                .onChange(of: recurrenceAnchor) { _, _ in scheduleSave() }
+
+            if current.repeats || !current.recurrenceParent.isEmpty {
+                NavigationLink(destination: IssueSeriesView(issue: current)) {
+                    HStack(spacing: GraftMetrics.spaceXS) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 13))
+                        Text("See every occurrence")
+                            .font(GraftFont.text(GraftType.body))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.gInk3)
+                    }
+                    .foregroundStyle(Color.gAccentText)
+                    .frame(minHeight: GraftMetrics.tap)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .background(Color.gSurface, in: RoundedRectangle(cornerRadius: GraftMetrics.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: GraftMetrics.radius)
+                .strokeBorder(Color.gHairline, lineWidth: 0.5)
+        )
+    }
+
+    /// What happened when a recurring issue was completed. There is no undo
+    /// offered — putting the status back would leave the replacement standing,
+    /// and the user would be looking at two of the same chore with no way to
+    /// tell which is real. The web client makes the same call.
+    @ViewBuilder
+    private var spawnNotice: some View {
+        if let spawned {
+            HStack(alignment: .top, spacing: GraftMetrics.spaceXS) {
+                Image(systemName: "repeat")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.gAccentText)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Done — next one \(GraftDate.dueLabel(spawned.dueAt) ?? "scheduled")")
+                        .font(GraftFont.text(GraftType.body, .semibold))
+                        .foregroundStyle(Color.gInk)
+                    Text("This one has been archived and kept as history.")
+                        .font(GraftFont.text(GraftType.caption))
+                        .foregroundStyle(Color.gInk2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                NavigationLink(destination: IssueDetailView(issue: spawned)) {
+                    Text("Open")
+                        .font(GraftFont.text(GraftType.secondary, .semibold))
+                        .foregroundStyle(Color.gAccentText)
+                        .frame(minHeight: GraftMetrics.tap)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(GraftMetrics.spaceS)
+            .background(Color.gAccent.opacity(0.10),
+                        in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+        }
+    }
+
     private var metadata: some View {
         HStack(spacing: 14) {
             Text("Created \(GraftDate.relative(current.createdAt))")
@@ -438,6 +533,11 @@ struct IssueDetailView: View {
         description = i.description
         assignee = i.assignee
         labelsText = i.labels.joined(separator: ", ")
+        startAt = i.startAt
+        dueAt = i.dueAt
+        recurrence = i.recurrence
+        recurrenceAnchor = i.recurrenceAnchor.isEmpty
+            ? RecurrenceAnchor.schedule.rawValue : i.recurrenceAnchor
     }
 
     /// Debounced so typing does not fire a request per keystroke.
@@ -472,6 +572,10 @@ struct IssueDetailView: View {
         updated.labels = labelsText.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        updated.startAt = startAt
+        updated.dueAt = dueAt
+        updated.recurrence = recurrence
+        updated.recurrenceAnchor = recurrenceAnchor
         persist(updated)
     }
 
@@ -501,6 +605,14 @@ struct IssueDetailView: View {
             // queue did with it afterwards, which is what `outcome` reads.
             try? await store.updateIssue(updated)
             refreshSaveState()
+
+            // `updateIssue` awaits the flush, so by here the queue has already
+            // read the response back. A spawn means this issue was recurring
+            // and has just been replaced — see `GraftStore.applySpawn`.
+            if let next = store.lastSpawned, next.seriesRoot == current.seriesRoot {
+                spawned = next
+                store.lastSpawned = nil
+            }
 
             // The two good outcomes fade back to nothing; "queued" and "failed"
             // stay on screen, because they are still true.

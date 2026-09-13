@@ -3,10 +3,12 @@ Graft — Project Tracker Backend
 Flask + SQLite, port 8911
 """
 
+import hashlib
 import json
 import os
 import sqlite3
-from datetime import datetime
+from calendar import monthrange
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,6 +18,14 @@ DB_PATH = os.environ.get("GRAFT_DB", "/home/dcb/graft/graft.db")
 WEB_DIR = Path(__file__).parent.parent / "web"
 
 app = Flask(__name__, static_folder=None)
+
+# The project an issue lands on when it was captured without one. issues.project_id
+# is NOT NULL REFERENCES projects(id), and relaxing that in SQLite means rebuilding
+# the table — a destructive operation on a live database to answer what is really a
+# presentation question. A real project row that the few project-facing surfaces
+# know to hide is the additive answer: the foreign key stays satisfied, no client
+# has to learn a new shape, and "no project" becomes one id both ends can spell.
+NO_PROJECT_ID = "proj_none"
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +100,11 @@ def init_db():
             priority     TEXT DEFAULT 'normal',
             labels       TEXT DEFAULT '[]',
             assignee     TEXT DEFAULT '',
+            start_at     TEXT DEFAULT '',
+            due_at       TEXT DEFAULT '',
+            recurrence         TEXT DEFAULT '',   -- RRULE subset; see _parse_recurrence
+            recurrence_anchor  TEXT DEFAULT 'schedule',
+            recurrence_parent  TEXT DEFAULT '',   -- the series root; '' on the root itself
             sort_order   INTEGER DEFAULT 0,
             archived     INTEGER DEFAULT 0,
             created_at   TEXT NOT NULL,
@@ -125,6 +140,26 @@ def init_db():
             updated_at  TEXT NOT NULL
         );
 
+        -- What a client should be telling the user about, and when. This exists
+        -- rather than leaving it all to on-device scheduling for two reasons:
+        -- iOS caps pending local notifications at 64, so something has to decide
+        -- which 64 matter, and an assignment made by somebody else on the server
+        -- has no device-side trigger to fire from at all.
+        --
+        -- No FOREIGN KEY on issue_id, for the reason in the note above, and
+        -- because a 'digest' row is about the day rather than any one issue and
+        -- carries issue_id ''.
+        CREATE TABLE IF NOT EXISTS notifications (
+            id           TEXT PRIMARY KEY,
+            issue_id     TEXT NOT NULL DEFAULT '',   -- no FK: see note above
+            kind         TEXT NOT NULL,              -- due|starting|overdue|assigned|digest
+            fire_at      TEXT NOT NULL,
+            delivered_at TEXT,
+            dismissed_at TEXT,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS views (
             id          TEXT PRIMARY KEY,
             name        TEXT NOT NULL,
@@ -158,6 +193,28 @@ def _migrate_db():
             db.execute("ALTER TABLE projects ADD COLUMN repo_url TEXT DEFAULT ''")
         if "archived" not in issue_cols:
             db.execute("ALTER TABLE issues ADD COLUMN archived INTEGER DEFAULT 0")
+        # Scheduling dates, ISO date strings ('2026-09-13'). '' is "unset", the
+        # convention assignee and area_id already use, so the column is never NULL:
+        # ADD COLUMN with a constant DEFAULT back-fills every existing row with it,
+        # and '' is also what an empty <input type="date"> sends. milestone_id shows
+        # the cost of the other choice — holding both NULL and '' means every filter
+        # that touches it needs two comparisons forever.
+        if "start_at" not in issue_cols:
+            db.execute("ALTER TABLE issues ADD COLUMN start_at TEXT DEFAULT ''")
+        if "due_at" not in issue_cols:
+            db.execute("ALTER TABLE issues ADD COLUMN due_at TEXT DEFAULT ''")
+        # Recurrence. '' is "does not recur", the same unset convention as the
+        # dates above. recurrence_anchor defaults to 'schedule' rather than '',
+        # because an issue that recurs always has an anchor and 'schedule' is the
+        # one that matches a calendar — the column never holds a third state.
+        # recurrence_parent is the series root, '' on the root itself, so a series
+        # is `id = root OR recurrence_parent = root` without a self-join.
+        if "recurrence" not in issue_cols:
+            db.execute("ALTER TABLE issues ADD COLUMN recurrence TEXT DEFAULT ''")
+        if "recurrence_anchor" not in issue_cols:
+            db.execute("ALTER TABLE issues ADD COLUMN recurrence_anchor TEXT DEFAULT 'schedule'")
+        if "recurrence_parent" not in issue_cols:
+            db.execute("ALTER TABLE issues ADD COLUMN recurrence_parent TEXT DEFAULT ''")
         # No FOREIGN KEY on area_id, on purpose — see the note in init_db().
         # '' means "No area", which is also what a deleted area leaves behind.
         if "area_id" not in proj_cols:
@@ -177,6 +234,7 @@ def _migrate_db():
         db.close()
     _backfill_repo_links()
     _remap_project_colours()
+    _ensure_no_project()
 
 
 def _backfill_repo_links():
@@ -225,6 +283,35 @@ def _backfill_repo_links():
                     ("link_" + str(uuid4())[:8], pid, "Repo", repo_url, "github", 0, ts, ts),
                 )
             db.execute("UPDATE projects SET repo_url='' WHERE id=?", (pid,))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _ensure_no_project():
+    """Seed the project that issues captured without one hang off.
+
+    INSERT OR IGNORE, so it is written once and never overwrites a row the user
+    has since renamed or re-coloured; running it on every import is a no-op.
+
+    It is a plain project row hidden by id, not a row marked by a new `system`
+    flag column. A flag would have to be carried forward by hand through
+    create_project's INSERT OR REPLACE — exactly the dance repo_url and area_id
+    already do above — and an older client replaying a create would clear it,
+    turning the sentinel into an ordinary project on someone's Projects screen.
+    An id cannot be un-set by a replay.
+
+    now() is defined below the import-time migration calls, so the timestamp is
+    built inline here; see _backfill_repo_links for the same note.
+    """
+    ts = datetime.utcnow().isoformat()
+    db = sqlite3.connect(DB_PATH)
+    try:
+        db.execute(
+            "INSERT OR IGNORE INTO projects (id,name,description,status,colour,icon,archived,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (NO_PROJECT_ID, "No project", "Issues captured without a project.",
+             "active", "#8A9098", "", 0, ts, ts),
+        )
         db.commit()
     finally:
         db.close()
@@ -342,6 +429,33 @@ def _multi(name):
     return values
 
 
+def _date_value(value):
+    """Normalise an incoming date to the form we store: an ISO string, or ''.
+
+    JSON null, a missing key's fallback and an empty <input type="date"> all mean
+    "no date" and all have to land as the same value. A column holding both NULL
+    and '' is what forces milestone_id's filters to compare against two things at
+    every call site; start_at and due_at only ever hold one of them.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _day_bound(value, upper):
+    """Widen a date-only upper bound to the end of that day.
+
+    updated_at holds a full timestamp, so ?updated_before=2026-09-13 compared as
+    text would exclude every edit actually made on the 13th — '2026-09-13T09:12'
+    sorts after '2026-09-13'. Both ends then read the way a person means them: on
+    or before, on or after. A lower bound needs no widening, because a bare date
+    already sorts before every timestamp inside it.
+    """
+    if upper and len(value) == 10 and "T" not in value:
+        return value + "T23:59:59.999999"
+    return value
+
+
 def _like_escape(text):
     """Escape LIKE metacharacters so a user's own % or _ matches literally.
 
@@ -404,6 +518,14 @@ def list_projects():
     show_archived = request.args.get("archived", "0") == "1"
     if not show_archived:
         query += " AND archived=0"
+
+    # The no-project sentinel is a storage detail, not something the user filed
+    # anything into, so it never appears in a project list. Only the row is
+    # hidden — its issues are ordinary issues and keep counting everywhere.
+    # It stays reachable by id at /api/projects/<id> so a client can resolve the
+    # name of an issue that points at it.
+    query += " AND id != ?"
+    params.append(NO_PROJECT_ID)
 
     # Multi-value like every other filter. '' is a real value here ("No area"),
     # and _multi drops empty fragments, so ?area_id= alone means "no filter";
@@ -521,6 +643,15 @@ def delete_project(pid):
     row = db.execute("SELECT id FROM projects WHERE id=?", (pid,)).fetchone()
     if row is None:
         return jsonify({"error": "not found"}), 404
+    # Deleting a project cascades into its issues, and everything captured
+    # without a project lives here. The row is re-seeded on the next import
+    # anyway, so the delete would destroy the issues and give nothing back.
+    if pid == NO_PROJECT_ID:
+        return jsonify({"error": "the no-project bucket cannot be deleted"}), 400
+    db.execute(
+        "DELETE FROM notifications WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)",
+        (pid,),
+    )
     db.execute("DELETE FROM issues WHERE project_id=?", (pid,))
     db.execute("DELETE FROM milestones WHERE project_id=?", (pid,))
     db.execute("DELETE FROM projects WHERE id=?", (pid,))
@@ -889,6 +1020,377 @@ def delete_view(vid):
 
 
 # ---------------------------------------------------------------------------
+# Recurrence
+# ---------------------------------------------------------------------------
+#
+# The stored rule is an RRULE subset rather than a syntax of our own. EventKit,
+# ICS and every calendar server already speak RRULE, and the companion app is
+# heading for EventKit — a bespoke DSL would buy nothing now and have to be
+# translated later. Everything here works in whole days, because issues.start_at
+# and issues.due_at are dates and there is no time of day to honour.
+#
+# Deliberately NOT supported, each because it cannot be answered without
+# expanding a full occurrence set, which this does not do:
+#
+#   BYSETPOS        "the last Friday of the month"
+#   ordinal BYDAY   2MO, -1FR — the same problem wearing a different hat
+#   negative BYMONTHDAY (-1 for "last day") — ditto, and it reads as a day count
+#   BYMONTH, BYWEEKNO, BYYEARDAY          nothing in Graft is scoped that finely
+#   BYHOUR/BYMINUTE/BYSECOND              there is no time of day to attach to
+#   WKST            weeks always start Monday here; it only changes an answer in
+#                   combination with BYWEEKNO or an interval'd BYDAY, and one
+#                   fixed, documented week start is better than a silent one
+#   RDATE/EXDATE, multiple RRULEs         not a one-column idea
+#
+# An unsupported part is rejected at write time rather than ignored. A rule that
+# silently drops the half the user cared about is worse than one that refuses:
+# "every weekday" quietly becoming "every day" is a wrong answer the user cannot
+# see, and the pickers in both clients only ever emit what is supported here.
+
+_RECUR_FREQS = ("DAILY", "WEEKLY", "MONTHLY", "YEARLY")
+_RECUR_DAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+_RECUR_KEYS = ("FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "COUNT", "UNTIL")
+_RECUR_ANCHORS = ("schedule", "completion")
+
+# How far the search for the next occurrence will walk before giving up. Only a
+# rule that matches nothing can reach this — BYMONTHDAY=31 skips at most seven
+# months in a row — so it is a guard against a pathological rule looping forever,
+# not a real limit on how far ahead a series can reach.
+_RECUR_MAX_STEPS = 500
+
+
+def _parse_date(text):
+    """A yyyy-mm-dd string as a date, or None. Never raises."""
+    try:
+        return date.fromisoformat((text or "")[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_recurrence(text):
+    """Validate and normalise an RRULE string.
+
+    Returns (parts, None) for a usable rule, (None, None) for "does not recur",
+    and (None, message) for something we will not run — the message is written
+    for a person, because it is handed straight back as a 400.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None, None
+    # RRULE names and values are case-insensitive; the UNTIL date is digits and
+    # separators, so upper-casing the whole string is safe.
+    parts = {}
+    for chunk in text.upper().split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            return None, f"'{chunk}' is not a NAME=VALUE pair"
+        key, value = (bit.strip() for bit in chunk.split("=", 1))
+        if key not in _RECUR_KEYS:
+            return None, f"{key} is not supported (supported: {', '.join(_RECUR_KEYS)})"
+        if key in parts:
+            return None, f"{key} given more than once"
+        parts[key] = value
+
+    freq = parts.get("FREQ")
+    if not freq:
+        return None, "FREQ is required"
+    if freq not in _RECUR_FREQS:
+        return None, f"FREQ={freq} is not supported (supported: {', '.join(_RECUR_FREQS)})"
+
+    try:
+        interval = int(parts.get("INTERVAL", "1"))
+    except ValueError:
+        return None, "INTERVAL must be a whole number"
+    if interval < 1:
+        return None, "INTERVAL must be at least 1"
+
+    byday = []
+    if "BYDAY" in parts:
+        if freq != "WEEKLY":
+            return None, "BYDAY is only supported with FREQ=WEEKLY"
+        for token in parts["BYDAY"].split(","):
+            token = token.strip()
+            if token not in _RECUR_DAYS:
+                return None, f"BYDAY={token} is not supported (use MO,TU,WE,TH,FR,SA,SU with no ordinal)"
+            byday.append(_RECUR_DAYS[token])
+        if not byday:
+            return None, "BYDAY is empty"
+        byday = sorted(set(byday))
+
+    bymonthday = []
+    if "BYMONTHDAY" in parts:
+        if freq != "MONTHLY":
+            return None, "BYMONTHDAY is only supported with FREQ=MONTHLY"
+        for token in parts["BYMONTHDAY"].split(","):
+            token = token.strip()
+            try:
+                dom = int(token)
+            except ValueError:
+                return None, f"BYMONTHDAY={token} is not a whole number"
+            if not 1 <= dom <= 31:
+                return None, f"BYMONTHDAY={token} is out of range (1-31; negatives are not supported)"
+            bymonthday.append(dom)
+        bymonthday = sorted(set(bymonthday))
+
+    count = None
+    if "COUNT" in parts:
+        try:
+            count = int(parts["COUNT"])
+        except ValueError:
+            return None, "COUNT must be a whole number"
+        if count < 1:
+            return None, "COUNT must be at least 1"
+
+    until = None
+    if "UNTIL" in parts:
+        raw = parts["UNTIL"]
+        # Accept both the ICS form (20261231, 20261231T120000Z) and the ISO form
+        # the rest of Graft writes. Only the date half is kept.
+        digits = raw.split("T")[0].replace("-", "")
+        if len(digits) == 8 and digits.isdigit():
+            until = _parse_date(f"{digits[0:4]}-{digits[4:6]}-{digits[6:8]}")
+        if until is None:
+            return None, f"UNTIL={raw} is not a date"
+
+    if count is not None and until is not None:
+        # RFC 5545 forbids both, and for a good reason: they can disagree, and
+        # then the series has two different lengths depending on who is asking.
+        return None, "COUNT and UNTIL cannot both be given"
+
+    return {
+        "freq": freq, "interval": interval, "byday": byday,
+        "bymonthday": bymonthday, "count": count, "until": until,
+    }, None
+
+
+def _recurrence_from_body(data):
+    """Pull and validate the recurrence pair out of a request body.
+
+    Returns (recurrence, anchor, None). Either value is None for "the client
+    never mentioned this key", which is the absent-means-keep rule the dates
+    already follow; an explicit '' is still an edit meaning "stop recurring".
+    On a bad rule it returns (None, None, response) for the caller to return.
+    """
+    def text(value):
+        return "" if value is None else str(value).strip()
+
+    recurrence = None
+    if "recurrence" in data:
+        recurrence = text(data["recurrence"])
+        _parts, err = _parse_recurrence(recurrence)
+        if err:
+            return None, None, (jsonify({"error": f"recurrence: {err}"}), 400)
+
+    anchor = None
+    if "recurrence_anchor" in data:
+        anchor = text(data["recurrence_anchor"]).lower() or "schedule"
+        if anchor not in _RECUR_ANCHORS:
+            return None, None, (jsonify(
+                {"error": f"recurrence_anchor must be one of {', '.join(_RECUR_ANCHORS)}"}), 400)
+
+    return recurrence, anchor, None
+
+
+def _month_index(d):
+    return d.year * 12 + (d.month - 1)
+
+
+def _next_occurrence(parts, base, after):
+    """The first occurrence of `parts` strictly after `after`, cadence from `base`.
+
+    Pure: no database, no clock. `base` sets the phase of the rule (which weekday,
+    which day of the month, which week the interval counts from) and `after` is
+    the floor. They are usually different — a weekly issue completed three weeks
+    late keeps its Sunday from `base` but must land after today, which skips the
+    missed Sundays instead of spawning a backlog of them.
+
+    Returns a date, or None if the rule's UNTIL has passed or the search gave up.
+    """
+    freq, interval = parts["freq"], parts["interval"]
+    until = parts["until"]
+
+    def answer(d):
+        if d is None or (until is not None and d > until):
+            return None
+        return d
+
+    if freq == "DAILY" or (freq == "WEEKLY" and not parts["byday"]):
+        step = interval * (7 if freq == "WEEKLY" else 1)
+        # Straight to the right multiple rather than a loop: base can be years
+        # behind after, and every step in between is a date nobody asked for.
+        n = max(1, (after - base).days // step + 1)
+        return answer(base + timedelta(days=n * step))
+
+    if freq == "WEEKLY":
+        # Weeks start Monday (WKST=MO, fixed — see the note above). With
+        # INTERVAL>1 the rule is "these weekdays, every n-th week", and the weeks
+        # are counted from the block containing base, so the phase survives.
+        block = 7 * interval
+        week_start = base - timedelta(days=base.weekday())
+        skip = max(0, (after - week_start).days // block)
+        cursor = week_start + timedelta(days=skip * block)
+        for _ in range(_RECUR_MAX_STEPS):
+            for weekday in parts["byday"]:
+                candidate = cursor + timedelta(days=weekday)
+                if candidate > after:
+                    return answer(candidate)
+            cursor += timedelta(days=block)
+        return None
+
+    if freq == "MONTHLY":
+        # An explicit BYMONTHDAY is an assertion about the calendar, so a month
+        # without that day is skipped — RFC 5545's rule, and the one an ICS
+        # export has to agree with. A day merely inherited from the issue's own
+        # due date is not an assertion: the user made a task on the 31st, they
+        # never said "the 31st or nothing", and dropping February out of a
+        # monthly chore would read as the recurrence having broken. So that case
+        # clamps to the last day of the month instead.
+        strict = bool(parts["bymonthday"])
+        days = parts["bymonthday"] or [base.day]
+        first = _month_index(base)
+        skip = max(0, (_month_index(after) - first) // interval)
+        for step in range(skip, skip + _RECUR_MAX_STEPS):
+            year, month = divmod(first + step * interval, 12)
+            month += 1
+            last = monthrange(year, month)[1]
+            for dom in days:
+                if dom > last:
+                    if strict:
+                        continue
+                    dom = last
+                candidate = date(year, month, dom)
+                if candidate > after:
+                    return answer(candidate)
+        return None
+
+    # YEARLY. The month and day come from base; 29 February clamps to the 28th in
+    # a common year for the same reason the monthly case clamps — the date was
+    # inherited, not asserted.
+    skip = max(0, (after.year - base.year) // interval)
+    for step in range(skip, skip + _RECUR_MAX_STEPS):
+        year = base.year + step * interval
+        last = monthrange(year, base.month)[1]
+        candidate = date(year, base.month, min(base.day, last))
+        if candidate > after:
+            return answer(candidate)
+    return None
+
+
+def _recurrence_next_dates(issue, completed_on):
+    """The (start_at, due_at) the next occurrence should carry, or None.
+
+    None means the series ends here — UNTIL has passed, or the rule matches
+    nothing reachable.
+
+    A recurrence needs an anchor date to count from, and an issue is allowed not
+    to have one. Rather than rejecting that at write time — which would make the
+    issue form order-dependent, and would leave the iOS offline queue replaying a
+    body the server will refuse forever — the anchor falls back: due_at, then
+    start_at, then the day it was completed. The last of those makes a dateless
+    'schedule' recurrence behave like a 'completion' one for exactly one cycle
+    and then settle onto the calendar, which is a better answer than an error on
+    a form the user has already left.
+    """
+    parts, err = _parse_recurrence(issue["recurrence"])
+    if parts is None:
+        return None
+
+    due = _parse_date(issue["due_at"])
+    start = _parse_date(issue["start_at"])
+    anchor = (issue["recurrence_anchor"] or "schedule").strip().lower()
+
+    if anchor == "completion":
+        # "Water the plants every three days" means three days after I watered
+        # them, so the calendar the issue was on is irrelevant — only the doing.
+        base = after = completed_on
+    else:
+        # "Bins out every Sunday" is the calendar's claim, not mine; missing one
+        # does not move the next. base keeps the phase, after skips what I missed.
+        base = due or start or completed_on
+        after = max(base, completed_on)
+
+    nxt = _next_occurrence(parts, base, after)
+    if nxt is None:
+        return None
+
+    if due and start:
+        # Keep the window the user drew. A task that starts three days before it
+        # is due should still start three days before it is due.
+        return ((nxt - (due - start)).isoformat(), nxt.isoformat())
+    if start and not due:
+        return (nxt.isoformat(), "")
+    # Both the "only a due date" case and the dateless one land here: an issue
+    # that recurs gets a due date from its first spawn onward, because that is
+    # the date the next cycle will be measured from.
+    return ("", nxt.isoformat())
+
+
+_ISSUE_COPY_FIELDS = ("project_id", "milestone_id", "title", "description",
+                      "priority", "labels", "assignee", "sort_order",
+                      "recurrence", "recurrence_anchor")
+
+
+def _spawn_next_occurrence(db, row, ts):
+    """Create the next occurrence of a just-completed recurring issue.
+
+    Returns the new issue's id, or None if nothing was spawned (not recurring,
+    series exhausted, or the occurrence already exists).
+
+    Spawn-and-archive rather than rolling the one row forward. Rolling forward is
+    tidier by one row, but it overwrites the completion the user just made and
+    every one before it, so "did I actually put the bins out last week" becomes
+    unanswerable. Archiving keeps the board clean and leaves the history joined
+    up through recurrence_parent, which is what `archived` was already for.
+
+    The new id is derived from the series root and the dates rather than random,
+    which is what makes this safe to run twice. Two racing completions, an iOS
+    queue replaying the same PUT, or an unarchive-and-redo all compute the same
+    id, and INSERT OR IGNORE turns the second one into nothing.
+    """
+    if not (row["recurrence"] or "").strip():
+        return None
+    parts, _err = _parse_recurrence(row["recurrence"])
+    if parts is None:
+        # Rules are validated on write, so this is a hand-edited or older row.
+        # A completion must still be allowed to complete.
+        return None
+
+    root = (row["recurrence_parent"] or "").strip() or row["id"]
+
+    if parts["count"] is not None:
+        # COUNT limits how many issues the series produces, which is what the
+        # user can see and count. Occurrences that were skipped because the issue
+        # was completed late were never rows, so they do not spend the budget —
+        # counting them would end a series early for no visible reason.
+        made = db.execute(
+            "SELECT COUNT(*) AS n FROM issues WHERE id=? OR recurrence_parent=?", (root, root)
+        ).fetchone()["n"]
+        if made >= parts["count"]:
+            return None
+
+    nxt = _recurrence_next_dates(row, datetime.utcnow().date())
+    if nxt is None:
+        return None
+    next_start, next_due = nxt
+
+    new_id = "iss_" + hashlib.sha1(f"{root}|{next_start}|{next_due}".encode()).hexdigest()[:12]
+    columns = ["id", "start_at", "due_at", "recurrence_parent", "status", "archived",
+               "created_at", "updated_at", *_ISSUE_COPY_FIELDS]
+    values = [new_id, next_start, next_due, root, "backlog", 0, ts, ts,
+              *[row[f] for f in _ISSUE_COPY_FIELDS]]
+    db.execute(
+        "INSERT OR IGNORE INTO issues (%s) VALUES (%s)"
+        % (",".join(columns), ",".join("?" for _ in columns)),
+        values,
+    )
+    # There is no area to copy: an area belongs to the project, so project_id
+    # carries it. Labels come across as the stored JSON text, untouched.
+    return new_id
+
+
+# ---------------------------------------------------------------------------
 # /api/issues
 # ---------------------------------------------------------------------------
 
@@ -1002,6 +1504,24 @@ def list_issues():
         query += " AND i.project_id IN (SELECT id FROM projects WHERE area_id IN (%s))" % ",".join("?" for _ in area_ids)
         params.extend(area_ids)
 
+    # A recurring issue is one carrying a rule, not one that happens to be a
+    # spawned occurrence — an occurrence carries the rule too, so the series is
+    # visible from any member of it.
+    recurring = (request.args.get("recurring") or "").strip().lower()
+    if recurring in ("true", "1"):
+        query += " AND i.recurrence IS NOT NULL AND i.recurrence != ''"
+    elif recurring in ("false", "0"):
+        query += " AND (i.recurrence IS NULL OR i.recurrence = '')"
+
+    # Composable form of the series lookup — /api/issues/<id>/series is the one
+    # that answers "show me this series" properly, because it also knows the root
+    # is not its own child. 'none' is the not-spawned-by-anything bucket.
+    parents = _multi("recurrence_parent")
+    if parents:
+        parents = ["" if x.lower() == "none" else x for x in parents]
+        query += " AND i.recurrence_parent IN (%s)" % ",".join("?" for _ in parents)
+        params.extend(parents)
+
     has_milestone = request.args.get("has_milestone")
     if has_milestone == "1":
         query += " AND i.milestone_id IS NOT NULL AND i.milestone_id != ''"
@@ -1040,6 +1560,36 @@ def list_issues():
             params.append('%"' + _like_escape(label.lower()) + '"%')
         query += " AND (%s)" % " OR ".join(clauses)
 
+    # Date bounds are deliberately single-value: these do not go through _multi().
+    # "due before X" has exactly one X, and a second one could only contradict the
+    # first — ?due_before=a,b as a set would have to mean "before a OR before b",
+    # which is just the later of the two, so the multi form would be a trap.
+    # Both ends are inclusive: due_before=today is "due today or already overdue",
+    # which is the question the caller is actually asking.
+    #
+    # The column names come from this table, never from the request, the same way
+    # sort= is whitelisted in _ISSUE_SORTS; only the values travel as parameters.
+    for name, column, op in (
+        ("due_before",     "i.due_at",     "<="),
+        ("due_after",      "i.due_at",     ">="),
+        ("starts_before",  "i.start_at",   "<="),
+        ("starts_after",   "i.start_at",   ">="),
+        ("updated_before", "i.updated_at", "<="),
+        ("updated_after",  "i.updated_at", ">="),
+    ):
+        bound = (request.args.get(name) or "").strip()
+        if not bound:
+            # Blank means no filter, matching _multi()'s handling of ?status= —
+            # a cleared date input must not silently become a filter for ''.
+            continue
+        # An issue with no due date is not due. '' sorts before every real date,
+        # so without this guard every undated issue would satisfy due_before and
+        # the "what is due today" list would be the whole backlog. The IS NOT NULL
+        # half costs nothing and covers a row written before the column had its
+        # default, or by hand.
+        query += f" AND {column} IS NOT NULL AND {column} != '' AND {column} {op} ?"
+        params.append(_day_bound(bound, op == "<="))
+
     query += " ORDER BY " + _issue_order_by()
     rows = db.execute(query, params).fetchall()
     return jsonify([_issue_row_to_dict(r) for r in rows])
@@ -1048,9 +1598,14 @@ def list_issues():
 @app.post("/api/issues")
 def create_issue():
     data = request.get_json(force=True)
-    project_id, err = _required_id(data, "project_id")
-    if err:
-        return err
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+    # A capture flow produces far more "a thing to do" than "a thing to do on
+    # project X", and rejecting the first kind pushed the client into inventing a
+    # project to satisfy the column. An absent or empty project_id falls back to
+    # the no-project bucket instead of a 400. Naming a project that does not
+    # exist is still a 404 below: that is a client bug, not an omission.
+    project_id = (data.get("project_id") or "").strip() or NO_PROJECT_ID
     iid = data.get("id") or "iss_" + str(uuid4())[:8]
     ts = now()
     labels = json.dumps(data.get("labels", []))
@@ -1065,14 +1620,36 @@ def create_issue():
             return jsonify({"error": f"milestone {milestone_id} not found"}), 404
     # See create_project: INSERT OR REPLACE resets any column it doesn't name, so a
     # replayed create would un-archive the issue and reset its creation date.
-    existing = db.execute("SELECT archived, created_at FROM issues WHERE id=?", (iid,)).fetchone()
+    recurrence, recurrence_anchor, err = _recurrence_from_body(data)
+    if err:
+        return err
+    existing = db.execute(
+        "SELECT archived, created_at, start_at, due_at, recurrence, recurrence_anchor, recurrence_parent, assignee"
+        " FROM issues WHERE id=?", (iid,)
+    ).fetchone()
     archived = data.get("archived", existing["archived"] if existing else 0)
     created_at = data.get("created_at") or (existing["created_at"] if existing else ts)
+    # The dates are newer than the shipped iOS build, which omits both keys
+    # entirely, so create_project's rule applies here too: absent means "keep
+    # what's there", an explicit value (including "") is an edit. Without it a
+    # replayed create would quietly strip the dates off a scheduled issue.
+    start_at = _date_value(data["start_at"]) if "start_at" in data else ((existing["start_at"] or "") if existing else "")
+    due_at = _date_value(data["due_at"]) if "due_at" in data else ((existing["due_at"] or "") if existing else "")
+    # Same rule again for the recurrence trio, and it matters more here: a client
+    # that has never heard of recurrence replaying a create would otherwise turn a
+    # repeating chore into a one-off, silently, and only the next Sunday would say so.
+    if recurrence is None:
+        recurrence = (existing["recurrence"] or "") if existing else ""
+    if recurrence_anchor is None:
+        recurrence_anchor = (existing["recurrence_anchor"] or "schedule") if existing else "schedule"
+    recurrence_parent = (data["recurrence_parent"].strip() if isinstance(data.get("recurrence_parent"), str)
+                         else ((existing["recurrence_parent"] or "") if existing else ""))
     updated_at = data.get("updated_at") or ts
     db.execute(
         """INSERT OR REPLACE INTO issues
-           (id,project_id,milestone_id,title,description,status,priority,labels,assignee,sort_order,archived,created_at,updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (id,project_id,milestone_id,title,description,status,priority,labels,assignee,start_at,due_at,
+            recurrence,recurrence_anchor,recurrence_parent,sort_order,archived,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             iid,
             project_id,
@@ -1083,10 +1660,20 @@ def create_issue():
             data.get("priority", "normal"),
             labels,
             data.get("assignee", ""),
+            start_at,
+            due_at,
+            recurrence,
+            recurrence_anchor,
+            recurrence_parent,
             data.get("sort_order", 0),
             archived, created_at, updated_at,
         ),
     )
+    # An assignment is an event, not a state, so it cannot be derived later from
+    # the row (see _desired_notifications). Record it while we can still see that
+    # the row is new — a replayed create is not a fresh assignment.
+    if existing is None:
+        _record_assignment(db, iid, data.get("assignee", ""), ts)
     db.commit()
     row = db.execute(
         "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE i.id=?",
@@ -1102,19 +1689,99 @@ def update_issue(iid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["title", "description", "status", "priority", "assignee", "milestone_id", "sort_order", "archived"]
+    fields = ["title", "description", "status", "priority", "assignee", "milestone_id",
+              "start_at", "due_at", "recurrence_parent", "sort_order", "archived"]
     updates = {f: data[f] for f in fields if f in data}
+    recurrence, recurrence_anchor, err = _recurrence_from_body(data)
+    if err:
+        return err
+    if recurrence is not None:
+        updates["recurrence"] = recurrence
+    if recurrence_anchor is not None:
+        updates["recurrence_anchor"] = recurrence_anchor
+    # Absent already means "keep what's there" — the comprehension above never
+    # names a key the client didn't send. Present and null is the other half of
+    # that rule: an explicit clear, which must land as '' rather than NULL so the
+    # column keeps holding exactly one kind of empty.
+    for key in ("start_at", "due_at"):
+        if key in updates:
+            updates[key] = _date_value(updates[key])
     if "labels" in data:
         updates["labels"] = json.dumps(data["labels"])
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)
     db.execute(f"UPDATE issues SET {set_clause} WHERE id=?", (*updates.values(), iid))
+
+    # A completion is a transition, not a state, and this is the only handler that
+    # can see one: `row` is the issue as it was before this PUT. Both halves are
+    # needed. Without "the client asked for done", a PUT that only renames a
+    # finished issue would spawn another occurrence; without "it was not done
+    # already", re-sending done — which the iOS queue does whenever a response is
+    # lost — would spawn one per replay. The deterministic id in
+    # _spawn_next_occurrence is the third guard, for the case where two of these
+    # race each other.
+    completed = updates.get("status") == "done" and row["status"] != "done"
+    if "assignee" in updates and (updates["assignee"] or "") != (row["assignee"] or ""):
+        _record_assignment(db, iid, updates["assignee"], updates["updated_at"])
     db.commit()
+
+    spawned = None
+    if completed:
+        fresh = db.execute("SELECT * FROM issues WHERE id=?", (iid,)).fetchone()
+        # Spawn from the issue as it now is, not as it was: a PUT that renames and
+        # completes in one go should carry the new name into the next occurrence.
+        spawned = _spawn_next_occurrence(db, fresh, updates["updated_at"])
+        if spawned:
+            # Only archive when the series actually continues. A COUNT or UNTIL
+            # that has run out leaves the last one sitting there, done, where the
+            # user can see the series finished rather than silently vanish.
+            db.execute("UPDATE issues SET archived=1, updated_at=? WHERE id=?",
+                       (updates["updated_at"], iid))
+        db.commit()
+
     row = db.execute(
         "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE i.id=?",
         (iid,),
     ).fetchone()
-    return jsonify(_issue_row_to_dict(row))
+    payload = _issue_row_to_dict(row)
+    if spawned:
+        # The client has to learn about the new row somehow, and the alternative
+        # is every completion being followed by a blind refetch.
+        nxt = db.execute(
+            "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE i.id=?",
+            (spawned,),
+        ).fetchone()
+        payload["spawned"] = _issue_row_to_dict(nxt)
+    return jsonify(payload)
+
+
+@app.get("/api/issues/<iid>/series")
+def issue_series(iid):
+    """Every occurrence of the series this issue belongs to, oldest first.
+
+    Archived rows are included and not optional here: a completed occurrence is
+    archived by design, so a series that hid them would be almost entirely empty
+    and the endpoint would answer the opposite of the question it was asked.
+    """
+    db = get_db()
+    row = db.execute("SELECT id, recurrence_parent FROM issues WHERE id=?", (iid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    root = (row["recurrence_parent"] or "").strip() or row["id"]
+    rows = db.execute("""
+        SELECT i.*, m.name AS milestone_name
+        FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id
+        WHERE i.id = ? OR i.recurrence_parent = ?
+        ORDER BY CASE WHEN i.due_at IS NULL OR i.due_at = '' THEN 1 ELSE 0 END ASC,
+                 i.due_at ASC, i.created_at ASC
+    """, (root, root)).fetchall()
+    issues = [_issue_row_to_dict(r) for r in rows]
+    return jsonify({
+        "root": root,
+        "count": len(issues),
+        "completed": sum(1 for i in issues if i["status"] == "done"),
+        "issues": issues,
+    })
 
 
 @app.delete("/api/issues/<iid>")
@@ -1124,6 +1791,10 @@ def delete_issue(iid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     db.execute("DELETE FROM issues WHERE id=?", (iid,))
+    # The derived rows would be reaped by the next reconcile anyway, but a
+    # delivered or dismissed one would not — it is kept on purpose, and once the
+    # issue is gone it is a record of nothing.
+    db.execute("DELETE FROM notifications WHERE issue_id=?", (iid,))
     db.commit()
     return jsonify({"deleted": iid})
 
@@ -1169,6 +1840,285 @@ def reorder_issues():
 
 
 # ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+#
+# What a client should be telling the user about, and when. The rows exist on the
+# server rather than being scheduled purely on the device because iOS will only
+# hold 64 pending local notifications — something has to rank them, and only the
+# server can see the whole set — and because an issue assigned by somebody else
+# has no device-side trigger to fire from at all. A client reads this, schedules
+# its 64 best, and acks what it showed. APNs can be layered on later without any
+# of this changing shape.
+#
+# Two kinds of row, and the difference is the whole design:
+#
+#   Derived rows (due, starting, overdue, digest) are a function of the current
+#   issues and today's date. They are rebuilt from scratch on read, so moving a
+#   due date moves its notification instead of leaving the old one behind.
+#
+#   Event rows (assigned) are not derivable. "This was assigned to Hermes" is
+#   something that happened at a moment; the row afterwards only says who owns it
+#   now, so nothing can reconstruct the event later. They are written when the
+#   assignment happens and the reconciler never touches them.
+
+_DERIVED_NOTE_KINDS = ("due", "starting", "overdue", "digest")
+
+# Whole-day dates need a time before they can be a notification. These are UTC,
+# like every other timestamp here; a client that wants 9am local can shift them,
+# and it knows the user's timezone, which the server does not.
+_NOTE_HOUR = "09:00:00"
+_DIGEST_HOUR = "08:00:00"
+
+
+def _note_id(kind, issue_id, fire_at):
+    """A notification's id, derived from what it is about rather than random.
+
+    This is what makes the reconciler idempotent: recomputing the same desired
+    notification yields the same id, so INSERT OR IGNORE turns the second and
+    every later pass into nothing, and an id that stops being computed is exactly
+    the one to delete.
+    """
+    return "note_" + hashlib.sha1(f"{kind}|{issue_id}|{fire_at}".encode()).hexdigest()[:12]
+
+
+def _desired_notifications(issues, today):
+    """Pure: the notifications that should exist for this issue set on this day.
+
+    No database, no clock — both are arguments — so it can be tested directly and
+    run as many times as you like. `issues` is a list of dicts with at least id,
+    status, archived, start_at and due_at.
+
+    'assigned' is deliberately absent: see the note above. It cannot be recovered
+    from the state of a row, so it is written where it happens instead.
+    """
+    today_iso = today.isoformat()
+    wanted = []
+
+    for issue in issues:
+        # A finished or archived issue is not news. This is also what retires a
+        # notification: the row stops being desired and the reconciler drops it.
+        if issue.get("archived") or issue.get("status") == "done":
+            continue
+        start = (issue.get("start_at") or "").strip()
+        due = (issue.get("due_at") or "").strip()
+        if start:
+            wanted.append({"kind": "starting", "issue_id": issue["id"],
+                           "fire_at": f"{start}T{_NOTE_HOUR}"})
+        if due:
+            wanted.append({"kind": "due", "issue_id": issue["id"],
+                           "fire_at": f"{due}T{_NOTE_HOUR}"})
+            if due < today_iso:
+                # Fired from the morning after the due date, not from today, so
+                # the row stops moving once it exists. An overdue notification
+                # re-dated to "today" every day would be a new id every day, and
+                # the user would be told about the same lateness indefinitely.
+                after = _parse_date(due)
+                if after is not None:
+                    nag = (after + timedelta(days=1)).isoformat()
+                    wanted.append({"kind": "overdue", "issue_id": issue["id"],
+                                   "fire_at": f"{nag}T{_NOTE_HOUR}"})
+
+    # One digest a day, about the day rather than any one issue, so issue_id ''.
+    wanted.append({"kind": "digest", "issue_id": "", "fire_at": f"{today_iso}T{_DIGEST_HOUR}"})
+
+    for note in wanted:
+        note["id"] = _note_id(note["kind"], note["issue_id"], note["fire_at"])
+    return wanted
+
+
+def _reconcile_notifications(db, today=None):
+    """Make the derived notification rows match _desired_notifications.
+
+    Recomputed on read rather than on write, on purpose. Most of what changes
+    here changes with no write at all: an issue due tomorrow becomes overdue
+    because a day passed, and a write-triggered rebuild would simply never
+    produce that row. Rebuilding on write would also mean a fifty-row drag
+    reorder doing fifty full rebuilds to reach the same answer. The cost is one
+    scan of the issues table on a GET that was already asking about all of them.
+    """
+    ts = now()
+    today = today or datetime.utcnow().date()
+    issues = [dict(r) for r in db.execute(
+        "SELECT id, status, archived, start_at, due_at FROM issues"
+    ).fetchall()]
+    wanted = _desired_notifications(issues, today)
+    wanted_ids = {w["id"] for w in wanted}
+
+    for note in wanted:
+        db.execute(
+            "INSERT OR IGNORE INTO notifications (id,issue_id,kind,fire_at,created_at,updated_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (note["id"], note["issue_id"], note["kind"], note["fire_at"], ts, ts),
+        )
+
+    # Drop derived rows nobody wants any more — but only ones nobody has seen.
+    # A delivered or dismissed row is a record of something the user was actually
+    # told, and deleting it would let the same notification be told again the
+    # moment the date drifted back.
+    stale = [r["id"] for r in db.execute(
+        "SELECT id FROM notifications"
+        " WHERE kind IN (%s) AND delivered_at IS NULL AND dismissed_at IS NULL"
+        % ",".join("?" for _ in _DERIVED_NOTE_KINDS),
+        _DERIVED_NOTE_KINDS,
+    ).fetchall() if r["id"] not in wanted_ids]
+    for i in range(0, len(stale), 400):
+        batch = stale[i:i + 400]
+        db.execute("DELETE FROM notifications WHERE id IN (%s)" % ",".join("?" for _ in batch), batch)
+    db.commit()
+
+
+def _record_assignment(db, issue_id, assignee, ts):
+    """Write the 'assigned' event row, if there is an assignee to name.
+
+    Called from the write path because nothing downstream can reconstruct it; see
+    the note at the top of this section. Unassigning is not an event worth waking
+    a phone for, so an empty assignee writes nothing.
+    """
+    assignee = (assignee or "").strip()
+    if not assignee:
+        return
+    nid = "note_" + hashlib.sha1(f"assigned|{issue_id}|{assignee}|{ts}".encode()).hexdigest()[:12]
+    db.execute(
+        "INSERT OR IGNORE INTO notifications (id,issue_id,kind,fire_at,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (nid, issue_id, "assigned", ts, ts, ts),
+    )
+
+
+@app.get("/api/notifications")
+def list_notifications():
+    db = get_db()
+    # Reconciling here is why a GET writes. It is the only moment that knows both
+    # the current issues and the current date; see _reconcile_notifications.
+    _reconcile_notifications(db)
+
+    query = ("SELECT n.*, i.title AS issue_title, i.status AS issue_status,"
+             " i.priority AS issue_priority, i.project_id AS issue_project_id"
+             " FROM notifications n LEFT JOIN issues i ON i.id = n.issue_id WHERE 1=1")
+    params = []
+
+    since = (request.args.get("since") or "").strip()
+    if since:
+        query += " AND n.fire_at >= ?"
+        params.append(since)
+    before = (request.args.get("before") or "").strip()
+    if before:
+        query += " AND n.fire_at <= ?"
+        params.append(_day_bound(before, True))
+
+    if (request.args.get("undelivered") or "").strip().lower() in ("true", "1"):
+        # Dismissed counts as handled: the user said no, and asking again is how a
+        # notification system teaches people to ignore it.
+        query += " AND n.delivered_at IS NULL AND n.dismissed_at IS NULL"
+
+    kinds = _multi("kind")
+    if kinds:
+        query += " AND n.kind IN (%s)" % ",".join("?" for _ in kinds)
+        params.extend(kinds)
+
+    query += " ORDER BY n.fire_at ASC, n.kind ASC"
+    rows = db.execute(query, params).fetchall()
+    return jsonify([row_to_dict(r) for r in rows])
+
+
+@app.post("/api/notifications/<nid>/ack")
+def ack_notification(nid):
+    """Mark a notification shown, and optionally dismissed.
+
+    COALESCE rather than a plain assignment, so a replayed ack — which the iOS
+    queue will send whenever a response went missing — reports when the user was
+    first told, not when the network recovered.
+    """
+    db = get_db()
+    row = db.execute("SELECT id FROM notifications WHERE id=?", (nid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(silent=True) or {}
+    ts = now()
+    sets = ["delivered_at = COALESCE(delivered_at, ?)", "updated_at = ?"]
+    params = [ts, ts]
+    if data.get("dismissed"):
+        sets.insert(1, "dismissed_at = COALESCE(dismissed_at, ?)")
+        params.insert(1, ts)
+    db.execute(f"UPDATE notifications SET {', '.join(sets)} WHERE id=?", (*params, nid))
+    db.commit()
+    row = db.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
+    return jsonify(row_to_dict(row))
+
+
+@app.get("/api/digest")
+def digest():
+    """What a daily summary would say, for one day.
+
+    A read with no side effects — it does not reconcile. The digest answers "what
+    does today look like", which is a question about issues; the notifications
+    table answers "what should I interrupt you about", and a client asking the
+    first should not silently rewrite the second.
+
+    ?assignee= scopes "waiting on you" to one person ('none' for the unassigned
+    pile, as everywhere else). Without it there is no "you" to be waiting on
+    anyone, so that bucket comes back empty rather than guessing.
+    """
+    db = get_db()
+    day = (request.args.get("date") or "").strip() or datetime.utcnow().date().isoformat()
+    if _parse_date(day) is None:
+        return jsonify({"error": "date must be yyyy-mm-dd"}), 400
+
+    rows = db.execute("""
+        SELECT i.*, m.name AS milestone_name, p.name AS project_name
+        FROM issues i
+        LEFT JOIN milestones m ON i.milestone_id = m.id
+        LEFT JOIN projects p ON p.id = i.project_id
+        WHERE i.archived = 0 AND i.status != 'done'
+        ORDER BY i.due_at ASC, i.sort_order ASC
+    """).fetchall()
+    issues = [_issue_row_to_dict(r) for r in rows]
+
+    def dated(field, op):
+        out = []
+        for issue in issues:
+            value = (issue.get(field) or "").strip()
+            if value and op(value):
+                out.append(issue)
+        return out
+
+    due_today = dated("due_at", lambda v: v == day)
+    starting_today = dated("start_at", lambda v: v == day)
+    overdue = dated("due_at", lambda v: v < day)
+    in_review = [i for i in issues if i["status"] == "review"]
+
+    assignee = (request.args.get("assignee") or "").strip()
+    waiting_on_you = []
+    if assignee:
+        want = "" if assignee.lower() == "none" else assignee
+        # Everything already named above is today's work; this is the rest of the
+        # plate, so the digest doesn't say the same issue three times.
+        spoken_for = {i["id"] for i in due_today + starting_today + overdue + in_review}
+        waiting_on_you = [i for i in issues
+                          if (i.get("assignee") or "") == want
+                          and i["status"] in ("todo", "in-progress")
+                          and i["id"] not in spoken_for]
+
+    return jsonify({
+        "date": day,
+        "assignee": assignee,
+        "due_today": due_today,
+        "starting_today": starting_today,
+        "overdue": overdue,
+        "in_review": in_review,
+        "waiting_on_you": waiting_on_you,
+        "counts": {
+            "due_today": len(due_today),
+            "starting_today": len(starting_today),
+            "overdue": len(overdue),
+            "in_review": len(in_review),
+            "waiting_on_you": len(waiting_on_you),
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
 # /api/overview
 # ---------------------------------------------------------------------------
 
@@ -1178,8 +2128,11 @@ def overview():
 
     # Archived rows are hidden from every list view, so counting them here made the
     # overview disagree with the project cards and the project page progress bar.
+    # The no-project bucket is excluded wherever a *project* is being counted or
+    # listed (see list_projects); the issues inside it are counted normally.
     projects_active = db.execute(
-        "SELECT COUNT(*) AS n FROM projects WHERE status='active' AND archived=0"
+        "SELECT COUNT(*) AS n FROM projects WHERE status='active' AND archived=0 AND id != ?",
+        (NO_PROJECT_ID,),
     ).fetchone()["n"]
 
     issues_open = db.execute(
@@ -1194,19 +2147,108 @@ def overview():
         SELECT p.id, p.name, COUNT(i.id) AS open_count
         FROM projects p
         LEFT JOIN issues i ON i.project_id = p.id AND i.status != 'done' AND i.archived = 0
-        WHERE p.archived = 0
+        WHERE p.archived = 0 AND p.id != ?
         GROUP BY p.id
         ORDER BY open_count DESC
         LIMIT 5
-    """).fetchall()
+    """, (NO_PROJECT_ID,)).fetchall()
 
     top_projects = [{"id": r["id"], "name": r["name"], "open_count": r["open_count"]} for r in top_rows]
 
+    # Status histogram over everything not archived, done included — this is the
+    # shape of the whole board, not a count of what is left.
+    #
+    # Keyed by the status value itself, so 'in-progress' rather than the
+    # 'in_progress' that _project_with_counts emits. The two answer different
+    # questions and no client reads both, and this form lets a caller index the
+    # histogram with an issue's own status string. The five keys are always
+    # present, so a client never has to guess whether a missing key means zero;
+    # a row carrying some sixth status is not in the vocabulary and is left out
+    # rather than changing the shape of the response.
+    counted = {r["status"]: r["n"] for r in db.execute(
+        "SELECT status, COUNT(*) AS n FROM issues WHERE archived=0 GROUP BY status"
+    ).fetchall()}
+    status_counts = {st: counted.get(st, 0)
+                     for st in ("backlog", "todo", "in-progress", "review", "done")}
+
+    # Open issues per assignee, the unassigned pile included rather than dropped:
+    # "who has what" with a silent hole in it is the wrong answer. That pile is
+    # '' (issues.assignee stores '' not NULL), which is the same bucket
+    # /api/issues?assignee=none selects, so a caller can hand the value it reads
+    # here straight back as a filter.
+    assignee_rows = db.execute("""
+        SELECT COALESCE(assignee, '') AS assignee, COUNT(*) AS n
+        FROM issues
+        WHERE status != 'done' AND archived = 0
+        GROUP BY COALESCE(assignee, '')
+        ORDER BY n DESC, assignee COLLATE NOCASE ASC
+    """).fetchall()
+    assignee_counts = [{"assignee": r["assignee"], "open_count": r["n"]} for r in assignee_rows]
+
+    # Milestone progress. Archived issues leave both halves of the fraction: in
+    # the total but not the numerator, an archived unfinished issue would keep a
+    # finished milestone reading as incomplete forever. Milestones on archived
+    # projects are dropped whole, the way top_projects drops the projects.
+    # Undated milestones sort last rather than first, matching the milestone_due
+    # issue sort — no due date is not the most urgent thing on the list.
+    ms_rows = db.execute("""
+        SELECT m.id, m.name, m.due_date,
+               p.id AS project_id, p.name AS project_name,
+               SUM(CASE WHEN i.status = 'done' THEN 1 ELSE 0 END) AS done_count,
+               COUNT(i.id) AS total_count
+        FROM milestones m
+        JOIN projects p ON p.id = m.project_id
+        LEFT JOIN issues i ON i.milestone_id = m.id AND i.archived = 0
+        WHERE p.archived = 0
+        GROUP BY m.id
+        ORDER BY CASE WHEN m.due_date IS NULL OR m.due_date = '' THEN 1 ELSE 0 END ASC,
+                 m.due_date ASC, m.name COLLATE NOCASE ASC
+    """).fetchall()
+    milestone_progress = [{
+        "id":           r["id"],
+        "name":         r["name"],
+        "project_id":   r["project_id"],
+        "project_name": r["project_name"],
+        "due_date":     r["due_date"],
+        "done":         r["done_count"] or 0,
+        "total":        r["total_count"] or 0,
+    } for r in ms_rows]
+
+    # "This week" is the last seven days, not the calendar week: the question is
+    # "have I been moving", and a Monday morning should not answer it with zero.
+    #
+    # updated_at is the only timestamp on the row, so this really means "finished
+    # and last touched within the week" — an issue closed last month and edited
+    # today is counted. Answering it exactly needs a completed_at column, which
+    # could be added but not back-filled, so everything already done would read
+    # as never done. The approximation is the honest one until there is a reason
+    # to start recording it.
+    #
+    # The one place archived rows are not simply excluded, and the exception has
+    # a reason: a completed recurring occurrence is archived by the server, not
+    # by the user, because its replacement has already taken its place on the
+    # board. Counting only unarchived rows would mean every chore you actually
+    # did this week — the bins, the plants — was invisible in the one number
+    # that asks whether you did anything. So an archived row still counts when
+    # it carries a recurrence, and not otherwise.
+    week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    done_this_week = db.execute(
+        "SELECT COUNT(*) AS n FROM issues WHERE status='done' AND updated_at >= ?"
+        " AND (archived=0 OR (recurrence IS NOT NULL AND recurrence != ''))",
+        (week_ago,),
+    ).fetchone()["n"]
+
     return jsonify({
+        # These four are the original payload and are read by shipped clients;
+        # their names and meanings are fixed. Everything below is additive.
         "projects_active": projects_active,
         "issues_open": issues_open,
         "issues_urgent": issues_urgent,
         "top_projects": top_projects,
+        "status_counts": status_counts,
+        "assignee_counts": assignee_counts,
+        "milestone_progress": milestone_progress,
+        "done_this_week": done_this_week,
     })
 
 

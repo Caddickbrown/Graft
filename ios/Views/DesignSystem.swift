@@ -628,6 +628,84 @@ struct ProjectColourDot: View {
     }
 }
 
+// MARK: - Due badge
+//
+// A due date has to read as late, near, or merely scheduled without the reader
+// doing the arithmetic, so the badge carries the tone and not just the date.
+// Overdue borrows the red the priority scale already uses for urgent, so the
+// two surfaces never disagree about what "late" looks like.
+//
+// Near dates are said in days ("2d overdue", "due today") because that is how
+// anyone would say them; anything further out is said as a date, because nobody
+// counts back from "in 34 days".
+
+struct DueBadge: View {
+    /// `yyyy-MM-dd`, or nil/"" for an issue with no deadline — which draws
+    /// nothing at all rather than an empty chip.
+    let date: String?
+
+    private var days: Int? { GraftDate.daysUntil(date) }
+
+    private var tint: Color {
+        guard let days else { return Color.gInk2 }
+        if days < 0 { return Color.gRed }
+        if days <= 2 { return Color.gAmber }
+        return Color.gInk2
+    }
+
+    private var text: String {
+        guard let days, let date else { return "" }
+        if abs(days) <= 7 { return GraftDate.dueLabel(date) ?? "" }
+        return GraftDate.shortDate(date) ?? ""
+    }
+
+    var body: some View {
+        if days != nil, !text.isEmpty {
+            let flagged = (days ?? 0) <= 2
+            HStack(spacing: 3) {
+                Image(systemName: (days ?? 0) < 0 ? "exclamationmark.circle.fill" : "calendar")
+                    .font(.system(size: 9))
+                Text(text)
+                    .font(GraftFont.text(GraftType.caption, flagged ? .semibold : .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(flagged ? tint.opacity(0.12) : Color.gSurface2)
+            .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radiusTight))
+            .overlay(
+                RoundedRectangle(cornerRadius: GraftMetrics.radiusTight)
+                    .strokeBorder(flagged ? tint.opacity(0.25) : Color.gHairline,
+                                  lineWidth: GraftMetrics.border)
+            )
+            .accessibilityLabel(GraftDate.dueLabel(date).map { "Due: \($0)" } ?? "")
+        }
+    }
+}
+
+// MARK: - Repeat glyph
+//
+// A mark, not a chip. A recurring issue's rule is read on the issue screen; in
+// a list it only has to be *distinguishable* from a one-off, and a row already
+// carries a priority edge, a status ring, a due badge, a milestone tag and up
+// to three labels. The rule goes in the accessibility label, where a full
+// sentence costs no width.
+
+struct RecurrenceGlyph: View {
+    let rule: String
+
+    var body: some View {
+        let text = Recurrence.shortText(rule)
+        if !text.isEmpty {
+            Image(systemName: "repeat")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.gInk3)
+                .accessibilityLabel("Repeats \(text)")
+        }
+    }
+}
+
 // MARK: - Priority badge
 //
 // Normal is the default and says nothing, so only what stands out shows.
@@ -765,6 +843,13 @@ extension View {
 struct GraftIssueRow: View {
     let issue: GraftIssue
     var project: GraftProject? = nil
+    /// The deadline to show, as `yyyy-MM-dd`. The caller resolves it, because
+    /// only the store knows whether to fall back to the milestone's date — see
+    /// `GraftStore.dueDate(for:)`.
+    ///
+    /// This used to be the rendered *label*, and the row worked out whether it
+    /// was late by looking for the substring "overdue" in it. It now takes the
+    /// date and `DueBadge` does the arithmetic once.
     var due: String? = nil
     var showProject: Bool = true
     /// Labels beyond this are summarised as "+n" rather than wrapping the row.
@@ -774,7 +859,6 @@ struct GraftIssueRow: View {
         let status = IssueStatus(rawValue: issue.status) ?? .backlog
         let priority = IssuePriority(rawValue: issue.priority) ?? .normal
         let flagged = priority == .urgent || priority == .high
-        let overdue = (due?.contains("overdue")) == true
         let done = issue.status == "done"
         let labels = issue.labels.filter { !$0.isEmpty }
 
@@ -799,11 +883,8 @@ struct GraftIssueRow: View {
 
                     HStack(spacing: GraftMetrics.spaceXS) {
                         PriorityBadge(priority: issue.priority)
-                        if let due {
-                            Text(due)
-                                .font(GraftFont.text(GraftType.caption))
-                                .foregroundStyle(overdue ? Color.gRed : Color.gInk2)
-                        }
+                        DueBadge(date: due)
+                        RecurrenceGlyph(rule: issue.recurrence)
                         if let milestone = issue.milestoneName {
                             MilestoneTag(name: milestone)
                         }
@@ -926,6 +1007,29 @@ enum GraftDate {
         if days == 0 { return "due today" }
         if days == 1 { return "due tomorrow" }
         return "in \(days) days"
+    }
+
+    /// "12 Oct" — for dates far enough out that a day count means nothing. Read
+    /// through `day(from:)` so a bare `yyyy-MM-dd` is still local midnight and
+    /// does not print the day before west of Greenwich.
+    static func shortDate(_ dateString: String?) -> String? {
+        guard let date = day(from: dateString) else { return nil }
+        let f = DateFormatter()
+        f.locale = .current
+        f.setLocalizedDateFormatFromTemplate("d MMM")
+        return f.string(from: date)
+    }
+
+    /// The same, with the year when it is not this one — for the series view,
+    /// where a list of occurrences runs off the end of the calendar.
+    static func mediumDate(_ dateString: String?) -> String? {
+        guard let date = day(from: dateString) else { return nil }
+        let sameYear = Calendar.current.component(.year, from: date)
+            == Calendar.current.component(.year, from: Date())
+        let f = DateFormatter()
+        f.locale = .current
+        f.setLocalizedDateFormatFromTemplate(sameYear ? "EEE d MMM" : "d MMM yyyy")
+        return f.string(from: date)
     }
 }
 

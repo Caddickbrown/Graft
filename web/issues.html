@@ -136,6 +136,45 @@
           <input type="text" class="form-input" id="issue-labels" placeholder="e.g. bug, frontend, api">
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Start date</label>
+          <input type="date" class="form-input" id="issue-start-at">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Due date</label>
+          <input type="date" class="form-input" id="issue-due-at">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Repeats</label>
+          <select class="form-input" id="issue-recur-freq" onchange="GRAFT._recurSync()">
+            <option value="">Does not repeat</option>
+            <option value="DAILY">Daily</option>
+            <option value="WEEKLY">Weekly</option>
+            <option value="MONTHLY">Monthly</option>
+            <option value="YEARLY">Yearly</option>
+          </select>
+        </div>
+        <div class="form-group" id="issue-recur-interval-group" style="display:none">
+          <label class="form-label">Every <span class="form-hint">(1 = every time)</span></label>
+          <input type="number" class="form-input" id="issue-recur-interval" min="1" max="99" value="1"
+                 onchange="GRAFT._recurSync()">
+        </div>
+      </div>
+      <div class="form-group" id="issue-recur-days-group" style="display:none">
+        <label class="form-label">On these days</label>
+        <div class="recur-days" id="issue-recur-days"></div>
+      </div>
+      <div class="form-group" id="issue-recur-anchor-group" style="display:none">
+        <label class="form-label">When the next one lands</label>
+        <select class="form-input" id="issue-recur-anchor" onchange="GRAFT._recurSync()">
+          <option value="schedule">On its own day — miss one and the next is still on its day</option>
+          <option value="completion">After I finish it — the clock starts when I tick it off</option>
+        </select>
+        <div class="form-hint" id="issue-recur-summary"></div>
+      </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-ghost btn-danger" id="issue-delete-btn" style="display:none" onclick="GRAFT.deleteIssue()">Delete</button>
         <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-new-issue')">Cancel</button>

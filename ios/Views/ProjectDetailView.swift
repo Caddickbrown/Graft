@@ -382,7 +382,7 @@ struct ProjectDetailView: View {
         NavigationLink(destination: IssueDetailView(issue: issue)) {
             GraftIssueRow(
                 issue: issue,
-                due: GraftDate.dueLabel(store.milestone(issue.milestoneId)?.dueDate),
+                due: store.dueDate(for: issue),
                 showProject: false
             )
         }
@@ -581,6 +581,8 @@ struct KanbanCard: View {
                     }
 
                     HStack(spacing: GraftMetrics.spaceXXS + 2) {
+                        DueBadge(date: store.dueDate(for: issue))
+                        RecurrenceGlyph(rule: issue.recurrence)
                         if let milestone = issue.milestoneName {
                             MilestoneTag(name: milestone)
                         }

@@ -17,6 +17,12 @@ final class GraftStore {
     var lastSynced: Date?
     var errorMessage: String?
 
+    /// The replacement the server made the last time a recurring issue was
+    /// completed. Set by `applySpawn`, read by whichever screen is showing so
+    /// it can say "next one due Sunday" rather than leaving the completion
+    /// looking like the issue simply vanished. Cleared once said.
+    var lastSpawned: GraftIssue?
+
     /// Pi server URL. Empty = local-only mode.
     var serverURL: String = "" {
         didSet { saveSettings() }
@@ -62,6 +68,10 @@ final class GraftStore {
     let session: URLSession
     private var api: APIService
     private(set) var syncEngine: SyncEngine
+    /// Local notifications, rebuilt on every successful pull. Owned here
+    /// because it needs the same base URL and the same `APIService`, and
+    /// because the digest line it schedules is written from this cache.
+    private(set) var notifications = NotificationScheduler()
 
     private var documentsURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -85,6 +95,13 @@ final class GraftStore {
         loadSettings()
         loadCachedData()
         loadViewState()
+        // The queue now hands back what the server said. The only answer this
+        // app reads is the one a completed recurring issue carries; see
+        // `applyMutation`. `[weak self]` because the engine is owned by the
+        // store, and a strong capture here is a cycle that never drains.
+        syncEngine.onResponse = { [weak self] op, data in
+            self?.applyMutation(op, data)
+        }
     }
 
     // MARK: - ID generation (client-side, matches server format)
@@ -226,6 +243,10 @@ final class GraftStore {
                 lastSynced = Date()
                 saveCachedData()
                 errorMessage = nil
+                // After the pull, not before: the digest line is written from
+                // the issues that just landed, and a notification set built
+                // from yesterday's cache would name yesterday's work.
+                await rescheduleNotifications(base: base)
                 return
             } catch { }
         }
@@ -233,6 +254,31 @@ final class GraftStore {
         if activeBase != nil {
             errorMessage = "Can't reach server — showing local data."
         }
+    }
+
+    // MARK: - Local notifications
+
+    /// Rebuilds the pending notification set. Rebuild, not append: a due date
+    /// that moved has to take its notification with it.
+    func rescheduleNotifications(base: String? = nil) async {
+        guard let target = base ?? activeBase else { return }
+        await notifications.reschedule(base: target, api: api, digestBody: digestLine)
+    }
+
+    /// What the daily digest notification says, written from the cache the
+    /// phone already has. The server's digest row carries no issue of its own,
+    /// and "your summary is ready" is not worth waking a phone for.
+    var digestLine: String {
+        let open = inbox()
+        let overdue = overdueCount(in: open)
+        let today = dueTodayCount(in: open)
+        var bits: [String] = []
+        if overdue > 0 { bits.append("\(overdue) overdue") }
+        if today > 0 { bits.append("\(today) due today") }
+        if bits.isEmpty {
+            return open.isEmpty ? "Nothing waiting." : "\(open.count) open, nothing due."
+        }
+        return bits.joined(separator: " · ")
     }
 
     private func fetchAll(from base: String) async throws {
@@ -275,8 +321,7 @@ final class GraftStore {
     /// rest of the cache.
     func refreshIssues(matching query: IssueQuery) async {
         guard let base = activeBase else { return }
-        let url = "\(base)/api/issues?\(query.serverQueryString())"
-        guard let found: [GraftIssue] = try? await api.get(url) else { return }
+        guard let found = try? await api.issues(base: base, matching: query) else { return }
         var merged = issues
         // `uniquingKeysWith`, not `uniqueKeysWithValues`: the latter traps on a
         // duplicate id, and a crash is not an acceptable response to a server
@@ -390,7 +435,11 @@ final class GraftStore {
         priority: String = "normal",
         milestoneId: String? = nil,
         assignee: String = "",
-        labels: [String] = []
+        labels: [String] = [],
+        startAt: String = "",
+        dueAt: String = "",
+        recurrence: String = "",
+        recurrenceAnchor: String = "schedule"
     ) async throws {
         let ts = nowISO()
         let issue = GraftIssue(
@@ -404,6 +453,10 @@ final class GraftStore {
             priority: priority,
             labels: labels,
             assignee: assignee,
+            startAt: startAt,
+            dueAt: dueAt,
+            recurrence: recurrence,
+            recurrenceAnchor: recurrenceAnchor,
             sortOrder: issues.filter { $0.projectId == projectId }.count,
             archived: false,
             createdAt: ts,
@@ -417,6 +470,12 @@ final class GraftStore {
             "title": title, "description": description,
             "status": status, "priority": priority,
             "assignee": assignee, "labels": labels,
+            // Sent even when empty. The server's rule for a create is
+            // absent-means-keep, so omitting them would be right here and wrong
+            // on a replay; sending what this client believes is true is right
+            // both times.
+            "start_at": startAt, "due_at": dueAt,
+            "recurrence": recurrence, "recurrence_anchor": recurrenceAnchor,
             "sort_order": issue.sortOrder,
             "created_at": ts, "updated_at": ts
         ]
@@ -437,15 +496,7 @@ final class GraftStore {
         }
         saveCachedData()
 
-        var bodyDict: [String: Any] = [
-            "title": issue.title, "description": issue.description,
-            "status": issue.status, "priority": issue.priority,
-            "assignee": issue.assignee, "labels": issue.labels,
-            "updated_at": ts
-        ]
-        // Explicit null, so clearing a milestone actually clears it.
-        bodyDict["milestone_id"] = issue.milestoneId ?? NSNull()
-        let body = try JSONSerialization.data(withJSONObject: bodyDict)
+        let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: ts))
         syncEngine.enqueue(method: "PUT", path: "/api/issues/\(issue.id)", body: body)
         await flushPending()
     }
@@ -458,14 +509,77 @@ final class GraftStore {
         issues[idx] = updated
         saveCachedData()
 
-        let body = try JSONSerialization.data(withJSONObject: [
-            "title": updated.title, "description": updated.description,
-            "status": status, "priority": updated.priority,
-            "assignee": updated.assignee, "labels": updated.labels,
-            "updated_at": updated.updatedAt
-        ] as [String: Any])
+        let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: updated.updatedAt))
         syncEngine.enqueue(method: "PUT", path: "/api/issues/\(id)", body: body)
         await flushPending()
+    }
+
+    /// The body of every `PUT /api/issues/:id`, whoever is writing.
+    ///
+    /// It names every editable field, including the ones the screen making the
+    /// call has no opinion about, and that is the point. `SyncEngine.enqueue`
+    /// drops an earlier queued PUT to the same path on the floor — "the newest
+    /// one carries everything the earlier ones said" — which is only true while
+    /// every PUT body is a *complete* record. A status change that omitted
+    /// `recurrence` would supersede, and silently discard, a recurrence rule
+    /// still sitting in the queue behind it. The server's absent-means-keep rule
+    /// does not save us: the earlier op is gone before it is ever sent.
+    private func issueWriteBody(_ issue: GraftIssue, at ts: String) -> [String: Any] {
+        var body: [String: Any] = [
+            "title": issue.title, "description": issue.description,
+            "status": issue.status, "priority": issue.priority,
+            "assignee": issue.assignee, "labels": issue.labels,
+            // `""` rather than null for the dates: it is what the server stores
+            // for "no date", and a cleared picker must clear the stored value
+            // rather than read as absent.
+            "start_at": issue.startAt, "due_at": issue.dueAt,
+            "recurrence": issue.recurrence,
+            "recurrence_anchor": issue.recurrenceAnchor,
+            "updated_at": ts
+        ]
+        // Explicit null, so clearing a milestone actually clears it.
+        body["milestone_id"] = issue.milestoneId ?? NSNull()
+        return body
+    }
+
+    // MARK: - A completion that spawned its replacement
+
+    /// Reads the body of a successful queued write. Only `PUT /api/issues/:id`
+    /// says anything this client needs, and only when it completed a recurring
+    /// issue.
+    private func applyMutation(_ op: PendingOperation, _ data: Data) {
+        guard op.method == "PUT",
+              op.path.hasPrefix("/api/issues/"),
+              // Not a sub-resource: `/api/issues/x/series` is a GET, but
+              // `/archive` is a PATCH on a path shaped the same way.
+              op.path.dropFirst("/api/issues/".count).contains("/") == false,
+              let mutation = try? JSONDecoder().decode(GraftIssueMutation.self, from: data)
+        else { return }
+        applySpawn(mutation)
+    }
+
+    /// Folds a completed recurring issue and its replacement into the cache.
+    ///
+    /// The server archives the one you finished and creates the next occurrence
+    /// in the same request, so without this the board keeps showing the finished
+    /// one and the new occurrence stays invisible until a full pull. Mirrors the
+    /// web client's `_applySpawn`.
+    @discardableResult
+    func applySpawn(_ mutation: GraftIssueMutation) -> GraftIssue? {
+        guard let spawned = mutation.spawned else { return nil }
+        // The server only archives when the series actually continues — a COUNT
+        // or UNTIL that has run out leaves the last one sitting there, done — so
+        // take the flag from the response rather than assuming it.
+        if let idx = issues.firstIndex(where: { $0.id == mutation.issue.id }) {
+            issues[idx].archived = mutation.issue.archived
+            issues[idx].updatedAt = mutation.issue.updatedAt
+        }
+        if !issues.contains(where: { $0.id == spawned.id }) {
+            issues.append(spawned)
+        }
+        saveCachedData()
+        lastSpawned = spawned
+        return spawned
     }
 
     func archiveIssue(id: String) async throws {
@@ -744,6 +858,66 @@ final class GraftStore {
             .sorted { $0.sortOrder < $1.sortOrder }
     }
 
+    // MARK: - Dates
+
+    /// The deadline to show for an issue.
+    ///
+    /// A milestone's due date used to be the only real deadline in the data, so
+    /// "overdue" meant the issue was unfinished and its milestone had passed. An
+    /// issue can now carry its own due date, which is the more specific claim
+    /// and wins; the milestone stays as the fallback rather than being replaced,
+    /// so nothing that was overdue before this existed quietly stopped being so.
+    /// The web client's `issueDue` does exactly this.
+    func dueDate(for issue: GraftIssue) -> String? {
+        if !issue.dueAt.isEmpty { return issue.dueAt }
+        return milestone(issue.milestoneId)?.dueDate
+    }
+
+    /// Open issues past their due date. Counts, not lists — the summary lines
+    /// are the only caller and they only ever say a number.
+    func overdueCount(in source: [GraftIssue]) -> Int {
+        source.filter { issue in
+            guard let days = GraftDate.daysUntil(dueDate(for: issue)) else { return false }
+            return days < 0
+        }.count
+    }
+
+    func dueTodayCount(in source: [GraftIssue]) -> Int {
+        source.filter { GraftDate.daysUntil(dueDate(for: $0)) == 0 }.count
+    }
+
+    // MARK: - Recurring series
+
+    /// Every occurrence of one issue's series, oldest first.
+    ///
+    /// Server-only: a completed occurrence is archived, and while the phone does
+    /// cache archived rows, it only has the ones some earlier pull happened to
+    /// bring back. The endpoint is the one thing that knows the series is
+    /// complete. Returns nil when there is no server or it cannot be reached,
+    /// which the view renders as its own state rather than as an empty series.
+    func series(forIssue id: String) async -> GraftIssueSeries? {
+        guard let base = activeBase else { return nil }
+        return try? await api.series(base: base, issueId: id)
+    }
+
+    /// What the phone already knows about a series, for the offline case.
+    func cachedSeries(root: String) -> [GraftIssue] {
+        issues
+            .filter { $0.id == root || $0.recurrenceParent == root }
+            .sorted { a, b in
+                // Undated last, matching the endpoint's ORDER BY.
+                if a.dueAt.isEmpty != b.dueAt.isEmpty { return b.dueAt.isEmpty }
+                if a.dueAt != b.dueAt { return a.dueAt < b.dueAt }
+                return a.createdAt < b.createdAt
+            }
+    }
+
+    /// `GET /api/digest` — what a daily summary would say, for one day.
+    func digest(date: String? = nil, assignee: String? = nil) async -> GraftDigest? {
+        guard let base = activeBase else { return nil }
+        return try? await api.digest(base: base, date: date, assignee: assignee)
+    }
+
     /// Everyone with something assigned, for the Inbox scope picker.
     var assignees: [String] {
         Array(Set(issues.filter { !$0.assignee.isEmpty }.map(\.assignee))).sorted()
@@ -804,6 +978,11 @@ final class GraftStore {
                 let areaKey = project(issue.projectId)?.areaKey ?? ""
                 if !f.areaId.contains(areaKey) { return false }
             }
+            // The two date-shaped filters. Mirrored here rather than left to
+            // the server for the same reason every other filter is: this has to
+            // work offline, and it has to be right on the keystroke.
+            if !f.due.matches(issue.dueAt) { return false }
+            if !f.repeats.matches(issue) { return false }
             if !needle.isEmpty && !matches(issue, needle) { return false }
             return true
         }

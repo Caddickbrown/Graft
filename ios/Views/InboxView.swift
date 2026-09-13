@@ -38,11 +38,16 @@ struct InboxView: View {
         store.apply(query, to: candidates)
     }
 
-    /// Urgent, high, or inside two days of its milestone.
+    /// Urgent, high, or inside two days of its deadline.
+    ///
+    /// "Its deadline" used to mean its milestone's, because that was the only
+    /// date in the data. An issue can now carry its own, which is the more
+    /// specific claim and wins; the milestone stays as the fallback, so nothing
+    /// that was flagged before this existed quietly stopped being flagged.
     private var needsYou: [GraftIssue] {
         visible.filter { issue in
             if issue.priority == "urgent" || issue.priority == "high" { return true }
-            if let days = GraftDate.daysUntil(store.milestone(issue.milestoneId)?.dueDate) {
+            if let days = GraftDate.daysUntil(store.dueDate(for: issue)) {
                 return days <= 2
             }
             return false
@@ -64,9 +69,18 @@ struct InboxView: View {
     private var summary: String {
         let open = visible.count
         let projects = Set(visible.map(\.projectId)).count
-        let base = "\(needsYou.count) need\(needsYou.count == 1 ? "s" : "") you · \(open) open across \(projects) project\(projects == 1 ? "" : "s")"
-        guard query.isNarrowing else { return base }
-        return base + " · filtered from \(candidates.count)"
+        // Overdue and due-today earn a place in the one line this screen always
+        // shows — but only when there are any. A permanent "0 overdue" is how a
+        // number stops being read. Same rule as the web client's Today page.
+        var bits: [String] = []
+        let overdue = store.overdueCount(in: visible)
+        let dueToday = store.dueTodayCount(in: visible)
+        if overdue > 0 { bits.append("\(overdue) overdue") }
+        if dueToday > 0 { bits.append("\(dueToday) due today") }
+        bits.append("\(needsYou.count) need\(needsYou.count == 1 ? "s" : "") you")
+        bits.append("\(open) open across \(projects) project\(projects == 1 ? "" : "s")")
+        if query.isNarrowing { bits.append("filtered from \(candidates.count)") }
+        return bits.joined(separator: " · ")
     }
 
     // MARK: - Body
@@ -235,7 +249,7 @@ struct InboxView: View {
                 NavigationLink(destination: IssueDetailView(issue: issue)) {
                     GraftIssueRow(issue: issue,
                                   project: store.project(issue.projectId),
-                                  due: GraftDate.dueLabel(store.milestone(issue.milestoneId)?.dueDate))
+                                  due: store.dueDate(for: issue))
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, GraftMetrics.gutter)

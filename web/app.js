@@ -565,6 +565,88 @@
     return `<span class="assignee-chip">${esc(name)}</span>`;
   }
 
+  const RECUR_ICON = '<polyline points="17 2 21 6 17 10"/><path d="M3 12V10a4 4 0 0 1 4-4h14"/>'
+    + '<polyline points="7 22 3 18 7 14"/><path d="M21 12v2a4 4 0 0 1-4 4H3"/>';
+
+  const RECUR_FREQS = [
+    { v: '', label: 'Does not repeat' },
+    { v: 'DAILY', label: 'Daily' },
+    { v: 'WEEKLY', label: 'Weekly' },
+    { v: 'MONTHLY', label: 'Monthly' },
+    { v: 'YEARLY', label: 'Yearly' },
+  ];
+  const RECUR_DAYS = [['MO', 'Mon'], ['TU', 'Tue'], ['WE', 'Wed'], ['TH', 'Thu'],
+                      ['FR', 'Fri'], ['SA', 'Sat'], ['SU', 'Sun']];
+  const RECUR_UNITS = { DAILY: ['day', 'days'], WEEKLY: ['week', 'weeks'],
+                        MONTHLY: ['month', 'months'], YEARLY: ['year', 'years'] };
+
+  // The rule travels as RRULE because the server, ICS and EventKit all speak it.
+  // The form only ever produces the handful of parts the server accepts, so this
+  // pair never has to round-trip anything it cannot rebuild — but parse is
+  // tolerant anyway, because a rule may have been written by a newer client.
+  function parseRecurrence(rule) {
+    const out = { freq: '', interval: 1, byday: [] };
+    String(rule || '').toUpperCase().split(';').forEach(part => {
+      const [k, v] = part.split('=');
+      if (k === 'FREQ') out.freq = (v || '').trim();
+      else if (k === 'INTERVAL') out.interval = Math.max(1, parseInt(v, 10) || 1);
+      else if (k === 'BYDAY') out.byday = (v || '').split(',').map(x => x.trim()).filter(Boolean);
+    });
+    if (!RECUR_UNITS[out.freq]) out.freq = '';
+    return out;
+  }
+
+  function buildRecurrence({ freq, interval, byday }) {
+    if (!freq) return '';
+    const bits = [`FREQ=${freq}`];
+    if (interval > 1) bits.push(`INTERVAL=${interval}`);
+    if (freq === 'WEEKLY' && byday.length) bits.push(`BYDAY=${byday.join(',')}`);
+    return bits.join(';');
+  }
+
+  // Says the rule back in the words someone would use out loud. The form shows
+  // this rather than the RRULE, because "FREQ=WEEKLY;BYDAY=SU" is not a sentence
+  // anyone can check at a glance.
+  function recurrenceText(rule) {
+    const { freq, interval, byday } = parseRecurrence(rule);
+    if (!freq) return '';
+    const names = byday.map(d => (RECUR_DAYS.find(([v]) => v === d) || [, d])[1]);
+    const unit = RECUR_UNITS[freq][interval === 1 ? 0 : 1];
+    const every = interval === 1 ? `every ${unit}` : `every ${interval} ${unit}`;
+    if (freq === 'WEEKLY' && names.length) {
+      return interval === 1 ? `every ${names.join(', ')}` : `${every} on ${names.join(', ')}`;
+    }
+    return every;
+  }
+
+  function recurrenceChip(issue) {
+    const text = recurrenceText(issue.recurrence);
+    if (!text) return '';
+    return `<span class="recur-chip" title="Repeats ${esc(text)}"
+      >${svg(RECUR_ICON, 11)}<span class="sr-only">Repeats ${esc(text)}</span></span>`;
+  }
+
+  // A due date has to read as late, near or merely scheduled without the reader
+  // doing the arithmetic, so the chip carries the tone and not just the date.
+  // Overdue borrows the urgent colour the Today flag already uses, so the two
+  // surfaces never disagree about what "late" looks like.
+  //
+  // Near dates are said in days ("2d overdue", "due today"); anything further
+  // out is said as a date, because nobody counts back from "in 34 days".
+  function dueChip(dateStr) {
+    const d = daysUntil(dateStr);
+    if (d === null) return '';
+    const tone = d < 0 ? ' overdue' : (d <= 2 ? ' soon' : '');
+    // Split by hand rather than new Date(dateStr): a bare yyyy-mm-dd parses as
+    // UTC midnight and would print the day before west of Greenwich — the same
+    // slip daysUntil avoids.
+    const [y, mo, dd] = dateStr.split('-').map(Number);
+    const text = Math.abs(d) <= 7
+      ? dueLabel(dateStr)
+      : new Date(y, mo - 1, dd).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    return `<span class="due-chip${tone}" title="Due ${esc(dateStr)}">${esc(text)}</span>`;
+  }
+
   // ══════════════════════════════════════════════════════════════
   //  Shared caches
   // ══════════════════════════════════════════════════════════════
@@ -1651,6 +1733,7 @@
         <div class="kanban-card-meta">
 
           ${urgent ? priorityBadge(issue.priority) : ''}
+          ${dueChip(issue.due_at)}${recurrenceChip(issue)}
           ${milestoneTag(issue.milestone_name)}
           ${labels}
           ${showProject}
@@ -1690,6 +1773,7 @@
                   onclick="event.stopPropagation();GRAFT.archiveIssue('${id}')">${svg(NAV_ICONS.archive, 15)}</button>
         </div>
         <div class="issue-row-meta">
+          ${dueChip(issue.due_at)}${recurrenceChip(issue)}
           ${milestoneTag(issue.milestone_name)}
           ${labels}${extra}
           ${priorityBadge(issue.priority)}
@@ -1770,6 +1854,12 @@
                  onkeydown="if(event.key==='Enter'){this.blur()}"
                  onclick="event.stopPropagation()">
         </td>
+        <td class="tbl-due">
+          <input class="tbl-input" type="date" value="${esc(issue.due_at||'')}"
+                 aria-label="Due date" data-id="${esc(issue.id)}"
+                 onchange="GRAFT._tblChange(this,'due_at')"
+                 onclick="event.stopPropagation()">
+        </td>
         <td class="tbl-milestone">
           <select class="tbl-select tbl-milestone-sel" data-id="${esc(issue.id)}"
                   onchange="GRAFT._tblChange(this,'milestone_id')" onclick="event.stopPropagation()">
@@ -1795,13 +1885,14 @@
 
       <th class="tbl-priority">Priority</th>
       <th class="tbl-assignee">Assignee</th>
+      <th class="tbl-due">Due</th>
       <th class="tbl-milestone">Milestone</th>
       <th class="tbl-actions"></th>
     </tr></thead>`;
 
     el.innerHTML = `<div class="tbl-wrap"><table class="issue-table">${header}<tbody>` +
       groups.map(g =>
-        (g.label ? `<tr class="tbl-group-row"><td colspan="8" class="tbl-group-cell">${esc(g.label)} <span class="tbl-group-count">${g.rows.length}</span></td></tr>` : '') +
+        (g.label ? `<tr class="tbl-group-row"><td colspan="9" class="tbl-group-cell">${esc(g.label)} <span class="tbl-group-count">${g.rows.length}</span></td></tr>` : '') +
         g.rows.map(tableRow).join('')
       ).join('') +
       `</tbody></table></div>`;
@@ -1820,7 +1911,7 @@
       issue.milestone_name = _allMilestones.find(m => m.id === val)?.name || null;
     }
     try {
-      await api('PUT', `/api/issues/${id}`, { [field]: val || null });
+      _applySpawn(await api('PUT', `/api/issues/${id}`, { [field]: val || null }));
     } catch {
       issue[field] = prev;
       toast('Could not save change');
@@ -1870,7 +1961,11 @@
     issue.status = status;
     rerenderCurrentView();
     try {
-      await api('PUT', `/api/issues/${id}`, { status });
+      const res = await api('PUT', `/api/issues/${id}`, { status });
+      // No undo when the completion spawned the next occurrence: putting the
+      // status back would leave the replacement standing, and the user would be
+      // looking at two of the same chore with no way to tell which is real.
+      if (_applySpawn(res)) return;
       undoToast(`Moved to ${STATUS_LABELS[status]}`, async () => {
         issue.status = previous;
         rerenderCurrentView();
@@ -1953,7 +2048,11 @@
     clearSelection();
     rerenderCurrentView();
     try {
-      await Promise.all(ids.map(id => api('PUT', `/api/issues/${id}`, { status })));
+      const results = await Promise.all(ids.map(id => api('PUT', `/api/issues/${id}`, { status })));
+      // One reload rather than folding each spawn in by hand: a bulk move can
+      // retire and replace several rows at once, and the undo offered below
+      // cannot put that back anyway.
+      if (results.some(r => r && r.spawned)) { if (typeof reloadPage === 'function') reloadPage(); return; }
       undoToast(`${ids.length} moved to ${STATUS_LABELS[status]}`, async () => {
         previous.forEach(p => { const i = _issue(p.id); if (i) i.status = p.status; });
         rerenderCurrentView();
@@ -2010,6 +2109,101 @@
     });
   }
 
+  // The form's recurrence state lives here rather than in the DOM: the weekday
+  // chips are redrawn whenever the frequency changes, and reading checked-ness
+  // back off elements that are about to be replaced is how a half-set rule gets
+  // lost between two renders.
+  let _recurState = { freq: '', interval: 1, byday: [], anchor: 'schedule' };
+
+  function _recurLoad(issue) {
+    const parsed = parseRecurrence(issue && issue.recurrence);
+    _recurState = {
+      freq: parsed.freq,
+      interval: parsed.interval,
+      byday: parsed.byday,
+      anchor: (issue && issue.recurrence_anchor) || 'schedule',
+    };
+    _recurRender();
+  }
+
+  // Reads the three plain inputs back into the state, then redraws. Called by
+  // every control in the block so there is one direction of travel.
+  function _recurSync() {
+    const freq = document.getElementById('issue-recur-freq');
+    const interval = document.getElementById('issue-recur-interval');
+    const anchor = document.getElementById('issue-recur-anchor');
+    if (freq) _recurState.freq = freq.value;
+    if (interval) _recurState.interval = Math.max(1, parseInt(interval.value, 10) || 1);
+    if (anchor) _recurState.anchor = anchor.value;
+    _recurRender();
+  }
+
+  function _recurToggleDay(day) {
+    const at = _recurState.byday.indexOf(day);
+    if (at >= 0) _recurState.byday.splice(at, 1); else _recurState.byday.push(day);
+    // Keep calendar order regardless of the order they were clicked in.
+    _recurState.byday.sort((a, b) => RECUR_DAYS.findIndex(([v]) => v === a) - RECUR_DAYS.findIndex(([v]) => v === b));
+    _recurRender();
+  }
+
+  function _recurRender() {
+    const { freq, interval, byday, anchor } = _recurState;
+    const freqEl = document.getElementById('issue-recur-freq');
+    if (!freqEl) return;
+    freqEl.value = freq;
+    const intervalEl = document.getElementById('issue-recur-interval');
+    if (intervalEl) intervalEl.value = interval;
+    const anchorEl = document.getElementById('issue-recur-anchor');
+    if (anchorEl) anchorEl.value = anchor;
+
+    const show = (id, on) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = on ? '' : 'none';
+    };
+    show('issue-recur-interval-group', !!freq);
+    show('issue-recur-days-group', freq === 'WEEKLY');
+    show('issue-recur-anchor-group', !!freq);
+
+    const days = document.getElementById('issue-recur-days');
+    if (days) {
+      days.innerHTML = RECUR_DAYS.map(([v, label]) => `
+        <button type="button" class="recur-day${byday.includes(v) ? ' on' : ''}"
+                aria-pressed="${byday.includes(v)}"
+                onclick="GRAFT._recurToggleDay('${v}')">${label}</button>`).join('');
+    }
+
+    const summary = document.getElementById('issue-recur-summary');
+    if (summary) {
+      // Say the whole rule back, anchor included, so the two options are told
+      // apart by what they do rather than by the words on the labels.
+      const text = recurrenceText(buildRecurrence(_recurState));
+      summary.textContent = !text ? ''
+        : anchor === 'completion'
+          ? `Repeats ${text}, counted from the moment you tick it off.`
+          : `Repeats ${text}. Finish it late and the next one still lands on its own day.`;
+    }
+  }
+
+  // A completed recurring issue comes back archived with its replacement
+  // attached, so that a completion is one request rather than a write and a
+  // blind refetch. Fold both into the cache: without it the board keeps showing
+  // the finished one and the new occurrence stays invisible until a reload.
+  function _applySpawn(res) {
+    if (!res || !res.spawned) return false;
+    const finished = _issue(res.id);
+    if (finished) finished.archived = res.archived;
+    if (!_allIssues.some(i => i.id === res.spawned.id)) {
+      const next = { ...res.spawned };
+      // project_name is stitched on client-side from the projects cache, the
+      // same way the lists do it; the server's issue rows never carry it.
+      next.project_name = _allProjects.find(p => p.id === next.project_id)?.name;
+      _allIssues.push(next);
+    }
+    rerenderCurrentView();
+    toast(`Done — next one ${res.spawned.due_at ? dueLabel(res.spawned.due_at) : 'scheduled'}`);
+    return true;
+  }
+
   function openNewIssue(prefillProjectId) {
     const editId = document.getElementById('issue-edit-id');
     if (editId) editId.value = '';
@@ -2023,6 +2217,11 @@
     if (assignee) assignee.value = '';
     const labels = document.getElementById('issue-labels');
     if (labels) labels.value = '';
+    const startAt = document.getElementById('issue-start-at');
+    if (startAt) startAt.value = '';
+    const dueAt = document.getElementById('issue-due-at');
+    if (dueAt) dueAt.value = '';
+    _recurLoad(null);
     document.getElementById('modal-issue-title').textContent = 'New issue';
     const delBtn = document.getElementById('issue-delete-btn');
     if (delBtn) delBtn.style.display = 'none';
@@ -2054,6 +2253,13 @@
     if (assignee) assignee.value = issue.assignee || '';
     const labels = document.getElementById('issue-labels');
     if (labels) labels.value = (issue.labels || []).join(', ');
+    // The server stores '' for "no date", which is also what an empty date
+    // input holds, so the two round-trip without a conversion either way.
+    const startAt = document.getElementById('issue-start-at');
+    if (startAt) startAt.value = issue.start_at || '';
+    const dueAt = document.getElementById('issue-due-at');
+    if (dueAt) dueAt.value = issue.due_at || '';
+    _recurLoad(issue);
     document.getElementById('modal-issue-title').textContent = 'Edit issue';
     const delBtn = document.getElementById('issue-delete-btn');
     if (delBtn) delBtn.style.display = 'inline-flex';
@@ -2088,6 +2294,10 @@
       status: document.getElementById('issue-status').value,
       priority: document.getElementById('issue-priority').value,
       assignee: document.getElementById('issue-assignee')?.value?.trim() || '',
+      start_at: document.getElementById('issue-start-at')?.value || '',
+      due_at: document.getElementById('issue-due-at')?.value || '',
+      recurrence: buildRecurrence(_recurState),
+      recurrence_anchor: _recurState.anchor,
       labels,
     };
     if (!body.milestone_id) body.milestone_id = null;
@@ -2215,6 +2425,18 @@
           </select>
         </div>
         <div class="so-meta-row">
+          <span class="so-label">Start</span>
+          <input class="so-input" type="date" data-field="start_at" aria-label="Start date"
+                 value="${esc(issue.start_at || '')}"
+                 onchange="GRAFT._soSave()">
+        </div>
+        <div class="so-meta-row">
+          <span class="so-label">Due</span>
+          <input class="so-input" type="date" data-field="due_at" aria-label="Due date"
+                 value="${esc(issue.due_at || '')}"
+                 onchange="GRAFT._soSave()">
+        </div>
+        <div class="so-meta-row">
           <span class="so-label">Labels</span>
           <input class="so-input" data-field="labels" aria-label="Labels"
                  value="${esc((issue.labels || []).join(', '))}"
@@ -2312,12 +2534,16 @@
     const priority = body.querySelector('[data-field="priority"]')?.value;
     const assignee = body.querySelector('[data-field="assignee"]')?.value?.trim();
     const milestone_id = body.querySelector('[data-field="milestone_id"]')?.value || null;
+    // '' rather than null: it is what the server stores for "no date", and a
+    // cleared input must clear the stored value rather than be treated as absent.
+    const start_at = body.querySelector('[data-field="start_at"]')?.value || '';
+    const due_at = body.querySelector('[data-field="due_at"]')?.value || '';
     const labelsRaw = body.querySelector('[data-field="labels"]')?.value || '';
     const labels = labelsRaw.split(',').map(l => l.trim()).filter(Boolean);
 
     const previous = issue ? { ...issue } : null;
     if (issue) {
-      Object.assign(issue, { title, description, status, priority, assignee, milestone_id, labels });
+      Object.assign(issue, { title, description, status, priority, assignee, milestone_id, start_at, due_at, labels });
       issue.milestone_name = _allMilestones.find(m => m.id === milestone_id)?.name || null;
     }
 
@@ -2325,7 +2551,8 @@
     rerenderCurrentView();
 
     try {
-      await api('PUT', `/api/issues/${id}`, { title, description, status, priority, assignee, milestone_id, labels });
+      const res = await api('PUT', `/api/issues/${id}`, { title, description, status, priority, assignee, milestone_id, start_at, due_at, labels });
+      if (_applySpawn(res)) closeSlideover();
     } catch {
       // The edit was shown before it was saved, so a failure has to take it
       // back — otherwise the value sits there until you navigate away.
@@ -3017,11 +3244,18 @@
     await loadToday();
   }
 
-  // A milestone's due date is the only real deadline in the data, so
-  // "overdue" means the issue is unfinished and its milestone has passed.
+  // A milestone's due date used to be the only real deadline in the data, so
+  // "overdue" meant the issue was unfinished and its milestone had passed.
   function milestoneDue(issue) {
     if (!issue.milestone_id) return null;
     return _allMilestones.find(m => m.id === issue.milestone_id)?.due_date || null;
+  }
+
+  // An issue can now carry its own due date, which is the more specific claim
+  // and wins. The milestone stays as the fallback rather than being replaced,
+  // so nothing that was overdue before this existed quietly stopped being so.
+  function issueDue(issue) {
+    return issue.due_at || milestoneDue(issue);
   }
 
   function renderToday() {
@@ -3031,11 +3265,11 @@
     const open = _allIssues.filter(i => i.status !== 'done' && !i.archived);
 
     const needsYou = open.filter(i => {
-      const d = daysUntil(milestoneDue(i));
+      const d = daysUntil(issueDue(i));
       return i.priority === 'urgent' || i.priority === 'high' || (d !== null && d <= 2);
     }).sort((a, b) => {
       const rank = { urgent: 0, high: 1, normal: 2, low: 3 };
-      const da = daysUntil(milestoneDue(a)), db = daysUntil(milestoneDue(b));
+      const da = daysUntil(issueDue(a)), db = daysUntil(issueDue(b));
       if ((da !== null && da < 0) !== (db !== null && db < 0)) return (da !== null && da < 0) ? -1 : 1;
       return 0;
     });
@@ -3046,7 +3280,17 @@
     if (sub) {
       const date = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
       const active = _allProjects.filter(p => p.status === 'active' && !p.archived).length;
-      sub.textContent = `${date} · ${needsYou.length} need${needsYou.length === 1 ? 's' : ''} you · ${open.length} open across ${active} project${active !== 1 ? 's' : ''}`;
+      // Overdue and due-today earn a place in the one line the page always
+      // shows, but only when there are any — a permanent "0 overdue" is how a
+      // number stops being read.
+      const overdue = open.filter(i => { const n = daysUntil(issueDue(i)); return n !== null && n < 0; }).length;
+      const dueToday = open.filter(i => daysUntil(issueDue(i)) === 0).length;
+      const bits = [date];
+      if (overdue) bits.push(`${overdue} overdue`);
+      if (dueToday) bits.push(`${dueToday} due today`);
+      bits.push(`${needsYou.length} need${needsYou.length === 1 ? 's' : ''} you`);
+      bits.push(`${open.length} open across ${active} project${active !== 1 ? 's' : ''}`);
+      sub.textContent = bits.join(' · ');
     }
 
     el.innerHTML = `
@@ -3097,7 +3341,7 @@
 
   function todayRow(issue) {
     const id = jsStr(issue.id);
-    const due = milestoneDue(issue);
+    const due = issueDue(issue);
     const d = daysUntil(due);
     const flag = d !== null && d <= 2
       ? `<span class="${d < 0 ? 'due-flag' : 'age-flag'}">${esc(dueLabel(due))}</span>`
@@ -3111,7 +3355,7 @@
         <span class="today-row-title">${esc(issue.title)}</span>
         <span class="issue-row-meta">
           ${issue.priority === 'urgent' || issue.priority === 'high' ? priorityBadge(issue.priority) : ''}
-          ${flag}
+          ${flag}${recurrenceChip(issue)}
           ${milestoneTag(issue.milestone_name)}
           <span class="today-project">${issue.project_icon ? esc(issue.project_icon) : ''} ${esc(issue.project_name || '')}</span>
           ${avatar(issue.assignee)}
@@ -3633,7 +3877,7 @@
     rerenderCurrentView();
 
     try {
-      if (statusChanged) await api('PUT', `/api/issues/${_dragId}`, { status: newStatus });
+      if (statusChanged) _applySpawn(await api('PUT', `/api/issues/${_dragId}`, { status: newStatus }));
       await api('PATCH', '/api/issues/reorder', { issues: order });
     } catch {
       toast('That move didn’t save — reloading the board');
@@ -4271,6 +4515,8 @@
     editCurrentProject,
     loadMilestonesForProject,
     closeModal, openModal,
+    // the recurrence control on the issue form
+    _recurSync, _recurToggleDay,
     _issue, _deleteIssueFromSlideover, _archiveIssueFromSlideover,
     _addIssueInStatus, _editMilestone, _deleteMilestone,
     _dragStart, _dragEnd, _dragOver, _dragEnter, _dragLeave, _drop,

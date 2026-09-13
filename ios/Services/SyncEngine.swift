@@ -37,6 +37,20 @@ final class SyncEngine {
     /// server is already applying.
     private var inFlightOpID: String?
 
+    /// Handed the body of every successful response, so the store can read what
+    /// the server said back.
+    ///
+    /// The queue used to throw response bodies away — `let (_, resp)` — which
+    /// was fine while a PUT only ever echoed the row back. It is not fine now:
+    /// completing a recurring issue answers with a `spawned` replacement that
+    /// exists nowhere else until the next full pull, and saving that blind
+    /// refetch is the whole reason the server attaches it.
+    ///
+    /// A callback rather than `flush` returning bodies: four entry points can
+    /// start a flush, and the one that cares about an answer is rarely the one
+    /// that started it.
+    var onResponse: ((PendingOperation, Data) -> Void)?
+
     // MARK: - Init
 
     private let session: URLSession
@@ -129,9 +143,10 @@ final class SyncEngine {
             do {
                 inFlightOpID = op.id
                 defer { inFlightOpID = nil }
-                try await execute(op, baseURL: baseURL)
+                let body = try await execute(op, baseURL: baseURL)
                 pendingOps.removeAll { $0.id == op.id }
                 saveOps()
+                if let body, !body.isEmpty { onResponse?(op, body) }
             } catch {
                 let failure: OpFailure = (error as? OpFailure)
                     ?? OpFailure.transient(error.localizedDescription)
@@ -213,7 +228,10 @@ final class SyncEngine {
         case transient(String)
     }
 
-    private func execute(_ op: PendingOperation, baseURL: String) async throws {
+    /// Returns the response body on success, for `onResponse`. Nothing here
+    /// parses it — the queue has no idea what any given path answers with.
+    @discardableResult
+    private func execute(_ op: PendingOperation, baseURL: String) async throws -> Data? {
         let urlString = baseURL + op.path
         guard let url = URL(string: urlString) else {
             throw OpFailure.permanent("not a valid URL: \(urlString)")
@@ -227,8 +245,10 @@ final class SyncEngine {
         }
 
         let response: URLResponse
+        let payload: Data
         do {
-            let (_, resp) = try await session.data(for: req)
+            let (data, resp) = try await session.data(for: req)
+            payload = data
             response = resp
         } catch {
             // Anything URLSession itself raises is a reachability problem.
@@ -240,7 +260,7 @@ final class SyncEngine {
         }
         switch http.statusCode {
         case 200..<300:
-            return
+            return payload
         case 408, 429:
             // The two 4xx codes that mean "later", not "never".
             throw OpFailure.transient("HTTP \(http.statusCode)")

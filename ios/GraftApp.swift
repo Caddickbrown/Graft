@@ -24,8 +24,15 @@ struct GraftApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
-                        // App foregrounded — flush any queued mutations
-                        Task { await store.flushPending() }
+                        // App foregrounded — flush any queued mutations, then
+                        // rebuild the reminder set. Rebuilt here and on `sync`
+                        // only: `flushPending` runs after every single write,
+                        // and a full notification rebuild per keystroke-debounce
+                        // would be two network calls for nothing.
+                        Task {
+                            await store.flushPending()
+                            await store.rescheduleNotifications()
+                        }
                     }
                 }
         }

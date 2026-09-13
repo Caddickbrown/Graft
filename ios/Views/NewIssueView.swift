@@ -27,6 +27,12 @@ struct NewIssueView: View {
     @State private var milestoneId = ""
     @State private var assignee = ""
     @State private var labelsText = ""
+    /// `""` for "no date" — what the server stores and what an empty date input
+    /// sends. See `GraftDateRow` for why this is a string and not a `Date`.
+    @State private var startAt = ""
+    @State private var dueAt = ""
+    @State private var recurrence = ""
+    @State private var recurrenceAnchor = RecurrenceAnchor.schedule.rawValue
     @State private var isSaving = false
     /// `onAppear` fires again whenever the sheet comes back to the front, and
     /// re-seeding would move the issue to a different project mid-edit.
@@ -42,6 +48,7 @@ struct NewIssueView: View {
             || !description.trimmingCharacters(in: .whitespaces).isEmpty
             || !assignee.trimmingCharacters(in: .whitespaces).isEmpty
             || !labelsText.trimmingCharacters(in: .whitespaces).isEmpty
+            || !startAt.isEmpty || !dueAt.isEmpty || !recurrence.isEmpty
     }
 
     /// Archived projects are not somewhere new work should land — but if we were
@@ -159,6 +166,17 @@ struct NewIssueView: View {
                 }
             }
 
+            GraftSection(title: "Schedule",
+                         footnote: "Leave both empty and the issue simply has no deadline — an issue with no due date is never overdue.") {
+                GraftDateRow(label: "Start", value: $startAt)
+                GraftRowDivider()
+                GraftDateRow(label: "Due", value: $dueAt)
+            }
+
+            GraftSection(title: "Repeat") {
+                RecurrenceEditor(rule: $recurrence, anchor: $recurrenceAnchor)
+            }
+
             GraftSection(title: "Assignment",
                          footnote: "Labels are comma-separated.") {
                 GraftTextField(label: "Assignee", placeholder: "Optional",
@@ -183,7 +201,11 @@ struct NewIssueView: View {
             priority: priority,
             milestoneId: milestoneId.isEmpty ? nil : milestoneId,
             assignee: assignee,
-            labels: labels
+            labels: labels,
+            startAt: startAt,
+            dueAt: dueAt,
+            recurrence: recurrence,
+            recurrenceAnchor: recurrenceAnchor
         )
         dismiss()
     }

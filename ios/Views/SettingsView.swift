@@ -45,6 +45,7 @@ struct SettingsView: View {
                             certificateSection
                             syncSection
                         }
+                        notificationsSection
                         aboutSection
                     }
                     .padding(.horizontal, GraftMetrics.spaceL)
@@ -69,6 +70,12 @@ struct SettingsView: View {
                 }
             }
             .onAppear {
+                // Deliberately outside the `loaded` guard below: the user can
+                // change the permission in Settings.app and come straight back,
+                // and a stale answer here would have this screen claiming the
+                // app can do something it cannot.
+                Task { await store.notifications.refreshAuthorization() }
+
                 guard !loaded else { return }
                 loaded = true
                 serverURL = store.serverURL
@@ -305,6 +312,120 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Notifications
+    //
+    // Local notifications only. There is no APNs here and no push entitlement:
+    // the Pi has no certificate and no token store, and everything worth saying
+    // is known hours or days ahead. The server decides *what* is worth saying;
+    // the phone schedules as many of them as iOS will hold.
+
+    @ViewBuilder
+    private var notificationsSection: some View {
+        let scheduler = store.notifications
+        SettingsSection(title: "Notifications") {
+            GraftToggleRow(label: "Remind me about due work", isOn: Binding(
+                get: { scheduler.isEnabled },
+                set: { wanted in
+                    scheduler.isEnabled = wanted
+                    guard wanted else { return }
+                    Task {
+                        // iOS only shows the prompt once, ever. After a refusal
+                        // this resolves to `.denied` and the note below sends
+                        // the user to Settings.app instead of asking again.
+                        await scheduler.requestAuthorization()
+                        await store.rescheduleNotifications()
+                    }
+                }
+            ))
+
+            if scheduler.isEnabled {
+                GraftRowDivider()
+                notificationStatus(scheduler)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func notificationStatus(_ scheduler: NotificationScheduler) -> some View {
+        switch scheduler.authorization {
+        case .denied:
+            settingsNote(
+                "Notifications are turned off for Graft in iOS Settings. Nothing can be scheduled until they are turned back on.",
+                icon: "bell.slash", tint: Color.gAmber,
+                action: ("Open Settings", { openSystemSettings() })
+            )
+        case .notAsked, .unknown:
+            settingsNote("Waiting for permission.", icon: "bell", tint: Color.gInk2)
+        case .grantedQuietly:
+            settingsNote(
+                "Allowed, but alerts are off — reminders will only appear in Notification Centre.",
+                icon: "bell.badge", tint: Color.gAmber,
+                action: ("Open Settings", { openSystemSettings() })
+            )
+        case .granted:
+            VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS) {
+                Text(scheduler.scheduledCount == 0
+                     ? "Nothing scheduled yet — reminders are built on the next sync."
+                     : "\(scheduler.scheduledCount) reminder\(scheduler.scheduledCount == 1 ? "" : "s") scheduled.")
+                    .font(GraftFont.text(GraftType.caption))
+                    .foregroundStyle(Color.gInk2)
+                if scheduler.droppedCount > 0 {
+                    // iOS holds 64 pending local notifications per app and drops
+                    // the rest without telling anyone. Said out loud, because it
+                    // is not a fact any user could deduce.
+                    Text("\(scheduler.droppedCount) more didn't fit — iOS holds \(NotificationScheduler.pendingLimit) at a time, so the latest and most overdue win.")
+                        .font(GraftFont.text(GraftType.caption))
+                        .foregroundStyle(Color.gInk3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !piEnabled {
+                    Text("No server linked, so there is nothing to schedule from yet.")
+                        .font(GraftFont.text(GraftType.caption))
+                        .foregroundStyle(Color.gInk3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, GraftMetrics.spaceXXS)
+        }
+    }
+
+    private func settingsNote(
+        _ text: String, icon: String, tint: Color,
+        action: (title: String, run: () -> Void)? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceXS) {
+            HStack(alignment: .top, spacing: GraftMetrics.spaceXS) {
+                Image(systemName: icon)
+                    .font(.system(size: 12))
+                    .foregroundStyle(tint)
+                Text(text)
+                    .font(GraftFont.text(GraftType.caption))
+                    .foregroundStyle(Color.gInk2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            if let action {
+                Button(action: action.run) {
+                    Text(action.title)
+                        .font(GraftFont.text(GraftType.secondary, .semibold))
+                        .foregroundStyle(Color.gAccentText)
+                        .frame(minHeight: GraftMetrics.tap)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(GraftMetrics.spaceS)
+        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     // MARK: - About

@@ -123,6 +123,25 @@ struct FilterSortSheet: View {
             dot: { IssuePriority(rawValue: $0)?.color }
         )
 
+        // Single-select, unlike everything around it, and that is the contract
+        // rather than a simplification: the server's date bounds deliberately
+        // do not go through its multi-value helper, because "due before X" has
+        // exactly one X and a second could only contradict the first.
+        //
+        // Held as a window ("overdue") rather than as the date it resolves to —
+        // a saved view carrying `due_before=2026-09-13` is right for one day and
+        // quietly wrong every day after.
+        GraftSection(title: "Due",
+                     footnote: "An issue with no due date is never due, so it matches none of these but the first.") {
+            GraftChoiceRow(label: "", options: IssueQuery.DueWindow.allCases,
+                           selection: $query.filters.due, title: { $0.label })
+        }
+
+        GraftSection(title: "Repeat") {
+            GraftChoiceRow(label: "", options: IssueQuery.RepeatFilter.allCases,
+                           selection: $query.filters.repeats, title: { $0.label })
+        }
+
         multiSection(title: "Assignee", options: assigneeOptions, selection: $query.filters.assignee)
 
         if !store.allLabels.isEmpty {
