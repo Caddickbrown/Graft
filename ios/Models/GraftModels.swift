@@ -46,6 +46,15 @@ struct GraftProject: Codable, Identifiable {
     var areaId: String?
     var tags: [String]?
     @FlexibleBool var archived: Bool
+    /// Pinned to the top of the project list.
+    ///
+    /// Optional *and* flexible, which no other flag here needs to be, because it
+    /// has to survive two things at once: a server that has not run the
+    /// `favourite` migration (missing key — an error for a non-optional, the
+    /// same trap `areaId` documents above), and the JSON already sitting in this
+    /// phone's own cache, written by the build before this one. It is an `Int`
+    /// on the wire like `archived`, hence `FlexibleBool` rather than `Bool?`.
+    var favourite: FlexibleBool? = nil
     var createdAt: String
     var updatedAt: String
     var issueCounts: IssueCounts?
@@ -65,7 +74,7 @@ struct GraftProject: Codable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, description, status, colour, icon, archived, tags
+        case id, name, description, status, colour, icon, archived, favourite, tags
         case areaId = "area_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -73,6 +82,13 @@ struct GraftProject: Codable, Identifiable {
     }
 
     var tagList: [String] { tags ?? [] }
+
+    /// `favourite` read as the plain flag every call site actually wants —
+    /// absent, on an older server or an older cache, means "not a favourite".
+    var isFavourite: Bool {
+        get { favourite?.wrappedValue ?? false }
+        set { favourite = FlexibleBool(wrappedValue: newValue) }
+    }
 
     var openIssueCount: Int {
         guard let counts = issueCounts else { return 0 }

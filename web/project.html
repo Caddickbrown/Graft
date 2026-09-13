@@ -44,6 +44,11 @@
         <div class="progress-row" id="project-progress" style="margin-top:10px"></div>
       </div>
       <div class="header-actions">
+        <!-- Contents, title and pressed state are written by app.js: the same
+             button reads "Add to" or "Remove from" favourites. -->
+        <button class="btn btn-ghost btn-star" id="project-fav-btn" type="button"
+                aria-pressed="false" title="Add to favourites"
+                onclick="GRAFT.favouriteCurrentProject()"></button>
         <button class="btn btn-ghost" onclick="GRAFT.openMilestones()">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
           Milestones

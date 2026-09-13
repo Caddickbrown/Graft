@@ -16,6 +16,8 @@ struct SettingsView: View {
     @State private var piEnabled = false
     /// Guards the one-time hydration described above.
     @State private var loaded = false
+    /// Light / dark / system. The same key `GraftApp` reads.
+    @AppStorage(GraftTheme.storageKey) private var themeRaw = GraftTheme.system.rawValue
 
     @FocusState private var urlFieldFocused: Bool
 
@@ -34,12 +36,13 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.gBg.ignoresSafeArea()
+            VStack(spacing: 0) {
+                GraftScreenHeader(title: "Settings")
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: GraftMetrics.spaceXL) {
                         pendingSection
+                        appearanceSection
                         serverSection
                         if piEnabled {
                             certificateSection
@@ -53,11 +56,9 @@ struct SettingsView: View {
                 }
                 .scrollContentBackground(.hidden)
             }
-            .navigationTitle("Settings")
-            // Large, like the other tab roots — the appearance proxy draws it
-            // in the display face.
-            .navigationBarTitleDisplayMode(.large)
-            .toolbarBackground(Color.gBg, for: .navigationBar)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.gBg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
             .toolbar {
                 // No "Done" here. This is a tab root, so `dismiss()` did
                 // nothing — and the only thing it was doing besides was saving,
@@ -122,6 +123,27 @@ struct SettingsView: View {
     }
 
     // MARK: - Server
+
+    /// Light / dark / follow the phone.
+    ///
+    /// The web client has had this in the corner of its rail from the start and
+    /// the phone simply obeyed iOS, so the two clients could not be made to
+    /// match on the same desk. The picker writes one string to `UserDefaults`;
+    /// `GraftApp` reads it and hands the window a colour scheme, and the whole
+    /// palette follows from there.
+    private var appearanceSection: some View {
+        SettingsSection(title: "Appearance") {
+            GraftChoiceRow(
+                label: "Theme",
+                options: GraftTheme.allCases,
+                selection: Binding(
+                    get: { GraftTheme(rawValue: themeRaw) ?? .system },
+                    set: { themeRaw = $0.rawValue }
+                ),
+                title: { $0.label }
+            )
+        }
+    }
 
     private var serverSection: some View {
         SettingsSection(title: "Pi Server") {

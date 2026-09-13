@@ -174,7 +174,9 @@ struct EditProjectView: View {
                     .frame(width: 34, height: 34)
 
                     TextField("Emoji", text: $icon)
-                        .font(GraftFont.text(GraftType.body))
+                        // What you type here is an emoji, and Geist has no
+                        // glyphs for one — see GraftFont.emoji.
+                        .font(GraftFont.emoji(GraftType.body))
                         .foregroundStyle(Color.gInk)
                         .tint(Color.gAccent)
                         .autocorrectionDisabled()

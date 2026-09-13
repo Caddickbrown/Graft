@@ -22,9 +22,19 @@ struct MilestonesView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        GraftSheetScaffold(
+            title: "Milestones",
+            trailingAccessory: AnyView(
+                GraftIconButton(systemImage: "plus",
+                                tint: Color.gAccentText,
+                                accessibilityTitle: "New milestone") {
+                    showNewMilestone = true
+                }
+            ),
+            onDone: { dismiss() }
+        ) {
             ZStack {
-                Color.gBg.ignoresSafeArea()
+                Color.gBg
 
                 if milestones.isEmpty {
                     GraftEmptyState(
@@ -65,25 +75,6 @@ struct MilestonesView: View {
                         .padding(.vertical, GraftMetrics.spaceS)
                     }
                     .scrollContentBackground(.hidden)
-                }
-            }
-            .navigationTitle("Milestones")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.gBg, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
-                        .frame(minHeight: GraftMetrics.tap)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showNewMilestone = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
-                            .contentShape(Rectangle())
-                    }
-                    .accessibilityLabel("New milestone")
                 }
             }
             .sheet(isPresented: $showNewMilestone) {

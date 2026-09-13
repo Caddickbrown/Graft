@@ -416,6 +416,18 @@ final class GraftStore {
         await flushPending()
     }
 
+    /// Pin or unpin a project. A toggle on both sides, like archive, so a queued
+    /// request replayed after the phone comes back online lands the same way
+    /// round regardless of how long it sat there.
+    func favouriteProject(id: String) async throws {
+        if let idx = projects.firstIndex(where: { $0.id == id }) {
+            projects[idx].isFavourite.toggle()
+        }
+        saveCachedData()
+        syncEngine.enqueue(method: "PATCH", path: "/api/projects/\(id)/favourite")
+        await flushPending()
+    }
+
     func deleteProject(id: String) async throws {
         projects.removeAll { $0.id == id }
         issues.removeAll { $0.projectId == id }

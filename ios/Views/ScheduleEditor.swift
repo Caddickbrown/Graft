@@ -403,3 +403,134 @@ struct RecurrenceEditor: View {
         .accessibilityLabel(symbol == "plus" ? "Increase" : "Decrease")
     }
 }
+
+// MARK: - Quick due date
+
+/// A one-line due date for the moment of capture.
+///
+/// `GraftDateRow` is the full control and stays where the whole schedule is
+/// edited. The problem it could not solve is that every way into a new issue —
+/// the + button, and "Add issue" at the foot of a board column — lands on a
+/// form where the date is the fifth section down: by the time you have scrolled
+/// to it you have stopped capturing and started filing. These are the three
+/// answers that cover nearly every case, one tap each, at the top of the sheet.
+///
+/// Anything else opens the same inline picker `GraftDateRow` uses, and whatever
+/// it sets shows up in the Schedule section below, because both are bound to
+/// the same string.
+struct GraftQuickDateRow: View {
+    /// `""` for no date.
+    @Binding var value: String
+
+    @State private var isPicking = false
+
+    private var calendar: Calendar { Calendar.current }
+    private var today: Date { calendar.startOfDay(for: Date()) }
+
+    private func day(offsetBy days: Int) -> String {
+        guard let date = calendar.date(byAdding: .day, value: days, to: today) else { return "" }
+        return GraftDate.dayString(from: date)
+    }
+
+    private var pickerBinding: Binding<Date> {
+        Binding(
+            get: { GraftDate.day(from: value) ?? today },
+            set: { value = GraftDate.dayString(from: $0) }
+        )
+    }
+
+    /// The date is "other" when it is set but is none of the three presets —
+    /// that is what lights the calendar chip instead.
+    private var isCustom: Bool {
+        !value.isEmpty && ![0, 1, 7].contains { day(offsetBy: $0) == value }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceXS) {
+            HStack(spacing: GraftMetrics.spaceXS) {
+                Text("DUE")
+                    .font(GraftFont.text(GraftType.micro, .semibold))
+                    .foregroundStyle(Color.gInk3)
+                    .tracking(GraftType.microTracking)
+
+                if !value.isEmpty {
+                    Text(GraftDate.mediumDate(value) ?? value)
+                        .font(GraftFont.text(GraftType.caption, .medium))
+                        .foregroundStyle(Color.gInk2)
+                }
+
+                Spacer(minLength: 0)
+
+                if !value.isEmpty {
+                    Button {
+                        value = ""
+                        isPicking = false
+                    } label: {
+                        Text("Clear")
+                            .font(GraftFont.text(GraftType.micro, .semibold))
+                            .foregroundStyle(Color.gInk3)
+                            .frame(minHeight: GraftMetrics.tap)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear due date")
+                }
+            }
+
+            FlowRow(spacing: GraftMetrics.spaceXS) {
+                chip("Today", days: 0)
+                chip("Tomorrow", days: 1)
+                chip("Next week", days: 7)
+
+                Button {
+                    isPicking.toggle()
+                } label: {
+                    HStack(spacing: GraftMetrics.spaceXXS) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(isCustom ? (GraftDate.shortDate(value) ?? "Date") : "Pick a date")
+                            .font(GraftFont.text(GraftType.caption, .medium))
+                    }
+                    .foregroundStyle(isCustom ? Color.gOnAccent : Color.gInk2)
+                    .padding(.horizontal, GraftMetrics.spaceS)
+                    .frame(minHeight: GraftMetrics.controlSmall)
+                    .background(isCustom ? Color.gAccent : Color.gSurface2, in: Capsule())
+                    .frame(minHeight: GraftMetrics.tap)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Pick a due date")
+            }
+
+            if isPicking {
+                DatePicker("Due", selection: pickerBinding, displayedComponents: .date)
+                    .datePickerStyle(.graphical)
+                    .tint(Color.gAccent)
+                    .labelsHidden()
+            }
+        }
+    }
+
+    private func chip(_ title: String, days: Int) -> some View {
+        let target = day(offsetBy: days)
+        let selected = value == target
+        return Button {
+            // Tapping the chip that is already on clears the date, so the whole
+            // control is reversible without hunting for Clear.
+            value = selected ? "" : target
+            isPicking = false
+        } label: {
+            Text(title)
+                .font(GraftFont.text(GraftType.caption, .medium))
+                .foregroundStyle(selected ? Color.gOnAccent : Color.gInk2)
+                .padding(.horizontal, GraftMetrics.spaceS)
+                .frame(minHeight: GraftMetrics.controlSmall)
+                .background(selected ? Color.gAccent : Color.gSurface2, in: Capsule())
+                .frame(minHeight: GraftMetrics.tap)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Due \(title.lowercased())")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+}

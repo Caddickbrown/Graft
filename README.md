@@ -52,9 +52,10 @@ sudo systemctl enable graft
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /api/projects | All projects with issue counts |
+| GET | /api/projects?archived=&area_id=&tag=&favourite=1 | All projects with issue counts |
 | POST | /api/projects | Create project |
 | PUT | /api/projects/:id | Update project |
+| PATCH | /api/projects/:id/favourite | Pin or unpin a project (toggles) |
 | DELETE | /api/projects/:id | Delete project + cascade |
 | GET | /api/milestones?project_id= | Milestones |
 | POST/PUT/DELETE | /api/milestones/:id | Milestone CRUD |
@@ -103,6 +104,32 @@ not exist is still a 404. The sentinel is hidden from `GET /api/projects`, from
 `projects_active` and from `top_projects`, and cannot be deleted; its issues are
 counted everywhere ordinary issues are. It is still readable at
 `GET /api/projects/proj_none` so a client can resolve the name.
+
+### Favourites
+
+A project carries a `favourite` flag, `0` or `1`, alongside `archived`. It is a
+pin: the projects you are in every day, kept where you can reach them without
+reading the whole list first.
+
+`PATCH /api/projects/:id/favourite` toggles it and returns the project, the same
+shape and the same reasoning as `/archive` — a toggle rather than a value, so an
+offline client can replay the request without knowing which way round it was
+when it queued it. `PUT /api/projects/:id` also accepts `favourite` directly when
+a client does want to set a specific value, and `GET /api/projects?favourite=1`
+narrows to the pinned ones.
+
+Favouriting is orthogonal to everything else: an archived project keeps its pin,
+a pinned project keeps its area, and the no-project sentinel cannot be pinned
+(400) because it never appears in a list to begin with.
+
+What the clients do with it:
+
+| Surface | Behaviour |
+|---------|-----------|
+| Web sidebar | A **Favourites** section above Areas — the point of the feature. A favourite is still listed in its area and in the flat list below |
+| Web project cards | Favourites sort to the front of whatever group they are in, in every sort and both directions; a star on the card toggles it and stays lit once set |
+| Web project page | A star in the header, and the same entry in the overflow menu |
+| iOS | A **Favourites** section at the top of the project list, *removed* from their areas — one list, so a project appearing twice would read as a sync bug. Swipe a row from the leading edge, or use the star in a project's own toolbar |
 
 ### /api/overview
 

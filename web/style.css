@@ -2193,6 +2193,42 @@ option { background: var(--surface); color: var(--ink); }
   .project-card-menu { opacity: 1; }
 }
 
+/* ── Favourites ──────────────────────────────────────────────────── */
+/* The star on a project card. It behaves like the card's overflow menu —
+   hidden until the card is hovered or focused — with one exception: once a
+   project IS a favourite the star stays lit, because at that point it is not a
+   control any more, it is the badge that says why the card is at the top. */
+.project-card-fav-btn {
+  width: 24px; height: 24px;
+  flex-shrink: 0;
+  margin: -2px 0 -2px 0;
+  opacity: 0;
+  transition: opacity .12s, color .1s, background .1s;
+}
+.project-card:hover .project-card-fav-btn,
+.project-card:focus-within .project-card-fav-btn,
+.project-card-fav-btn:focus-visible,
+.project-card-fav-btn.is-fav { opacity: 1; }
+@media (hover: none) {
+  .project-card-fav-btn { opacity: 1; }
+}
+/* Filled, not just tinted — the svg() helper hard-codes fill="none" as a
+   presentation attribute, and a CSS rule outranks one of those. */
+.project-card-fav-btn.is-fav { color: var(--s-in-progress); }
+.project-card-fav-btn.is-fav svg,
+.btn-star.is-fav svg { fill: currentColor; }
+.project-card-fav-btn.is-fav:hover { color: var(--s-in-progress); background: var(--surface-3); }
+
+/* The star in the project page's own header — a .btn, so it needs the square
+   shape a bare icon button has and the label padding it does not. */
+.btn-star { padding: 0; width: 34px; flex-shrink: 0; }
+.btn-star.is-fav { color: var(--s-in-progress); }
+
+/* A favourite in the rail. The pin is expressed by the Favourites section it
+   is listed in, so the repeat further down gets a dot of colour, not a second
+   star competing with the project's own icon. */
+.nav-item-fav .nav-project-dot { box-shadow: 0 0 0 2px color-mix(in oklab, var(--s-in-progress) 45%, transparent); }
+
 /* ── An area's archived projects ─────────────────────────────────── */
 /* A drawer under the live grid: archived projects keep their area, so this is
    where they wait rather than dropping out of the app entirely. */

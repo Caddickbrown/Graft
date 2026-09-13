@@ -12,11 +12,17 @@ struct GraftApp: App {
         MainActor.assumeIsolated { GraftChrome.apply() }
     }
 
+    /// The theme the user picked, or `.system`. Read here so the whole window
+    /// carries it — every colour in the app resolves through the trait
+    /// collection, so this one modifier repaints all of it.
+    @AppStorage(GraftTheme.storageKey) private var themeRaw = GraftTheme.system.rawValue
+
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(store)
                 .environment(router)
+                .preferredColorScheme(GraftTheme(rawValue: themeRaw)?.colorScheme)
                 .task {
                     // On first launch: try to sync if a server is configured,
                     // otherwise just load from local cache (already done in init)
@@ -47,6 +53,12 @@ struct GraftApp: App {
 // stock SwiftUI shell with a custom body.
 //
 // Set on the appearance proxy at launch, before any bar is created.
+//
+// Most of this is now belt and braces: the app draws its own header and tab bar
+// (see `Chrome.swift`) and hides both system bars, because from iOS 26 their
+// items arrive wrapped in floating glass capsules that no appearance proxy can
+// reach. What is left here still matters for the bars we do not draw — the
+// keyboard accessory row, and anything UIKit puts up on its own.
 
 @MainActor
 enum GraftChrome {
@@ -108,22 +120,33 @@ struct RootView: View {
     var body: some View {
         @Bindable var router = router
 
-        TabView(selection: $router.tab) {
-            InboxView()
-                .tabItem { Label("Inbox", systemImage: "tray") }
-                .tag(GraftTab.inbox)
+        // Still a `TabView`, with its bar hidden and ours stacked under it.
+        // Switching on `router.tab` with an `if` would have been simpler and
+        // wrong: the two tabs that are not showing would be torn down, taking
+        // each one's navigation stack and scroll position with them.
+        //
+        // A `VStack` rather than `safeAreaInset`: the inset is honoured by the
+        // TabView's own chrome but not passed down to the screen inside it, so
+        // the + button on two of the three tabs sat half-under the bar. Stacked,
+        // the TabView is simply given the height that is left.
+        VStack(spacing: 0) {
+            TabView(selection: $router.tab) {
+                InboxView()
+                    .tag(GraftTab.inbox)
+                    .toolbar(.hidden, for: .tabBar)
 
-            ProjectsView()
-                .tabItem { Label("Projects", systemImage: "square.grid.2x2") }
-                .tag(GraftTab.projects)
+                ProjectsView()
+                    .tag(GraftTab.projects)
+                    .toolbar(.hidden, for: .tabBar)
 
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(GraftTab.settings)
-                // Writes waiting to reach the server, on the tab that can
-                // explain them. Zero draws nothing.
-                .badge(store.pendingBadgeCount)
+                SettingsView()
+                    .tag(GraftTab.settings)
+                    .toolbar(.hidden, for: .tabBar)
+            }
+            .tint(Color.gAccent)
+
+            GraftTabBar(selection: $router.tab, pendingCount: store.pendingBadgeCount)
         }
-        .tint(Color.gAccent)
+        .background(Color.gBg)
     }
 }

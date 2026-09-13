@@ -27,7 +27,21 @@ struct GraftFormScaffold<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        NavigationStack {
+        // No `NavigationStack`, and no toolbar. The Cancel/confirm pair is an
+        // ordinary row at the top of the sheet — see `GraftSheetHeader` for why
+        // the system's version of it had to go.
+        VStack(spacing: 0) {
+            GraftSheetHeader(
+                confirmLabel: confirmLabel,
+                confirmDisabled: confirmDisabled,
+                isBusy: isBusy,
+                onCancel: onCancel,
+                onConfirm: onConfirm
+            )
+            // A sheet arrives under the grabber, so the header needs a little
+            // air above it that a navigation bar used to provide.
+            .padding(.top, GraftMetrics.spaceS)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: GraftMetrics.spaceXXL) {
                     // The title lives in the content, big, in the display face —
@@ -36,7 +50,6 @@ struct GraftFormScaffold<Content: View>: View {
                     Text(title)
                         .font(GraftFont.display(GraftType.display, .bold))
                         .foregroundStyle(Color.gInk)
-                        .padding(.top, GraftMetrics.spaceXS)
 
                     content
                 }
@@ -47,35 +60,8 @@ struct GraftFormScaffold<Content: View>: View {
                 .padding(.bottom, GraftMetrics.space4XL)
             }
             .scrollDismissesKeyboard(.interactively)
-            .background(Color.gBg)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.gBg, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                        .font(GraftFont.text(GraftType.secondary))
-                        .foregroundStyle(Color.gInk2)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(action: onConfirm) {
-                        if isBusy {
-                            ProgressView().tint(Color.gOnAccent)
-                        } else {
-                            Text(confirmLabel)
-                                .font(GraftFont.text(GraftType.secondary, .semibold))
-                        }
-                    }
-                    // A filled pill, not bar-button blue text: this is the
-                    // primary action and the design gives primary actions the
-                    // accent as a *fill*.
-                    .foregroundStyle(confirmDisabled ? Color.gInk3 : Color.gOnAccent)
-                    .padding(.horizontal, GraftMetrics.spaceS)
-                    .frame(height: GraftMetrics.controlSmall)
-                    .background(confirmDisabled ? Color.gSurface2 : Color.gAccent, in: Capsule())
-                    .disabled(confirmDisabled || isBusy)
-                }
-            }
         }
+        .background(Color.gBg)
     }
 }
 

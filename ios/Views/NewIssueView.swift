@@ -71,23 +71,14 @@ struct NewIssueView: View {
                 // The app's own empty state rather than the stock one, so this
                 // sheet does not look like a different product from the screen
                 // that opened it.
-                NavigationStack {
+                GraftSheetScaffold(title: "New issue", doneLabel: "Cancel",
+                                   onDone: { dismiss() }) {
                     GraftEmptyState(
                         title: "No projects yet",
                         subtitle: "Every issue lives in a project. Make one on the Projects tab first.",
                         systemImage: "leaf"
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.gBg)
-                    .navigationTitle("New issue")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { dismiss() }
-                                .font(GraftFont.text(GraftType.body))
-                                .foregroundStyle(Color.gInk2)
-                        }
-                    }
                 }
             } else {
                 form
@@ -122,6 +113,11 @@ struct NewIssueView: View {
                 GraftTextField(label: "Description", placeholder: "Optional",
                                text: $description, axis: .vertical, lineLimit: 3...8,
                                focused: $focus, field: .description)
+                GraftRowDivider()
+                // A due date at the point of capture. The full Start/Due/Repeat
+                // controls are still in Schedule below and share this binding —
+                // this is the shortcut, not a second source of truth.
+                GraftQuickDateRow(value: $dueAt)
             }
 
             GraftSection(title: "Project") {
@@ -167,7 +163,7 @@ struct NewIssueView: View {
             }
 
             GraftSection(title: "Schedule",
-                         footnote: "Leave both empty and the issue simply has no deadline — an issue with no due date is never overdue.") {
+                         footnote: "Due is the same date as the one at the top. Leave both empty and the issue simply has no deadline — an issue with no due date is never overdue.") {
                 GraftDateRow(label: "Start", value: $startAt)
                 GraftRowDivider()
                 GraftDateRow(label: "Due", value: $dueAt)

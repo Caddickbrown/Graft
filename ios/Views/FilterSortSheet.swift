@@ -44,7 +44,7 @@ struct FilterSortSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        GraftSheetScaffold(title: "Filter & sort", onDone: { dismiss() }) {
             ScrollView {
                 VStack(alignment: .leading, spacing: GraftMetrics.spaceXL) {
                     sortSection
@@ -56,16 +56,6 @@ struct FilterSortSheet: View {
                 }
                 .padding(.horizontal, GraftMetrics.gutter)
                 .padding(.vertical, GraftMetrics.spaceM)
-            }
-            .background(Color.gBg)
-            .navigationTitle("Filter & sort")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .font(GraftFont.text(GraftType.body, .semibold))
-                        .foregroundStyle(Color.gAccentText)
-                }
             }
             .alert("Save this view", isPresented: $showSaveView) {
                 TextField("Name", text: $newViewName)
@@ -321,8 +311,14 @@ struct FilterButton: View {
                         .font(GraftFont.text(GraftType.micro, .semibold))
                 }
             }
+            .font(.system(size: 15, weight: .medium))
             .foregroundStyle(query.badgeCount > 0 ? Color.gAccentText : Color.gInk2)
-            .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+            // The same bordered square as `GraftIconButton`, which it now sits
+            // beside in the header rather than inside a navigation bar.
+            .padding(.horizontal, GraftMetrics.spaceXS)
+            .frame(minWidth: GraftMetrics.control, minHeight: GraftMetrics.tap)
+            .background(query.badgeCount > 0 ? Color.gAccentWash : Color.gSurface2,
+                        in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
             .contentShape(Rectangle())
         }
         .accessibilityLabel(query.badgeCount > 0

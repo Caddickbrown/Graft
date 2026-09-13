@@ -1181,7 +1181,19 @@
           </div>`;
       }).join('');
 
+      // Favourites sit above everything, which is the whole point of them: the
+      // three or four projects you open every day, reachable without reading
+      // the area tree first. A favourite is still listed below in its area and
+      // in the flat list — the rail already repeats a project between those
+      // two, and a pin that *moved* a project would make it harder to find,
+      // not easier, on the day you forget it is pinned.
+      const favourites = active.filter(p => p.favourite);
+      const favSection = favourites.length ? `
+        <div class="nav-section-label">Favourites</div>
+        ${favourites.map(p => railProjectItem(p, current)).join('')}` : '';
+
       el.innerHTML = `
+        ${favSection}
         ${_allAreas.length ? `<div class="nav-section-label">Areas</div>${areaTree}` : ''}
         ${_areasFailed ? `<div class="nav-section-label">Areas</div>
           <div class="rail-error">Couldn’t load areas.
@@ -1210,7 +1222,7 @@
     const c = p.issue_counts || {};
     const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
     return `
-      <a href="project.html?id=${esc(p.id)}" class="nav-item${p.id === current ? ' active' : ''}"
+      <a href="project.html?id=${esc(p.id)}" class="nav-item${p.id === current ? ' active' : ''}${p.favourite ? ' nav-item-fav' : ''}"
          ${p.status !== 'active' ? `title="${esc(p.name)} — ${esc(p.status)}" style="opacity:.7"` : ''}>
         ${p.icon ? `<span class="nav-project-icon">${esc(p.icon)}</span>`
                  : `<span class="nav-project-dot" style="background:${esc(p.colour)}"></span>`}
@@ -2866,6 +2878,12 @@
 
   function sortProjects(list) {
     const dir = _org.dir === 'desc' ? -1 : 1;
+    // A favourite is a pin, not a sort key: it survives whatever sort and
+    // direction is on, and only orders projects against each other inside the
+    // group it is drawn in. Reversing the direction reverses the rest of the
+    // list, never the pinning — a pinned project that fell to the bottom under
+    // "Z–A" would have stopped being a pin.
+    const pin = (a, b) => (b.favourite ? 1 : 0) - (a.favourite ? 1 : 0);
     const rank = { active: 0, paused: 1, done: 2 };
     const areaName = id => {
       const a = _allAreas.find(a => a.id === id);
@@ -2879,7 +2897,7 @@
       status: (a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3),
       area: (a, b) => areaName(a.area_id).localeCompare(areaName(b.area_id)) || String(a.name || '').localeCompare(String(b.name || '')),
     }[_org.sort] || ((a, b) => 0);
-    return [...list].sort((a, b) => cmp(a, b) * dir);
+    return [...list].sort((a, b) => pin(a, b) || cmp(a, b) * dir);
   }
 
   function renderProjects() {
@@ -3070,6 +3088,7 @@
     const next = _allMilestones
       .filter(m => m.project_id === p.id && m.due_date && daysUntil(m.due_date) !== null)
       .sort((a, b) => a.due_date.localeCompare(b.due_date))[0];
+    const fav = !!p.favourite;
     return `
       <div class="project-card ${p.archived ? 'project-card-archived' : ''}"
            tabindex="0" role="link" aria-label="${esc(p.name)}"
@@ -3086,6 +3105,12 @@
             ${p.archived
               ? `<span class="project-card-status" style="background:var(--surface-2);color:var(--ink-2)">archived</span>`
               : `<span class="project-card-status status-${esc(p.status)}">${esc(p.status)}</span>`}
+            <button class="icon-btn project-card-fav-btn${fav ? ' is-fav' : ''}" type="button"
+                    aria-pressed="${fav}"
+                    title="${fav ? 'Remove from favourites' : 'Add to favourites'}"
+                    aria-label="${fav ? 'Remove' : 'Add'} ${esc(p.name)} ${fav ? 'from' : 'to'} favourites"
+                    onclick="event.stopPropagation();GRAFT.favouriteProjectById('${jsStr(p.id)}')"
+                    >${svg(STAR_ICON, 15)}</button>
             <button class="icon-btn project-card-menu" type="button" aria-haspopup="menu"
                     aria-label="Actions for ${esc(p.name)}"
                     onclick="GRAFT._projectMenu(event,'${jsStr(p.id)}')">${svg(DOTS_ICON, 15)}</button>
@@ -3116,6 +3141,8 @@
     event.stopPropagation();
     const p = _allProjects.find(x => x.id === id);
     openMenu(event.currentTarget, [
+      { label: p?.favourite ? 'Remove from favourites' : 'Add to favourites',
+        onClick: () => favouriteProjectById(id) },
       { label: p?.archived ? 'Unarchive project' : 'Archive project',
         onClick: () => archiveProjectById(id) },
     ]);
@@ -3135,6 +3162,50 @@
         await _reloadProjectLists();
       });
     } catch { toast('Could not archive project'); }
+  }
+
+  // A favourite is the one project property you change *while looking for*
+  // something else, so it updates in place rather than reloading the list from
+  // the server: a pinned project jumps to the top of its group, and a full
+  // reload would also take the card out from under the cursor mid-click.
+  // The rail is redrawn because that is where the pin actually pays off.
+  async function favouriteProjectById(id) {
+    const p = _allProjects.find(x => x.id === id);
+    if (!p) return;
+    const was = !!p.favourite;
+    _setFavouriteLocally(id, !was);
+    _rerenderProjectSurface();
+    renderRail();
+    try {
+      await api('PATCH', `/api/projects/${id}/favourite`);
+    } catch {
+      _setFavouriteLocally(id, was);
+      _rerenderProjectSurface();
+      renderRail();
+      toast('Could not change favourites');
+    }
+  }
+
+  // The rail keeps its own copy of the project list, fetched once and cached in
+  // _railProjects. Dropping that cache to force a redraw is the obvious move
+  // and the wrong one: renderRail would re-fetch immediately, the request would
+  // overtake the PATCH still in flight, and the rail would draw the state we
+  // just changed away from. Write the flag into both copies instead and let the
+  // rail redraw from what it already holds.
+  function _setFavouriteLocally(id, fav) {
+    const p = _allProjects.find(x => x.id === id);
+    if (p) p.favourite = fav;
+    const r = _railProjects && _railProjects.find(x => x.id === id);
+    if (r) r.favourite = fav;
+    if (_currentProject && _currentProject.id === id) _currentProject.favourite = fav;
+  }
+
+  // Project cards are drawn by three different pages; the favourite toggle has
+  // to redraw whichever one is on screen.
+  function _rerenderProjectSurface() {
+    if (window._pageMode === 'area') _renderAreaPage();
+    else if (window._pageMode === 'projects') renderProjects();
+    else if (window._pageMode === 'today') renderToday();
   }
 
   // The projects page and a single area page both draw project cards, and the
@@ -3703,12 +3774,15 @@
     setTopbarMenu([
       { label: 'Milestones', onClick: () => openMilestones() },
       { label: 'Edit project', onClick: () => editCurrentProject() },
+      { label: _currentProject.favourite ? 'Remove from favourites' : 'Add to favourites',
+        onClick: () => favouriteCurrentProject() },
       { label: _currentProject.archived ? 'Unarchive project' : 'Archive project', onClick: () => archiveCurrentProject() },
       { separator: true },
       { label: 'Delete project', danger: true, onClick: () => deleteProjectById(_currentProject.id) },
     ]);
     const hdr = document.getElementById('project-header');
     if (hdr) hdr.dataset.archived = _currentProject.archived ? '1' : '0';
+    renderProjectFavButton();
     renderProjectProgress();
   }
 
@@ -3875,6 +3949,43 @@
     const archBtn = document.getElementById('archive-project-btn');
     if (archBtn) archBtn.textContent = _currentProject.archived ? 'Unarchive' : 'Archive';
     openModal('modal-edit-project');
+  }
+
+  // The star on the project page's own header. Drawn from state rather than
+  // written into project.html, because the same button says two things.
+  function renderProjectFavButton() {
+    const btn = document.getElementById('project-fav-btn');
+    if (!btn || !_currentProject) return;
+    const fav = !!_currentProject.favourite;
+    btn.classList.toggle('is-fav', fav);
+    btn.setAttribute('aria-pressed', String(fav));
+    btn.title = fav ? 'Remove from favourites' : 'Add to favourites';
+    btn.setAttribute('aria-label', btn.title);
+    btn.innerHTML = svg(STAR_ICON, 15);
+  }
+
+  async function favouriteCurrentProject() {
+    if (!_currentProject) return;
+    const id = _currentProject.id;
+    const was = !!_currentProject.favourite;
+    _setFavouriteLocally(id, !was);
+    renderProjectHeader();
+    renderRail();
+    try {
+      const updated = await api('PATCH', `/api/projects/${id}/favourite`);
+      // Keep the row the rail is holding in step with the server's answer, but
+      // never drop its cache here — see _setFavouriteLocally.
+      _currentProject = updated;
+      _setFavouriteLocally(id, !!updated.favourite);
+      renderProjectHeader();
+      renderRail();
+      toast(updated.favourite ? 'Added to favourites' : 'Removed from favourites');
+    } catch {
+      _setFavouriteLocally(id, was);
+      renderProjectHeader();
+      renderRail();
+      toast('Could not change favourites');
+    }
   }
 
   async function archiveCurrentProject() {
@@ -4550,7 +4661,11 @@
     }
     if (gridEl) {
       const inArea = _allProjects.filter(p => p.area_id === a.id);
-      const live = inArea.filter(p => !p.archived);
+      // Favourites first here too, so a pin means the same thing on every
+      // surface that draws project cards. This page has no sort control of its
+      // own, so it pins by hand rather than going through sortProjects.
+      const live = inArea.filter(p => !p.archived)
+        .sort((x, y) => (y.favourite ? 1 : 0) - (x.favourite ? 1 : 0));
       const archived = inArea.filter(p => p.archived);
       const liveHtml = live.length
         ? `<div class="projects-grid">${live.map(projectCard).join('')}</div>`
@@ -4627,7 +4742,7 @@
     _clearFilter, _clearAllFilters, _toggleArchived, _onSearchInput,
     // areas, links, views
     createArea, _areaMenu, _toggleArea, _toggleRailArea, _toggleAreaArchived,
-    _projectMenu, archiveProjectById,
+    _projectMenu, archiveProjectById, favouriteProjectById, favouriteCurrentProject,
     _addLink, _editLink, _linkMenu, _removeLink,
     _applyView: applySavedView, _deleteView: deleteSavedView,
     // drag and drop

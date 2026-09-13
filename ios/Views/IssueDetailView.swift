@@ -72,10 +72,41 @@ struct IssueDetailView: View {
         store.milestones.filter { $0.projectId == issue.projectId }
     }
 
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            Color.gBg.ignoresSafeArea()
+    /// Where back goes — named, because a chevron on its own says nothing about
+    /// what you are returning to.
+    private var backLabel: String {
+        store.project(current.projectId)?.name ?? "Back"
+    }
 
+    var body: some View {
+        VStack(spacing: 0) {
+            GraftScreenHeader(title: "",
+                              titleView: AnyView(EmptyView()),
+                              leading: {
+                                  GraftBackButton(label: backLabel) { dismiss() }
+                              },
+                              actions: {
+                                  saveIndicator
+                                  Menu {
+                                      Button(role: .destructive) {
+                                          showDeleteConfirm = true
+                                      } label: {
+                                          Label("Delete issue", systemImage: "trash")
+                                      }
+                                  } label: {
+                                      Image(systemName: "ellipsis")
+                                          .font(.system(size: 15, weight: .medium))
+                                          .foregroundStyle(Color.gInk2)
+                                          .frame(width: GraftMetrics.control, height: GraftMetrics.control)
+                                          .background(Color.gSurface2,
+                                                      in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+                                          .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                                          .contentShape(Rectangle())
+                                  }
+                                  .accessibilityLabel("More actions")
+                              })
+
+            ZStack(alignment: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     identity
@@ -95,22 +126,11 @@ struct IssueDetailView: View {
             }
 
             actionBar
-        }
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) { saveIndicator }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button(role: .destructive) { showDeleteConfirm = true } label: {
-                        Label("Delete issue", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .accessibilityLabel("More actions")
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.gBg.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             // Guarded: `onAppear` fires again on every return to this screen,
             // and re-reading the store would overwrite an in-progress edit that
@@ -141,53 +161,61 @@ struct IssueDetailView: View {
 
     // MARK: - Pieces
 
-    @ViewBuilder
+    /// One glyph in a slot that is always the same size.
+    ///
+    /// This used to be a row of *words* that changed on every edit — "Saving…",
+    /// then "✓ Saved", then nothing two seconds later — and each change resized
+    /// the item next to it, so the top-right corner of the screen twitched all
+    /// the way through typing a title. The slot is now a fixed 34pt square
+    /// whatever the state, the states cross-fade rather than swapping, and the
+    /// sentence that used to be up here is left to `saveExplanation`, which
+    /// says it properly under the action bar and does not move anything.
     private var saveIndicator: some View {
-        switch saveState {
-        case .idle:
-            EmptyView()
+        ZStack {
+            switch saveState {
+            case .idle, .saving:
+                // Deliberately nothing. A local write takes milliseconds, and a
+                // spinner you can only ever catch a frame of is itself a flicker.
+                Color.clear
 
-        case .saving:
-            Text("Saving…")
-                .font(GraftFont.text(GraftType.secondary))
-                .foregroundStyle(Color.gInk2)
+            case .savedLocally:
+                Image(systemName: "iphone")
+                    .foregroundStyle(Color.gInk2)
+                    .accessibilityLabel("Saved on this phone. No server is linked.")
 
-        case .savedLocally:
-            Label("Saved on phone", systemImage: "iphone")
-                .font(GraftFont.text(GraftType.secondary))
-                .foregroundStyle(Color.gInk2)
-                .accessibilityLabel("Saved on this phone. No server is linked.")
+            case .synced:
+                Image(systemName: "checkmark")
+                    .foregroundStyle(Color.gAccentText)
+                    .accessibilityLabel("Saved to the server.")
 
-        case .synced:
-            Label("Saved", systemImage: "checkmark")
-                .font(GraftFont.text(GraftType.secondary))
-                .foregroundStyle(Color.gAccentText)
+            case .queued:
+                Button {
+                    Task { await store.flushPending(); refreshSaveState() }
+                } label: {
+                    Image(systemName: "arrow.up.circle")
+                        .foregroundStyle(Color.gAmber)
+                        .frame(width: GraftMetrics.control, height: GraftMetrics.control)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Waiting to sync. Tap to try now.")
 
-        case .queued(let count):
-            Button {
-                Task { await store.flushPending(); refreshSaveState() }
-            } label: {
-                Label(count > 1 ? "Queued (\(count))" : "Queued",
-                      systemImage: "arrow.up.circle")
-                    .font(GraftFont.text(GraftType.secondary))
-                    .foregroundStyle(Color.gAmber)
-                    .frame(minHeight: GraftMetrics.tap)
-                    .contentShape(Rectangle())
+            case .failed:
+                Button {
+                    retrySave()
+                } label: {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(Color.gRed)
+                        .frame(width: GraftMetrics.control, height: GraftMetrics.control)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("This change was not saved to the server. Tap to retry.")
             }
-            .accessibilityLabel("Waiting to sync. Tap to try now.")
-
-        case .failed:
-            Button {
-                retrySave()
-            } label: {
-                Label("Retry", systemImage: "exclamationmark.triangle")
-                    .font(GraftFont.text(GraftType.secondary))
-                    .foregroundStyle(Color.gRed)
-                    .frame(minHeight: GraftMetrics.tap)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("This change was not saved to the server. Tap to retry.")
         }
+        .font(.system(size: 15, weight: .medium))
+        .frame(width: GraftMetrics.control, height: GraftMetrics.control)
+        .animation(.easeInOut(duration: 0.25), value: saveState)
     }
 
     /// The one-line explanation under the action bar, for the two states that

@@ -76,6 +76,7 @@ def init_db():
             colour      TEXT DEFAULT '#7C7FC4',
             icon        TEXT DEFAULT '',
             archived    INTEGER DEFAULT 0,
+            favourite   INTEGER DEFAULT 0,
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
@@ -206,6 +207,12 @@ def _migrate_db():
             db.execute("ALTER TABLE projects ADD COLUMN archived INTEGER DEFAULT 0")
         if "repo_url" not in proj_cols:
             db.execute("ALTER TABLE projects ADD COLUMN repo_url TEXT DEFAULT ''")
+        # Favourites: the handful of projects you are actually in every day,
+        # pinned to the top of whatever list a client draws. An INTEGER flag
+        # rather than a join table, because it is one bit per project and the
+        # ordering among favourites is whatever the surrounding sort says.
+        if "favourite" not in proj_cols:
+            db.execute("ALTER TABLE projects ADD COLUMN favourite INTEGER DEFAULT 0")
         if "archived" not in issue_cols:
             db.execute("ALTER TABLE issues ADD COLUMN archived INTEGER DEFAULT 0")
         # Scheduling dates, ISO date strings ('2026-09-13'). '' is "unset", the
@@ -565,6 +572,12 @@ def list_projects():
     if not show_archived:
         query += " AND archived=0"
 
+    # ?favourite=1 narrows to the pinned ones. Single-value rather than the
+    # comma-separated _multi form the other filters take — it is one bit, and
+    # "either value" is the same as no filter at all.
+    if request.args.get("favourite") == "1":
+        query += " AND favourite=1"
+
     # The no-project sentinel is a storage detail, not something the user filed
     # anything into, so it never appears in a project list. Only the row is
     # hidden — its issues are ordinary issues and keep counting everywhere.
@@ -604,10 +617,19 @@ def create_project():
     # INSERT OR REPLACE deletes the existing row first, so any column we don't name
     # reverts to its default. The iOS offline queue replays a create whenever the
     # response was lost after the server committed, which would silently un-archive
-    # the project and reset its creation date. Carry both forward from the row on
-    # disk unless the client explicitly sent a new value.
-    existing = db.execute("SELECT archived, created_at, repo_url, area_id FROM projects WHERE id=?", (pid,)).fetchone()
+    # the project and reset its creation date. Carry each of them forward from the
+    # row on disk unless the client explicitly sent a new value.
+    # (`tags` is read off this row too — it was being read from a SELECT that
+    # never asked for it, so a replayed create with no tags key raised.)
+    existing = db.execute(
+        "SELECT archived, favourite, created_at, repo_url, area_id, tags FROM projects WHERE id=?",
+        (pid,),
+    ).fetchone()
     archived = data.get("archived", existing["archived"] if existing else 0)
+    # Same reasoning as `archived` above, and the same reasoning as repo_url
+    # below: a replayed create from an offline client that predates favourites
+    # must not silently unpin the project.
+    favourite = data.get("favourite", existing["favourite"] if existing else 0)
     created_at = data.get("created_at") or (existing["created_at"] if existing else ts)
     # repo_url is newer than the shipped iOS build, so those clients omit the key
     # entirely; treat "absent" as "keep what's there" and only an explicit value
@@ -621,7 +643,7 @@ def create_project():
         tags = json.dumps(tags)
     updated_at = data.get("updated_at") or ts
     db.execute(
-        "INSERT OR REPLACE INTO projects (id,name,description,status,colour,icon,repo_url,area_id,tags,archived,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO projects (id,name,description,status,colour,icon,repo_url,area_id,tags,archived,favourite,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (pid,
              data.get("name", "Untitled"),
              data.get("description", ""),
@@ -631,7 +653,7 @@ def create_project():
              repo_url,
              area_id,
              tags,
-            archived, created_at, updated_at,
+            archived, favourite, created_at, updated_at,
         ),
     )
     db.commit()
@@ -671,7 +693,8 @@ def update_project(pid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["name", "description", "status", "colour", "icon", "archived", "repo_url", "area_id", "tags"]
+    fields = ["name", "description", "status", "colour", "icon", "archived", "favourite",
+              "repo_url", "area_id", "tags"]
     updates = {f: data[f] for f in fields if f in data}
     if "tags" in updates and not isinstance(updates["tags"], str):
         updates["tags"] = json.dumps(updates["tags"])
@@ -720,6 +743,25 @@ def toggle_project_archive(pid):
         return jsonify({"error": "not found"}), 404
     new_val = 0 if row["archived"] else 1
     db.execute("UPDATE projects SET archived=?, updated_at=? WHERE id=?", (new_val, now(), pid))
+    db.commit()
+    row = db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
+    return jsonify(_project_with_counts(db, row))
+
+
+@app.patch("/api/projects/<pid>/favourite")
+def toggle_project_favourite(pid):
+    """Pin or unpin a project. Toggles, like /archive, so an offline client can
+    replay the request without having to know which way round it was."""
+    db = get_db()
+    row = db.execute("SELECT id, favourite FROM projects WHERE id=?", (pid,)).fetchone()
+    if row is None:
+        return jsonify({"error": "not found"}), 404
+    # The no-project bucket is not something the user filed anything into and
+    # never appears in a list, so there is nothing for a pin to do to it.
+    if pid == NO_PROJECT_ID:
+        return jsonify({"error": "the no-project bucket cannot be favourited"}), 400
+    new_val = 0 if row["favourite"] else 1
+    db.execute("UPDATE projects SET favourite=?, updated_at=? WHERE id=?", (new_val, now(), pid))
     db.commit()
     row = db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
     return jsonify(_project_with_counts(db, row))

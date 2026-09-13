@@ -8,9 +8,13 @@ import SwiftUI
 fileprivate struct AreaSection: Identifiable {
     let area: GraftArea?
     let projects: [GraftProject]
+    /// The pinned section that sits above the areas. It has no `GraftArea`
+    /// behind it, which is also what "no area" looks like, so the two are told
+    /// apart by this rather than by `area == nil`.
+    var favourites: Bool = false
 
     /// Also the key the collapse state is stored under.
-    var id: String { area?.id ?? "__none" }
+    var id: String { favourites ? "__favourites" : (area?.id ?? "__none") }
 }
 
 struct ProjectsView: View {
@@ -25,6 +29,10 @@ struct ProjectsView: View {
     /// Issues that would go with a project, so the confirmation can say so.
     private func issueCount(_ project: GraftProject) -> Int {
         store.issues.filter { $0.projectId == project.id }.count
+    }
+
+    private func favourite(_ project: GraftProject) {
+        Task { try? await store.favouriteProject(id: project.id) }
     }
 
     private func archive(_ project: GraftProject) {
@@ -64,14 +72,21 @@ struct ProjectsView: View {
     private var sections: [AreaSection] {
         let projects = filteredProjects
         var result: [AreaSection] = []
+        // Favourites are lifted to the top and *removed* from their areas. The
+        // web client repeats them, because its rail and its grid are two
+        // different surfaces; here there is only the one list, and a project
+        // appearing twice in a single scroll reads as a sync bug.
+        let pinned = projects.filter(\.isFavourite)
+        if !pinned.isEmpty { result.append(AreaSection(area: nil, projects: pinned, favourites: true)) }
+        let rest = projects.filter { !$0.isFavourite }
         for area in store.sortedAreas {
-            let inArea = projects.filter { $0.areaKey == area.id }
+            let inArea = rest.filter { $0.areaKey == area.id }
             if !inArea.isEmpty { result.append(AreaSection(area: area, projects: inArea)) }
         }
         let known = Set(store.areas.map(\.id))
         // An `area_id` pointing at an area this phone has not synced yet is
         // unfiled rather than lost.
-        let unfiled = projects.filter { !known.contains($0.areaKey) }
+        let unfiled = rest.filter { !known.contains($0.areaKey) }
         if !unfiled.isEmpty { result.append(AreaSection(area: nil, projects: unfiled)) }
         return result
     }
@@ -79,73 +94,65 @@ struct ProjectsView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottomTrailing) {
-                Color.gBg.ignoresSafeArea()
-
-                VStack(spacing: 0) {
-                    SyncStrip()
-                        .padding(.top, GraftMetrics.spaceXS)
-                    content
-                }
-
-                GraftFAB(label: "New project") { showNewProject = true }
-            }
-            // The wordmark rather than a large title in SF: this is the one
-            // screen that carries the brand, and the mark existed only on the
-            // home-screen icon until now. Same lockup as the web client's rail.
-            .navigationTitle("Graft")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.gBg, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    GraftWordmark(size: 19)
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    scopeMenu
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 0) {
-                        // Sort menu
-                        Menu {
-                            Picker("Sort", selection: $projectSort) {
-                                ForEach(ProjectSortOrder.allCases, id: \.self) { s in
-                                    Text(s.label).tag(s)
-                                }
+            VStack(spacing: 0) {
+                // The wordmark rather than a title: this is the one screen that
+                // carries the brand. It used to live in `.principal`, centred
+                // between two clusters of bar buttons; here it heads the page
+                // the way it heads the web client's rail.
+                GraftScreenHeader(title: "Graft",
+                                  titleView: AnyView(GraftWordmark(size: 24))) {
+                    Menu {
+                        Picker("Sort", selection: $projectSort) {
+                            ForEach(ProjectSortOrder.allCases, id: \.self) { s in
+                                Text(s.label).tag(s)
                             }
-                        } label: {
-                            Image(systemName: "arrow.up.arrow.down")
-                                .foregroundStyle(projectSort == .default ? Color.gAccentText : Color.gAccent)
-                                .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
-                                .contentShape(Rectangle())
                         }
-                        .accessibilityLabel("Sort projects")
+                    } label: {
+                        Image(systemName: "arrow.up.arrow.down")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(projectSort == .default ? Color.gInk2 : Color.gAccentText)
+                            .frame(width: GraftMetrics.control, height: GraftMetrics.control)
+                            .background(projectSort == .default ? Color.gSurface2 : Color.gAccentWash,
+                                        in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+                            .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Sort projects")
 
-                        if store.isLoading {
-                            ProgressView().tint(Color.gAccent)
-                                .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
-                        } else {
-                            Button {
-                                Task { await store.sync() }
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .foregroundStyle(Color.gAccentText)
-                                    .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
-                                    .contentShape(Rectangle())
-                            }
-                            .accessibilityLabel("Refresh")
+                    if store.isLoading {
+                        ProgressView()
+                            .tint(Color.gAccent)
+                            .frame(width: GraftMetrics.tap, height: GraftMetrics.tap)
+                    } else {
+                        GraftIconButton(systemImage: "arrow.clockwise",
+                                        accessibilityTitle: "Refresh") {
+                            Task { await store.sync() }
                         }
+                    }
 
-                        Button {
-                            showNewProject = true
-                        } label: {
-                            Image(systemName: "plus")
-                                .foregroundStyle(Color.gAccentText)
-                                .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
-                                .contentShape(Rectangle())
-                        }
-                        .accessibilityLabel("New project")
+                    GraftIconButton(systemImage: "plus",
+                                    tint: Color.gAccentText,
+                                    accessibilityTitle: "New project") {
+                        showNewProject = true
                     }
                 }
+
+                HStack(spacing: GraftMetrics.spaceXS) {
+                    GraftSearchField(placeholder: "Search projects", text: $searchText)
+                    scopeMenu
+                }
+                .padding(.horizontal, GraftMetrics.gutter)
+                .padding(.bottom, GraftMetrics.spaceS)
+
+                SyncStrip()
+                content
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            GraftFAB(label: "New project") { showNewProject = true }
+            }
+            .background(Color.gBg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showNewProject) {
                 NewProjectView()
             }
@@ -197,13 +204,20 @@ struct ProjectsView: View {
                 Label("Manage areas…", systemImage: "square.stack.3d.up")
             }
         } label: {
+            // A chip beside the search field, not a bar button: same bordered
+            // square family as the icon buttons in the header above it.
             HStack(spacing: GraftMetrics.spaceXXS) {
                 Image(systemName: store.projectScope.systemImage)
+                    .font(.system(size: 13, weight: .medium))
                 Text(store.projectScope.label)
                     .font(GraftFont.text(GraftType.caption, .medium))
+                    .lineLimit(1)
             }
-            .foregroundStyle(Color.gAccentText)
+            .foregroundStyle(store.projectScope == .active ? Color.gInk2 : Color.gAccentText)
+            .padding(.horizontal, GraftMetrics.spaceS)
             .frame(minHeight: GraftMetrics.tap)
+            .background(store.projectScope == .active ? Color.gSurface2 : Color.gAccentWash,
+                        in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
             .contentShape(Rectangle())
         }
         .accessibilityLabel("Showing \(store.projectScope.label) projects")
@@ -296,8 +310,11 @@ struct ProjectsView: View {
             ForEach(sections) { section in
                 // With no areas defined at all there is nothing to group by, so
                 // the list stays flat rather than growing a permanent "NO AREA"
-                // heading over every project.
-                let grouping = !store.areas.isEmpty
+                // heading over every project. Favourites are the exception:
+                // that section is headed whatever the areas are doing, because
+                // an unlabelled block of pinned projects at the top of the list
+                // just looks like the sort is wrong.
+                let grouping = !store.areas.isEmpty || section.favourites
                 let collapsed = grouping && store.isAreaCollapsed(section.id)
                 Section {
                     if !collapsed {
@@ -322,6 +339,19 @@ struct ProjectsView: View {
                                 }
                                 .tint(Color.gAccent)
                             }
+                            // Pinning goes on the leading edge, away from
+                            // Delete: it is the one swipe you make often, and
+                            // it should never be a slip of the thumb from the
+                            // one that destroys the project.
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    favourite(project)
+                                } label: {
+                                    Label(project.isFavourite ? "Unpin" : "Favourite",
+                                          systemImage: project.isFavourite ? "star.slash" : "star")
+                                }
+                                .tint(Color.gAmber)
+                            }
                         }
                         // No .onDelete here on purpose. A left swipe used to
                         // call deleteProject directly, destroying the project
@@ -330,7 +360,9 @@ struct ProjectsView: View {
                         .onDelete { _ in }
                     }
                 } header: {
-                    if grouping {
+                    if section.favourites {
+                        favouritesHeader(count: section.projects.count, collapsed: collapsed)
+                    } else if !store.areas.isEmpty {
                         areaHeader(section.area, count: section.projects.count, collapsed: collapsed)
                     }
                 }
@@ -342,7 +374,6 @@ struct ProjectsView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .searchable(text: $searchText, prompt: "Search projects")
         .refreshable {
             await store.sync()
         }
@@ -351,18 +382,55 @@ struct ProjectsView: View {
     /// An area heading that folds its section shut. The whole row is the target,
     /// and the row is a full 44pt tall.
     private func areaHeader(_ area: GraftArea?, count: Int, collapsed: Bool) -> some View {
+        sectionHeader(
+            id: area?.id ?? "__none",
+            title: area?.name ?? "No area",
+            colourHex: (area?.colour).flatMap { $0.isEmpty ? nil : $0 },
+            symbol: nil,
+            count: count,
+            collapsed: collapsed
+        )
+    }
+
+    /// The pinned section above the areas. A star rather than an area's colour
+    /// dot, and it folds shut like any other section — a long list of
+    /// favourites is still a long list.
+    private func favouritesHeader(count: Int, collapsed: Bool) -> some View {
+        sectionHeader(
+            id: "__favourites",
+            title: "Favourites",
+            colourHex: nil,
+            symbol: "star.fill",
+            count: count,
+            collapsed: collapsed
+        )
+    }
+
+    private func sectionHeader(
+        id: String,
+        title: String,
+        colourHex: String?,
+        symbol: String?,
+        count: Int,
+        collapsed: Bool
+    ) -> some View {
         Button {
-            store.toggleArea(area?.id ?? "__none")
+            store.toggleArea(id)
         } label: {
             HStack(spacing: GraftMetrics.spaceXS) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color.gInk3)
                     .rotationEffect(.degrees(collapsed ? 0 : 90))
-                if let area, !area.colour.isEmpty {
-                    ProjectColourDot(hex: area.colour, size: 8)
+                if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color.gAmber)
                 }
-                Text((area?.name ?? "No area").uppercased())
+                if let colourHex {
+                    ProjectColourDot(hex: colourHex, size: 8)
+                }
+                Text(title.uppercased())
                     .font(GraftFont.text(GraftType.micro, .semibold))
                     .kerning(GraftType.microTracking)
                     .foregroundStyle(Color.gInk2)
@@ -378,7 +446,7 @@ struct ProjectsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(area?.name ?? "No area"), \(count) projects")
+        .accessibilityLabel("\(title), \(count) projects")
         .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
         .accessibilityAddTraits(.isButton)
     }
@@ -411,11 +479,21 @@ struct ProjectCardView: View {
                 HStack(alignment: .firstTextBaseline) {
                     if !project.icon.isEmpty {
                         Text(project.icon)
-                            .font(GraftFont.text(18))
+                            .font(GraftFont.emoji(18))
                     }
                     Text(project.name)
                         .font(GraftFont.text(GraftType.title, .semibold))
                         .foregroundStyle(Color.gInk)
+                    // The badge is what tells you why this card is at the top,
+                    // and it keeps saying so when the card is drawn somewhere
+                    // that has no Favourites section over it — search results,
+                    // or a scope with only pinned projects in it.
+                    if project.isFavourite {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.gAmber)
+                            .accessibilityLabel("Favourite")
+                    }
                     Spacer()
                     Text(project.status)
                         .font(GraftFont.text(GraftType.caption, .medium))

@@ -53,13 +53,9 @@ struct AreasView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        GraftSheetScaffold(title: "Areas", onDone: { dismiss() }) {
             ScrollView {
                 VStack(alignment: .leading, spacing: GraftMetrics.spaceXXL) {
-                    Text("Areas")
-                        .font(GraftFont.display(GraftType.display, .bold))
-                        .foregroundStyle(Color.gInk)
-                        .padding(.top, GraftMetrics.spaceXS)
 
                     GraftSection(title: "Areas",
                                  footnote: "Deleting an area never deletes its projects — they move back to \u{201C}No area\u{201D}.") {
@@ -143,17 +139,8 @@ struct AreasView: View {
                 .padding(.bottom, GraftMetrics.space3XL)
             }
             .background(Color.gBg)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.gBg, for: .navigationBar)
             // A half-typed area name is worth as much as a half-typed issue.
             .interactiveDismissDisabled(!newName.trimmingCharacters(in: .whitespaces).isEmpty)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                        .font(GraftFont.text(GraftType.secondary, .semibold))
-                        .foregroundStyle(Color.gAccentText)
-                }
-            }
             .alert("Rename area", isPresented: Binding(
                 get: { renaming != nil },
                 set: { if !$0 { renaming = nil } }

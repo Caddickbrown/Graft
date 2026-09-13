@@ -19,6 +19,8 @@ struct ProjectDetailView: View {
     @State private var showFilters = false
     @State private var pendingDelete: GraftIssue?
     @State private var undo: UndoAction?
+    /// The custom header draws its own back control; this is what it calls.
+    @Environment(\.dismiss) private var dismiss
 
     // Note what is *not* here any more: `viewMode`, `selectedMilestoneId` and
     // `showArchived` used to be plain `@State` on a pushed view, so leaving the
@@ -105,7 +107,37 @@ struct ProjectDetailView: View {
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            Color.gBg.ignoresSafeArea()
+        VStack(spacing: 0) {
+            // Back, project name and actions, drawn by us — the navigation bar
+            // is hidden below. `dismiss` is what the system back button called.
+            GraftScreenHeader(title: currentProject.name,
+                              leading: {
+                                  GraftBackButton(label: "Projects") { dismiss() }
+                              },
+                              actions: {
+                                  GraftIconButton(
+                                      systemImage: currentProject.isFavourite ? "star.fill" : "star",
+                                      tint: currentProject.isFavourite ? Color.gAmber : Color.gInk2,
+                                      accessibilityTitle: currentProject.isFavourite
+                                          ? "Remove from favourites" : "Add to favourites"
+                                  ) {
+                                      Task { try? await store.favouriteProject(id: project.id) }
+                                  }
+                                  GraftIconButton(systemImage: "pencil",
+                                                  accessibilityTitle: "Edit project") {
+                                      showEditProject = true
+                                  }
+                              })
+
+            HStack(spacing: GraftMetrics.spaceXS) {
+                GraftSearchField(placeholder: "Search issues", text: searchBinding) {
+                    let snapshot = query
+                    Task { await store.refreshIssues(matching: snapshot) }
+                }
+                FilterButton(query: query) { showFilters = true }
+            }
+            .padding(.horizontal, GraftMetrics.gutter)
+            .padding(.bottom, GraftMetrics.spaceS)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -139,33 +171,13 @@ struct ProjectDetailView: View {
             // Project detail had no refresh at all: the only way to pull was to
             // go back to a tab root and pull there.
             .refreshable { await store.sync() }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            GraftFAB(label: "New issue") { showNewIssue = true }
+        GraftFAB(label: "New issue") { showNewIssue = true }
         }
-        .navigationTitle(currentProject.name)
-        .navigationBarTitleDisplayMode(.large)
-        .toolbarBackground(Color.gBg, for: .navigationBar)
-        .searchable(text: searchBinding, prompt: "Search issues in this project")
-        .onSubmit(of: .search) {
-            let snapshot = query
-            Task { await store.refreshIssues(matching: snapshot) }
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                FilterButton(query: query) { showFilters = true }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showEditProject = true
-                } label: {
-                    Image(systemName: "pencil")
-                        .foregroundStyle(Color.gInk2)
-                        .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel("Edit project")
-            }
-        }
+        .background(Color.gBg.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showFilters) {
             FilterSortSheet(query: queryBinding, projectId: project.id)
         }
@@ -219,7 +231,7 @@ struct ProjectDetailView: View {
         HStack(spacing: GraftMetrics.spaceS) {
             if !currentProject.icon.isEmpty {
                 Text(currentProject.icon)
-                    .font(GraftFont.text(28))
+                    .font(GraftFont.emoji(28))
                     .frame(width: 36, height: 36)
             } else {
                 RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall)

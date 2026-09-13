@@ -370,7 +370,12 @@ struct GraftFAB: View {
                 .frame(width: 56, height: 56)
                 .background(Color.gAccent, in: Circle())
                 .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+                // Spelled out rather than inferred: the button is a circle over
+                // a scrolling list, and without a declared shape the taps went
+                // through to the list and scrolled it instead.
+                .contentShape(Circle())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(label)
         .padding(.trailing, GraftMetrics.spaceL)
         .padding(.bottom, GraftMetrics.spaceL)

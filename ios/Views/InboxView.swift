@@ -90,41 +90,49 @@ struct InboxView: View {
 
         NavigationStack {
             ZStack(alignment: .bottomTrailing) {
-                Color.gBg.ignoresSafeArea()
-
-                content
-
-                GraftFAB(label: "New issue") { showNewIssue = true }
-            }
-            .navigationTitle("Inbox")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbarBackground(Color.gBg, for: .navigationBar)
-            // Reaches the server's `q` on submit; the list itself filters
-            // locally on every keystroke so it still works with no server.
-            .searchable(text: $store.inboxQuery.q, prompt: "Search issues")
-            .onSubmit(of: .search) {
-                let snapshot = store.inboxQuery
-                Task { await store.refreshIssues(matching: snapshot) }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    FilterButton(query: query) { showFilters = true }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
+            VStack(spacing: 0) {
+                // The header, the filter row and the search field are all
+                // ordinary content now — see `Chrome.swift`. The navigation bar
+                // is hidden outright rather than restyled, because from iOS 26
+                // its items come wrapped in glass capsules we cannot reach.
+                GraftScreenHeader(title: "Inbox", subtitle: summary) {
                     if store.isLoading {
-                        ProgressView().tint(Color.gAccent)
+                        ProgressView()
+                            .tint(Color.gAccent)
+                            .frame(width: GraftMetrics.tap, height: GraftMetrics.tap)
                     } else {
-                        Button {
+                        GraftIconButton(systemImage: "arrow.clockwise",
+                                        accessibilityTitle: "Refresh") {
                             Task { await store.sync() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .frame(minWidth: GraftMetrics.tap, minHeight: GraftMetrics.tap)
-                                .contentShape(Rectangle())
                         }
-                        .accessibilityLabel("Refresh")
                     }
                 }
+
+                HStack(spacing: GraftMetrics.spaceXS) {
+                    // Reaches the server's `q` on submit; the list itself
+                    // filters locally on every keystroke so it still works
+                    // with no server.
+                    GraftSearchField(placeholder: "Search issues",
+                                     text: $store.inboxQuery.q) {
+                        let snapshot = store.inboxQuery
+                        Task { await store.refreshIssues(matching: snapshot) }
+                    }
+                    FilterButton(query: query) { showFilters = true }
+                }
+                .padding(.horizontal, GraftMetrics.gutter)
+                .padding(.bottom, GraftMetrics.spaceS)
+
+                content
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            GraftFAB(label: "New issue") { showNewIssue = true }
+            }
+            // `.background` rather than a `Color` inside the stack: a child
+            // that ignores the safe area drags the stack's own bounds down
+            // with it, which is what used to push the + button under the bar.
+            .background(Color.gBg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showFilters) {
                 FilterSortSheet(query: $store.inboxQuery)
             }
@@ -203,11 +211,6 @@ struct InboxView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 SyncStrip()
                     .padding(.bottom, GraftMetrics.spaceXS)
-
-                // The summary lives here, not in `.principal`. In the toolbar it
-                // competed with the large title for the same row and truncated
-                // to nothing on anything narrower than a Pro Max.
-                GraftScreenSubtitle(text: summary)
 
                 if query.group == .none {
                     section("Needs you", needsYou,

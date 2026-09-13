@@ -161,6 +161,16 @@ enum GraftFont {
         .custom(bricolage(weight), fixedSize: size)
     }
 
+    /// Emoji — the system face, deliberately.
+    ///
+    /// A project's icon is one emoji, and Geist has no glyph for it:
+    /// `.custom(_:fixedSize:)` does not fall back, so every project icon in the
+    /// app rendered as a missing-glyph box. Nothing else about the text styling
+    /// changes, because an emoji has no weight or face to pick.
+    static func emoji(_ size: CGFloat) -> Font {
+        .system(size: size)
+    }
+
     /// Geist Mono, for counts and anything that should line up in a column.
     /// Pair with `.monospacedDigit()` at the call site for tabular figures.
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
