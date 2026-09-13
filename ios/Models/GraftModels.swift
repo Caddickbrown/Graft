@@ -457,15 +457,25 @@ struct GraftArea: Codable, Identifiable, Hashable {
 
 // MARK: - GraftLink
 //
-// Per-project related URLs. This replaces the half-built `projects.repo_url`,
-// which the server still stores but neither client shows any more.
+// A related URL, hanging off an owner: a project, or — since links stopped
+// being project-only — an issue. This replaces the half-built
+// `projects.repo_url`, which the server still stores but neither client shows.
 
 struct GraftLink: Codable, Identifiable, Hashable {
     let id: String
+    /// The project this link is pinned to, or `""` when an issue owns it.
+    /// Kept because the column is still what the server writes for a project
+    /// link and what an older build reads; `ownerType`/`ownerId` are the pair
+    /// to reason with.
     var projectId: String
+    /// `project` or `issue`. Not an enum on purpose, for the same reason `kind`
+    /// is not one: a server that grows a third owner must not make this client
+    /// fail to decode the rows it already understands.
+    var ownerType: String
+    var ownerId: String
     var label: String
     var url: String
-    /// github | docs | design | deploy | link — only a glyph hint, never
+    /// github | docs | design | deploy | hub | link — only a glyph hint, never
     /// validated, so an unknown value simply falls back to the generic link.
     var kind: String
     var sortOrder: Int
@@ -473,12 +483,19 @@ struct GraftLink: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id, label, url, kind
         case projectId = "project_id"
+        case ownerType = "owner_type"
+        case ownerId = "owner_id"
         case sortOrder = "sort_order"
     }
 
-    init(id: String, projectId: String, label: String, url: String, kind: String = "link", sortOrder: Int = 0) {
+    init(id: String, ownerType: String, ownerId: String, label: String, url: String,
+         kind: String = "link", sortOrder: Int = 0) {
         self.id = id
-        self.projectId = projectId
+        self.ownerType = ownerType
+        self.ownerId = ownerId
+        // Derived, never passed in, so it can never disagree with the owner —
+        // the same rule the server follows when it writes the row.
+        self.projectId = ownerType == "project" ? ownerId : ""
         self.label = label
         self.url = url
         self.kind = kind
@@ -490,16 +507,32 @@ struct GraftLink: Codable, Identifiable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
-        projectId = try c.decode(String.self, forKey: .projectId)
+        projectId = try c.decodeIfPresent(String.self, forKey: .projectId) ?? ""
         label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
         url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
         kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "link"
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        // A row from a server that predates owners, or one cached on this phone
+        // before this build, has neither field. It can only ever have been a
+        // project link, and project_id is exactly what says which project.
+        ownerType = try c.decodeIfPresent(String.self, forKey: .ownerType) ?? "project"
+        ownerId = try c.decodeIfPresent(String.self, forKey: .ownerId) ?? projectId
     }
 
-    /// The host, for the second line of a link row. Shown instead of the full
-    /// URL because a 90-character deploy preview URL tells the reader nothing.
+    /// True when this points at something in the user's own system rather than
+    /// at a page on the web. Nothing here resolves it — Graft has no idea what
+    /// Hub holds, and a guess would be worse than not knowing.
+    var isHub: Bool { GraftLinkKind.isHubURL(url) }
+
+    /// The second line of a link row. A host is the useful half of a web URL —
+    /// a 90-character deploy preview tells the reader nothing — but a hub
+    /// address has no host worth reading (`hub://people/tom` parses as host
+    /// "people"), so it keeps everything but the scheme, which is the part a
+    /// person recognises.
     var host: String {
+        if isHub {
+            return String(url.trimmingCharacters(in: .whitespaces).dropFirst("hub://".count))
+        }
         guard let host = URL(string: url)?.host else { return url }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }

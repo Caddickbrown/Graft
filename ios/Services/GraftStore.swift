@@ -711,21 +711,28 @@ final class GraftStore {
 
     // MARK: - LINKS CRUD (local-first)
 
-    func createLink(projectId: String, label: String, url: String, kind: String) async throws {
+    func createLink(ownerType: String, ownerId: String, label: String, url: String, kind: String) async throws {
         let ts = nowISO()
         let link = GraftLink(
             id: newId("link_"),
-            projectId: projectId,
+            ownerType: ownerType,
+            ownerId: ownerId,
             label: label,
             url: url,
             kind: kind,
-            sortOrder: links.filter { $0.projectId == projectId }.count
+            sortOrder: links.filter { $0.ownerType == ownerType && $0.ownerId == ownerId }.count
         )
         links.append(link)
         saveCachedData()
 
+        // project_id goes out alongside the owner pair rather than instead of
+        // it, so a body that has been sitting in the offline queue still lands
+        // correctly on a server that has not been updated yet — there it reads
+        // as the project link it used to be, and the two extra keys are ignored.
         let body = try JSONSerialization.data(withJSONObject: [
-            "id": link.id, "project_id": projectId,
+            "id": link.id,
+            "owner_type": ownerType, "owner_id": ownerId,
+            "project_id": link.projectId,
             "label": label, "url": url, "kind": kind,
             "sort_order": link.sortOrder,
             "created_at": ts, "updated_at": ts
@@ -852,9 +859,22 @@ final class GraftStore {
         }
     }
 
+    /// A project's own links — never the links on its issues, which is what
+    /// the server's `?project_id=` has always meant and what the project screen
+    /// has always shown.
     func links(for projectId: String) -> [GraftLink] {
+        links(ownerType: "project", ownerId: projectId)
+    }
+
+    /// What this issue is connected to: the PR that closes it, the doc it came
+    /// out of, the person it is about.
+    func links(forIssue issueId: String) -> [GraftLink] {
+        links(ownerType: "issue", ownerId: issueId)
+    }
+
+    func links(ownerType: String, ownerId: String) -> [GraftLink] {
         links
-            .filter { $0.projectId == projectId }
+            .filter { $0.ownerType == ownerType && $0.ownerId == ownerId }
             .sorted { $0.sortOrder < $1.sortOrder }
     }
 

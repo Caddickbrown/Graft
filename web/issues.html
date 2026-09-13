@@ -175,6 +175,10 @@
         </select>
         <div class="form-hint" id="issue-recur-summary"></div>
       </div>
+      <div class="form-group" id="issue-links-group" style="display:none">
+        <label class="form-label">Links <span class="form-hint">— a PR, a doc, or a hub:// address</span></label>
+        <div id="issue-links"></div>
+      </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-ghost btn-danger" id="issue-delete-btn" style="display:none" onclick="GRAFT.deleteIssue()">Delete</button>
         <button type="button" class="btn btn-ghost" onclick="GRAFT.closeModal('modal-new-issue')">Cancel</button>

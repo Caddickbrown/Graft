@@ -85,6 +85,7 @@ struct IssueDetailView: View {
                     spawnNotice
                     properties
                     schedule
+                    links
                     saveExplanation
                     metadata
                     Color.clear.frame(height: 88)
@@ -376,6 +377,19 @@ struct IssueDetailView: View {
             RoundedRectangle(cornerRadius: GraftMetrics.radius)
                 .strokeBorder(Color.gHairline, lineWidth: 0.5)
         )
+    }
+
+    /// What this issue is connected to — the PR that closes it, the document it
+    /// came out of, the person it is about.
+    ///
+    /// This is the thing the tracker Graft replaced was genuinely good at, and
+    /// the reason links stopped being project-only: "the PR that closes this"
+    /// belongs to the issue, not to everything the issue is filed under.
+    ///
+    /// `insetByGutter: false` — the stack around it is already padded, and the
+    /// section's own gutter on top of that reads as a stray indent.
+    private var links: some View {
+        GraftLinksSection(ownerType: "issue", ownerId: issue.id, insetByGutter: false)
     }
 
     // MARK: - Schedule

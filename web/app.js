@@ -83,6 +83,9 @@
     design: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2"/>',
     deploy: '<path d="M12 2 4 7v10l8 5 8-5V7z"/><path d="m4 7 8 5 8-5"/><path d="M12 12v10"/>',
     link:   '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    // Not a chain: a hub link does not go anywhere. Nodes joined to a centre —
+    // a thing in your own system, related to this one — is what it means.
+    hub:    '<circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="4" r="1.8"/><circle cx="19" cy="16" r="1.8"/><circle cx="5" cy="16" r="1.8"/><path d="M12 6.6v2.8M13.9 13.4l3.3 1.9M10.1 13.4l-3.3 1.9"/>',
   };
 
   const EXTERNAL_ICON = '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>';
@@ -655,7 +658,6 @@
   let _allIssues = [];
   let _allAreas = [];
   let _allViews = [];
-  let _allLinks = [];
   let _allProjectTags = [];
   // Every issue on the current surface, unfiltered. The filtered list cannot
   // answer "what labels exist" or "how many are hidden" — once a filter is on,
@@ -788,10 +790,29 @@
     catch { return String(url || '').replace(/^[a-z]+:\/\//i, '').split('/')[0]; }
   }
 
+  // A hub:// link points at something in the user's own system — a person, a
+  // day, a book — rather than at a web page. Graft does not know what those
+  // are and never resolves one: it has no idea what Hub holds, and a guess
+  // that says "no such person" about somebody who exists is worse than saying
+  // nothing. All this client does is spell the address back and refuse to
+  // treat it as somewhere to navigate to.
+  function isHubUrl(url) { return /^hub:\/\//i.test(String(url || '').trim()); }
+
+  // What the second line of a row says. A hostname is meaningless for a hub
+  // address — `new URL('hub://people/tom').hostname` is 'people' — so the whole
+  // address minus the scheme is shown instead, which is the part a person reads.
+  function linkTarget(url) {
+    const v = String(url || '').trim();
+    return isHubUrl(v) ? v.replace(/^hub:\/\//i, '') : linkHost(v);
+  }
+
   // The kind is inferred from the hostname rather than asked for: a "type"
   // dropdown on a form whose only real field is a URL is a question the app
-  // can answer itself.
+  // can answer itself. hub is the one that is not inferred at all — the scheme
+  // says it outright — and the server derives the same thing, so a link written
+  // by anything else arrives already labelled.
   function linkKind(url) {
+    if (isHubUrl(url)) return 'hub';
     const host = linkHost(url).toLowerCase();
     if (/(^|\.)(github\.com|gitlab\.com|bitbucket\.org|codeberg\.org|sr\.ht)$/.test(host)) return 'github';
     if (/(^|\.)(figma\.com|sketch\.com|dribbble\.com|excalidraw\.com|penpot\.app|framer\.com)$/.test(host)) return 'design';
@@ -803,79 +824,182 @@
   }
 
   // A url the user typed without a scheme is still a url they meant. Only the
-  // three schemes that make sense for a link survive as-is: anything else —
+  // schemes that make sense for a link survive as-is: anything else —
   // javascript://x%0aalert(1) included — is treated as a hostname and ends up
-  // behind https://, where it can only fail to resolve.
+  // behind https://, where it can only fail to resolve. hub: is on the list
+  // because without it a typed hub://people/tom became https://people/tom, and
+  // the one address this feature exists for was the one it mangled.
   function normaliseUrl(url) {
     const v = String(url || '').trim();
     if (!v) return '';
-    if (/^(https?:\/\/|mailto:)/i.test(v)) return v;
+    if (/^(https?:\/\/|mailto:|hub:\/\/)/i.test(v)) return v;
     return `https://${v.replace(/^[a-z][a-z0-9+.-]*:\/*/i, '')}`;
   }
 
-  async function loadLinks(projectId) {
-    _allLinks = await api('GET', `/api/links?project_id=${encodeURIComponent(projectId)}`);
-    return _allLinks;
+  // Links are now per-owner — a project or an issue — and the slide-over shows
+  // both at once, so one flat cache is no longer enough. Keyed by the owner
+  // rather than held in a single variable, because the issue's links and its
+  // project's links are on screen together and the second load used to erase
+  // the first.
+  const _linkCache = {};
+  function _ownerKey(type, id) { return `${type}:${id}`; }
+  function linksFor(type, id) { return _linkCache[_ownerKey(type, id)] || []; }
+
+  // Which containers are currently showing which owner's links, so a write can
+  // refresh every surface holding that owner without knowing who they are.
+  const _linkSurfaces = {};
+
+  async function loadLinks(ownerType, ownerId) {
+    const rows = await api('GET', `/api/links?owner_type=${encodeURIComponent(ownerType)}&owner_id=${encodeURIComponent(ownerId)}`);
+    _linkCache[_ownerKey(ownerType, ownerId)] = rows;
+    return rows;
+  }
+
+  // A link row written before the server grew owners has neither field; it can
+  // only ever have been a project link, which is exactly what project_id says.
+  function linkOwner(l) {
+    return { type: l.owner_type || 'project', id: l.owner_id || l.project_id || '' };
   }
 
   function linkRow(l) {
     const kind = LINK_ICON[l.kind] ? l.kind : linkKind(l.url);
+    const label = esc(l.label || linkTarget(l.url));
+    const target = esc(linkTarget(l.url));
+    const actions = `
+      <span class="link-row-actions">
+        ${isHubUrl(l.url) ? '' : `<span class="link-row-external" aria-hidden="true">${svg(EXTERNAL_ICON, 13)}</span>`}
+        <button class="icon-btn" type="button" aria-haspopup="menu" title="Link actions"
+                aria-label="Actions for ${label}"
+                onclick="event.preventDefault();event.stopPropagation();GRAFT._linkMenu(event,'${jsStr(l.id)}')">${svg(DOTS_ICON, 14)}</button>
+      </span>`;
+
+    // A hub link is not an <a>. There is nothing to open — the address names an
+    // entity, not a page — and an anchor that does nothing when clicked is a
+    // worse lie than a row that never looked clickable.
+    if (isHubUrl(l.url)) {
+      return `<div class="link-row link-hub" title="In Hub — ${esc(l.url)}">
+        <span class="link-row-icon" aria-hidden="true">${svg(LINK_ICON.hub, 15)}</span>
+        <span class="link-row-label">${label}</span>
+        <span class="link-row-url">${target}</span>
+        ${actions}
+        <span class="sr-only">a reference to ${target} in Hub</span>
+      </div>`;
+    }
+
     const href = esc(normaliseUrl(l.url));
     return `<a class="link-row link-${esc(kind)}" href="${href}" target="_blank" rel="noopener noreferrer">
       <span class="link-row-icon" aria-hidden="true">${svg(LINK_ICON[kind], 15)}</span>
-      <span class="link-row-label">${esc(l.label || linkHost(l.url))}</span>
-      <span class="link-row-url">${esc(linkHost(l.url))}</span>
-      <span class="link-row-actions">
-        <span class="link-row-external" aria-hidden="true">${svg(EXTERNAL_ICON, 13)}</span>
-        <button class="icon-btn" type="button" aria-haspopup="menu" title="Link actions"
-                aria-label="Actions for ${esc(l.label || linkHost(l.url))}"
-                onclick="event.preventDefault();event.stopPropagation();GRAFT._linkMenu(event,'${jsStr(l.id)}')">${svg(DOTS_ICON, 14)}</button>
-      </span>
+      <span class="link-row-label">${label}</span>
+      <span class="link-row-url">${target}</span>
+      ${actions}
       <span class="sr-only">opens in a new tab</span>
     </a>`;
   }
 
-  function renderLinks(containerId, projectId) {
+  // opts.header — false inside a form, where the field's own label already says
+  // "Links" and a section rule on top of it reads as a second heading.
+  function renderLinks(containerId, ownerType, ownerId, opts = {}) {
     const el = document.getElementById(containerId);
     if (!el) return;
-    el.innerHTML = `
+    _linkSurfaces[containerId] = { type: ownerType, id: ownerId };
+    const rows = linksFor(ownerType, ownerId);
+    const head = opts.header === false ? '' : `
       <div class="section-head">
         <h2 class="section-title">Links</h2>
-        <span class="section-count">${_allLinks.length}</span>
+        <span class="section-count">${rows.length}</span>
         <div class="section-rule"></div>
-      </div>
+      </div>`;
+    el.innerHTML = `${head}
       <div class="link-list">
-        ${_allLinks.map(l => linkRow(l)).join('')}
-        <button class="link-add" type="button" onclick="GRAFT._addLink('${jsStr(projectId)}')">
-          ${svg(NAV_ICONS.plus, 14)} Add link
+        ${rows.map(l => linkRow(l)).join('')}
+        <button class="link-add" type="button"
+                onclick="GRAFT._addLink('${jsStr(ownerType)}','${jsStr(ownerId)}')">
+          ${svg(NAV_ICONS.plus, 14)} ${esc(opts.addLabel || 'Add link')}
         </button>
       </div>`;
   }
 
-  async function _addLink(projectId) {
+  // The same owner's list can be on screen more than once — the project page
+  // and the slide-over behind it, or an issue's links in the modal and the
+  // panel — so every surface bound to that owner is redrawn from the one cache.
+  function refreshLinkSurfaces(ownerType, ownerId) {
+    Object.keys(_linkSurfaces).forEach(containerId => {
+      const bound = _linkSurfaces[containerId];
+      if (!document.getElementById(containerId)) { delete _linkSurfaces[containerId]; return; }
+      if (bound.type === ownerType && bound.id === ownerId) {
+        renderLinks(containerId, ownerType, ownerId, _linkSurfaceOpts[containerId] || {});
+      }
+    });
+  }
+
+  // Render options are remembered per surface, so a refresh does not put a
+  // section heading back on a list that was drawn inside a form without one.
+  const _linkSurfaceOpts = {};
+  function renderLinksInto(containerId, ownerType, ownerId, opts = {}) {
+    _linkSurfaceOpts[containerId] = opts;
+    renderLinks(containerId, ownerType, ownerId, opts);
+  }
+
+  // One loader for every surface: skeleton, fetch, draw, and an error state
+  // that can retry itself. The owner is carried through so the retry knows
+  // which list it was trying to show.
+  async function loadLinksInto(containerId, ownerType, ownerId, opts = {}) {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    // The skeleton is for a list nobody has seen yet. Re-opening a section
+    // whose links are already cached should not flash grey boxes at them.
+    if (_linkCache[_ownerKey(ownerType, ownerId)]) renderLinksInto(containerId, ownerType, ownerId, opts);
+    else box.innerHTML = skeleton('link', 2);
+    try {
+      await loadLinks(ownerType, ownerId);
+      renderLinksInto(containerId, ownerType, ownerId, opts);
+    } catch {
+      box.innerHTML = errorState({
+        title: 'Couldn’t load links',
+        body: 'The server didn’t answer.',
+        onRetry: `GRAFT._retryLinks('${jsStr(containerId)}','${jsStr(ownerType)}','${jsStr(ownerId)}',${opts.header === false ? 'false' : 'true'})`,
+      });
+    }
+  }
+
+  async function _retryLinks(containerId, ownerType, ownerId, header) {
+    await loadLinksInto(containerId, ownerType, ownerId, { header: header !== false && header !== 'false' });
+  }
+
+  async function _addLink(ownerType, ownerId) {
     const r = await formDialog({
-      title: 'Add link',
+      title: ownerType === 'issue' ? 'Link something to this issue' : 'Add link',
       submitLabel: 'Add link',
       fields: [
-        { name: 'url', label: 'URL', placeholder: 'github.com/you/thing' },
-        { name: 'label', label: 'Label', placeholder: 'Repo', hint: 'Optional — the hostname is used if you leave it blank.' },
+        { name: 'url', label: 'URL', placeholder: 'github.com/you/thing',
+          hint: 'A web address, or a hub:// one — hub://people/tom, hub://book/piranesi.' },
+        { name: 'label', label: 'Label', placeholder: 'Repo', hint: 'Optional — the address is used if you leave it blank.' },
       ],
     });
     if (!r || !r.url) return;
     const url = normaliseUrl(r.url);
     const body = {
-      project_id: projectId,
+      owner_type: ownerType,
+      owner_id: ownerId,
       url,
-      label: r.label || linkHost(url),
+      label: r.label || linkTarget(url),
       kind: linkKind(url),
-      sort_order: _allLinks.length,
+      sort_order: linksFor(ownerType, ownerId).length,
     };
     try {
       await api('POST', '/api/links', body);
-      await loadLinks(projectId);
-      refreshLinkSurfaces(projectId);
+      await loadLinks(ownerType, ownerId);
+      refreshLinkSurfaces(ownerType, ownerId);
       toast('Link added');
     } catch { toast('Could not add the link'); }
+  }
+
+  function _findLink(id) {
+    for (const key of Object.keys(_linkCache)) {
+      const hit = _linkCache[key].find(l => l.id === id);
+      if (hit) return hit;
+    }
+    return null;
   }
 
   function _linkMenu(event, id) {
@@ -886,8 +1010,9 @@
   }
 
   async function _editLink(id) {
-    const link = _allLinks.find(l => l.id === id);
+    const link = _findLink(id);
     if (!link) return;
+    const owner = linkOwner(link);
     const r = await formDialog({
       title: 'Edit link',
       submitLabel: 'Save link',
@@ -899,9 +1024,9 @@
     if (!r || !r.url) return;
     const url = normaliseUrl(r.url);
     try {
-      await api('PUT', `/api/links/${id}`, { url, label: r.label || linkHost(url), kind: linkKind(url) });
-      await loadLinks(link.project_id);
-      refreshLinkSurfaces(link.project_id);
+      await api('PUT', `/api/links/${id}`, { url, label: r.label || linkTarget(url), kind: linkKind(url) });
+      await loadLinks(owner.type, owner.id);
+      refreshLinkSurfaces(owner.type, owner.id);
       toast('Link saved');
     } catch { toast('Could not save the link'); }
   }
@@ -909,29 +1034,23 @@
   // Removing is undoable rather than confirmed: the id is ours to supply, so
   // putting the link back is the same POST that created it.
   async function _removeLink(id) {
-    const link = _allLinks.find(l => l.id === id);
+    const link = _findLink(id);
     if (!link) return;
-    const pid = link.project_id;
+    const owner = linkOwner(link);
     try {
       await api('DELETE', `/api/links/${id}`);
-      await loadLinks(pid);
-      refreshLinkSurfaces(pid);
-      undoToast(`Removed ${link.label || linkHost(link.url)}`, async () => {
+      await loadLinks(owner.type, owner.id);
+      refreshLinkSurfaces(owner.type, owner.id);
+      undoToast(`Removed ${link.label || linkTarget(link.url)}`, async () => {
         await api('POST', '/api/links', {
-          id: link.id, project_id: pid, label: link.label, url: link.url,
+          id: link.id, owner_type: owner.type, owner_id: owner.id,
+          label: link.label, url: link.url,
           kind: link.kind, sort_order: link.sort_order,
         });
-        await loadLinks(pid);
-        refreshLinkSurfaces(pid);
+        await loadLinks(owner.type, owner.id);
+        refreshLinkSurfaces(owner.type, owner.id);
       });
     } catch { toast('Could not remove the link'); }
-  }
-
-  // The same list can be on screen twice — the project page and the slide-over
-  // behind it — so both are refreshed from the one cache.
-  function refreshLinkSurfaces(projectId) {
-    if (document.getElementById('project-links')) renderLinks('project-links', projectId);
-    if (document.getElementById('so-links')) renderLinks('so-links', projectId);
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -2222,6 +2341,12 @@
     const dueAt = document.getElementById('issue-due-at');
     if (dueAt) dueAt.value = '';
     _recurLoad(null);
+    // An issue that does not exist yet has nothing to hang a link on — links
+    // are rows of their own keyed by owner id, and there is no id until Save.
+    // Rather than invent one and hope, the section is simply absent until the
+    // issue is real, and the slide-over is where a link gets attached.
+    const linksGroup = document.getElementById('issue-links-group');
+    if (linksGroup) linksGroup.style.display = 'none';
     document.getElementById('modal-issue-title').textContent = 'New issue';
     const delBtn = document.getElementById('issue-delete-btn');
     if (delBtn) delBtn.style.display = 'none';
@@ -2260,6 +2385,13 @@
     const dueAt = document.getElementById('issue-due-at');
     if (dueAt) dueAt.value = issue.due_at || '';
     _recurLoad(issue);
+    const linksGroup = document.getElementById('issue-links-group');
+    if (linksGroup) {
+      linksGroup.style.display = '';
+      // header: false — the form-group's own label already says Links, and a
+      // section rule under it reads as a second heading for the same thing.
+      loadLinksInto('issue-links', 'issue', issue.id, { header: false });
+    }
     document.getElementById('modal-issue-title').textContent = 'Edit issue';
     const delBtn = document.getElementById('issue-delete-btn');
     if (delBtn) delBtn.style.display = 'inline-flex';
@@ -2445,6 +2577,8 @@
         </div>
       </div>
 
+      <div class="so-links" id="so-issue-links"></div>
+
       <div class="so-footer">
         <button class="btn btn-ghost btn-sm" type="button" onclick="GRAFT._archiveIssueFromSlideover('${jsStr(id)}')"
                 title="${issue.archived ? 'Unarchive' : 'Archive'}">
@@ -2477,38 +2611,11 @@
     // tabbing through the list behind the panel.
     trapFocus(panel);
 
-    // The links list is a separate request, so the panel opens straight away
-    // and the section fills in — it is never a reason to wait.
-    const linksBox = document.getElementById('so-links');
-    if (linksBox) {
-      linksBox.innerHTML = skeleton('link', 2);
-      try {
-        await loadLinks(issue.project_id);
-        renderLinks('so-links', issue.project_id);
-      } catch {
-        linksBox.innerHTML = errorState({
-          title: 'Couldn’t load links',
-          body: 'The server didn’t answer.',
-          onRetry: `GRAFT._retrySlideoverLinks('${jsStr(issue.project_id)}')`,
-        });
-      }
-    }
-  }
-
-  async function _retrySlideoverLinks(pid) {
-    const box = document.getElementById('so-links');
-    if (!box) return;
-    box.innerHTML = skeleton('link', 2);
-    try {
-      await loadLinks(pid);
-      renderLinks('so-links', pid);
-    } catch {
-      box.innerHTML = errorState({
-        title: 'Couldn’t load links',
-        body: 'The server didn’t answer.',
-        onRetry: `GRAFT._retrySlideoverLinks('${jsStr(pid)}')`,
-      });
-    }
+    // Both link lists are separate requests, so the panel opens straight away
+    // and the sections fill in — neither is a reason to wait. The issue's own
+    // links load here; the project's load with the project section, which is
+    // collapsed on open and often never expanded.
+    await loadLinksInto('so-issue-links', 'issue', issue.id);
   }
 
   async function _soSave() {
@@ -2623,6 +2730,11 @@
     body.style.display = open ? 'none' : 'block';
     head?.setAttribute('aria-expanded', String(!open));
     if (chevron) chevron.style.transform = open ? '' : 'rotate(180deg)';
+    // The project's links are fetched when the section is first opened rather
+    // than when the panel is. Two link requests on every issue you glance at,
+    // for a section that starts collapsed, is two requests to show nothing.
+    const issue = _issue(_slideoverIssueId);
+    if (!open && issue) loadLinksInto('so-links', 'project', issue.project_id);
   }
 
   async function _soProjectSave(pid) {
@@ -3623,22 +3735,8 @@
   }
 
   async function loadProjectLinks() {
-    const box = document.getElementById('project-links');
-    if (!box) return;
-    box.innerHTML = skeleton('link', 2);
-    try {
-      await loadLinks(_currentProjectId);
-      renderLinks('project-links', _currentProjectId);
-    } catch {
-      box.innerHTML = errorState({
-        title: 'Couldn’t load links',
-        body: 'The server didn’t answer for this project’s links.',
-        onRetry: 'GRAFT._retryProjectLinks()',
-      });
-    }
+    await loadLinksInto('project-links', 'project', _currentProjectId);
   }
-
-  async function _retryProjectLinks() { await loadProjectLinks(); }
 
   async function loadProjectIssues() {
     if (_projectMissing) { renderProjectIssues(); return; }
@@ -4536,7 +4634,7 @@
     _onCardDragStart, _onCardDragEnd, _onAreaDragOver, _onAreaDragLeave, _onAreaDrop,
     // retries
     _retryRail, _retryProjects, _retryIssues, _retryProject, _retryToday,
-    _retryProjectLinks, _retrySlideoverLinks,
+    _retryLinks,
     // today
     _expandToday, _collapseToday,
     // rows, status, selection

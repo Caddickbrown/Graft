@@ -129,12 +129,27 @@ def init_db():
             updated_at  TEXT NOT NULL
         );
 
+        -- A link hangs off an owner, and an owner is a project or an issue.
+        -- The pair was added rather than relaxing project_id, because
+        -- project_id is NOT NULL and SQLite can only drop that by rebuilding
+        -- the table — the same destructive operation issues.project_id talked
+        -- us out of above. project_id stays as the project owner's id, so every
+        -- shipped client's ?project_id= query, and the iOS build that pulls all
+        -- links and filters on the field itself, keep answering what they did.
+        --
+        -- An issue-owned link leaves project_id '' rather than copying the
+        -- issue's project into it. A copy would read as "this link is on that
+        -- project" to every client written before this, and it would go stale
+        -- the moment the issue moved project. The issue already knows its
+        -- project; nothing else has to remember it.
         CREATE TABLE IF NOT EXISTS links (
             id          TEXT PRIMARY KEY,
-            project_id  TEXT NOT NULL,          -- no FK: see note above
+            project_id  TEXT NOT NULL,          -- no FK: see note above; '' when an issue owns it
+            owner_type  TEXT NOT NULL DEFAULT 'project',   -- project|issue
+            owner_id    TEXT NOT NULL DEFAULT '',
             label       TEXT NOT NULL,
             url         TEXT NOT NULL,
-            kind        TEXT DEFAULT 'link',    -- github|docs|design|deploy|link
+            kind        TEXT DEFAULT 'link',    -- github|docs|design|deploy|hub|link
             sort_order  INTEGER DEFAULT 0,
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
@@ -226,6 +241,32 @@ def _migrate_db():
         area_cols = {row[1] for row in db.execute("PRAGMA table_info(areas)").fetchall()}
         if "description" not in area_cols:
             db.execute("ALTER TABLE areas ADD COLUMN description TEXT DEFAULT ''")
+        # A link's owner. Until now a link could only be pinned to a whole
+        # project, which is the one thing Linear did that Graft could not: "the
+        # PR that closes this" belongs to an issue, not to everything the issue
+        # is filed under. Both columns carry a NOT NULL constant DEFAULT, so ADD
+        # COLUMN back-fills every existing row with it in one pass and there is
+        # never a NULL to test for — the same reason start_at and due_at default
+        # to '' rather than allowing one.
+        link_cols = {row[1] for row in db.execute("PRAGMA table_info(links)").fetchall()}
+        if "owner_type" not in link_cols:
+            db.execute("ALTER TABLE links ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'project'")
+        if "owner_id" not in link_cols:
+            db.execute("ALTER TABLE links ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+        # Every row that existed before this was a project link, and the default
+        # above already says so; this is the other half of it, copying the id
+        # across. Run on every import rather than once, because it is also the
+        # repair for a row written by a client that knows only project_id — the
+        # condition goes false as soon as a row is whole, so it is a no-op
+        # afterwards.
+        db.execute("UPDATE links SET owner_id = project_id WHERE owner_type = 'project' AND owner_id = ''")
+        # The two lookups this table now exists to answer: every link on one
+        # owner, and every link pointing at one target. The url index is not
+        # used by the prefix form of the backlink query — a LOWER() around the
+        # column puts paid to that — but it serves the exact form and the
+        # duplicate check in _backfill_repo_links.
+        db.execute("CREATE INDEX IF NOT EXISTS idx_links_owner ON links(owner_type, owner_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_links_url ON links(url)")
         db.commit()
     except sqlite3.OperationalError as exc:
         if "duplicate column name" not in str(exc):
@@ -278,9 +319,14 @@ def _backfill_repo_links():
                 "SELECT 1 FROM links WHERE project_id=? AND url=? LIMIT 1", (pid, repo_url)
             ).fetchone()
             if not already:
+                # owner_type/owner_id are written here rather than left to the
+                # back-fill in _migrate_db: this runs immediately after it, so a
+                # row inserted now would otherwise sit owner-less until the next
+                # restart, and every owner-shaped query would miss it.
                 db.execute(
-                    "INSERT INTO links (id,project_id,label,url,kind,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
-                    ("link_" + str(uuid4())[:8], pid, "Repo", repo_url, "github", 0, ts, ts),
+                    "INSERT INTO links (id,project_id,owner_type,owner_id,label,url,kind,sort_order,created_at,updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    ("link_" + str(uuid4())[:8], pid, "project", pid, "Repo", repo_url, "github", 0, ts, ts),
                 )
             db.execute("UPDATE projects SET repo_url='' WHERE id=?", (pid,))
         db.commit()
@@ -652,6 +698,13 @@ def delete_project(pid):
         "DELETE FROM notifications WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)",
         (pid,),
     )
+    # Before the issues go, while their ids are still reachable: the links on
+    # the project itself, and the links on every issue inside it.
+    db.execute(
+        "DELETE FROM links WHERE (owner_type='project' AND owner_id=?)"
+        " OR (owner_type='issue' AND owner_id IN (SELECT id FROM issues WHERE project_id=?))",
+        (pid, pid),
+    )
     db.execute("DELETE FROM issues WHERE project_id=?", (pid,))
     db.execute("DELETE FROM milestones WHERE project_id=?", (pid,))
     db.execute("DELETE FROM projects WHERE id=?", (pid,))
@@ -838,29 +891,250 @@ def delete_area(aid):
 # ---------------------------------------------------------------------------
 # /api/links
 # ---------------------------------------------------------------------------
+#
+# A link is an edge from something in Graft to something outside it. Until now
+# the something-in-Graft could only be a whole project, which is the one thing
+# the tracker this replaced was genuinely good at: "the PR that closes this"
+# belongs to an issue, not to everything the issue happens to be filed under.
+#
+# The other end is not always a web page. Hub — the personal system that reads
+# Graft — addresses everything it knows about with hub:// URIs, so a link can
+# point at hub://people/tom or hub://book/piranesi and "this issue came out of a
+# conversation with Tom" stops being a sentence in a description and becomes an
+# edge you can query. Graft does not resolve those, and deliberately: it has no
+# idea what entities Hub holds, and a guess that says "no such person" about
+# somebody who exists is worse than saying nothing at all.
+
+_LINK_OWNER_TYPES = ("project", "issue")
+
+_HUB_SCHEME = "hub://"
+
+
+def _is_hub_url(url):
+    return (url or "").strip().lower().startswith(_HUB_SCHEME)
+
+
+def _link_kind(url, given):
+    """The kind to store for a link.
+
+    kind is a glyph hint and nothing more — both clients guess it from the
+    hostname, an unknown value is not an error, and the server has never had an
+    opinion about it. hub:// is the one exception, and only because it is not a
+    guess: the scheme *is* the answer, and a pointer into the user's own system
+    is a different kind of thing from a web page rather than a different picture
+    of one. Forcing it here also means Hub can POST a link without knowing our
+    vocabulary, and an older client editing that link's label cannot quietly
+    turn it back into a web page. Every other value is taken as sent.
+    """
+    if _is_hub_url(url):
+        return "hub"
+    return given or "link"
+
+
+def _issue_exists(db, issue_id):
+    """404 response if issue_id names no issue, else None. See _project_exists."""
+    row = db.execute("SELECT id FROM issues WHERE id=?", (issue_id,)).fetchone()
+    if row is None:
+        return jsonify({"error": f"issue {issue_id} not found"}), 404
+    return None
+
+
+def _link_owner(db, data):
+    """Work out which project or issue a link body is about.
+
+    Returns (owner_type, owner_id, project_id, None), or (None, None, None,
+    response) on a body that names an owner we will not accept.
+
+    Three spellings are accepted because three generations of client exist: the
+    explicit owner_type/owner_id pair, an issue_id shorthand that mirrors the
+    project_id one, and bare project_id, which is all a shipped client knows how
+    to say. A body naming none of them returns owner_type None, which means "the
+    client never mentioned this" — keep what is there on an edit, and is an
+    error on a create. Absent is keep; it is the rule the dates already follow.
+
+    project_id is derived, never taken: it holds the owner's id for a project
+    link and '' for an issue one, so it can never disagree with the owner pair.
+    """
+    owner_type = str(data.get("owner_type") or "").strip().lower()
+    owner_id = str(data.get("owner_id") or "").strip()
+    if not owner_type:
+        if str(data.get("issue_id") or "").strip():
+            owner_type, owner_id = "issue", str(data["issue_id"]).strip()
+        elif str(data.get("project_id") or "").strip():
+            owner_type, owner_id = "project", str(data["project_id"]).strip()
+    if not owner_type:
+        return None, None, None, None
+    if owner_type not in _LINK_OWNER_TYPES:
+        return None, None, None, (jsonify(
+            {"error": f"owner_type must be one of {', '.join(_LINK_OWNER_TYPES)}"}), 400)
+    if not owner_id:
+        return None, None, None, (jsonify({"error": "owner_id is required"}), 400)
+
+    # links carries no FOREIGN KEY (see init_db), so nothing in the engine would
+    # reject an unknown owner — check it here so the client gets a 404 instead
+    # of a row pointing at nothing.
+    err = _project_exists(db, owner_id) if owner_type == "project" else _issue_exists(db, owner_id)
+    if err:
+        return None, None, None, err
+
+    return owner_type, owner_id, (owner_id if owner_type == "project" else ""), None
+
 
 @app.get("/api/links")
 def list_links():
+    """Links on one owner, or all of them.
+
+    ?project_id= still means exactly what it meant before this endpoint grew an
+    owner: that project's own links, never the links on its issues. A client
+    that has not been rebuilt asks the same question and gets the same answer.
+    ?issue_id= is its counterpart, and ?owner_type=/?owner_id= is the general
+    form — ?owner_type=issue on its own is every issue link there is.
+    """
     db = get_db()
-    project_id = request.args.get("project_id")
-    if project_id:
-        rows = db.execute(
-            "SELECT * FROM links WHERE project_id=? ORDER BY sort_order ASC, created_at ASC",
-            (project_id,),
-        ).fetchall()
-    else:
-        rows = db.execute(
-            "SELECT * FROM links ORDER BY sort_order ASC, created_at ASC"
-        ).fetchall()
-    return jsonify([row_to_dict(r) for r in rows])
+    owner_type = (request.args.get("owner_type") or "").strip().lower()
+    owner_id = (request.args.get("owner_id") or "").strip()
+    issue_id = (request.args.get("issue_id") or "").strip()
+    project_id = (request.args.get("project_id") or "").strip()
+    if issue_id:
+        owner_type, owner_id = "issue", issue_id
+    elif project_id:
+        owner_type, owner_id = "project", project_id
+
+    query = "SELECT * FROM links WHERE 1=1"
+    params = []
+    if owner_type:
+        query += " AND owner_type=?"
+        params.append(owner_type)
+    if owner_id:
+        query += " AND owner_id=?"
+        params.append(owner_id)
+    query += " ORDER BY sort_order ASC, created_at ASC"
+    return jsonify([row_to_dict(r) for r in db.execute(query, params).fetchall()])
+
+
+@app.get("/api/links/backlinks")
+def link_backlinks():
+    """Everything in Graft that points at a target, with enough of the owner to
+    render a row.
+
+    This is the query the owner columns exist for. Hub's person page asks "what
+    Graft issues point at hub://people/tom" (?target=), and its people index asks
+    the same question about everybody at once (?prefix=hub://people/). Both
+    forms are here rather than one, because a prefix is not a search: a caller
+    that wants everything about one person must not also get the person whose id
+    starts with the same letters, and a caller that wants the whole tier should
+    not have to make one request per entity.
+
+    A separate route rather than ?target= on /api/links, because the two answer
+    with different shapes. /api/links returns a bare array of link rows and has
+    shipped clients parsing it as one; this returns links joined to their owners,
+    and that could not be the same list without breaking them.
+
+    Matching is case-insensitive, which costs the url index on the prefix form
+    and is worth it: a hub:// address gets typed by hand in the web form, and
+    "hub://People/tom finds nothing" is not a failure anyone would diagnose.
+
+    Archived owners are left out unless ?archived=1, the convention everywhere
+    else. An owner that has been deleted comes back as null rather than being
+    dropped — the offline queue is allowed to write a link before its owner
+    exists (see init_db), so a missing owner can mean "not yet" as easily as
+    "gone", and silently swallowing the row would hide a real edge.
+    """
+    db = get_db()
+    target = (request.args.get("target") or "").strip()
+    prefix = (request.args.get("prefix") or "").strip()
+    if not target and not prefix:
+        return jsonify({"error": "target or prefix is required"}), 400
+
+    query = """
+        SELECT l.*,
+               i.title    AS i_title,    i.status   AS i_status,
+               i.priority AS i_priority, i.archived AS i_archived,
+               i.start_at AS i_start_at, i.due_at   AS i_due_at,
+               i.project_id AS i_project_id, ip.name AS i_project_name,
+               p.name AS p_name, p.status AS p_status, p.archived AS p_archived,
+               p.colour AS p_colour, p.icon AS p_icon, p.area_id AS p_area_id
+        FROM links l
+        LEFT JOIN issues   i  ON l.owner_type = 'issue'   AND i.id  = l.owner_id
+        LEFT JOIN projects ip ON ip.id = i.project_id
+        LEFT JOIN projects p  ON l.owner_type = 'project' AND p.id  = l.owner_id
+        WHERE 1=1
+    """
+    params = []
+    # OR inside one bracket, not two ANDed clauses: target and prefix are two
+    # ways of naming the same set, so a caller sending both means the union of
+    # them, not the empty intersection an AND would almost always produce. The
+    # bracket matters — the filters below are ANDed onto this, and SQL would
+    # otherwise attach them to the prefix half alone.
+    matches = []
+    if target:
+        matches.append("LOWER(l.url) = ?")
+        params.append(target.lower())
+    if prefix:
+        matches.append("LOWER(l.url) LIKE ? ESCAPE '\\'")
+        params.append(_like_escape(prefix.lower()) + "%")
+    query += " AND (%s)" % " OR ".join(matches)
+
+    owner_type = (request.args.get("owner_type") or "").strip().lower()
+    if owner_type:
+        query += " AND l.owner_type = ?"
+        params.append(owner_type)
+
+    if request.args.get("archived", "0") != "1":
+        # COALESCE, because exactly one of the two joins can have matched: a
+        # deleted owner leaves both NULL, and 0 keeps that row in the answer.
+        query += " AND COALESCE(i.archived, p.archived, 0) = 0"
+
+    # Newest edge first. Links on one owner have a sort_order the user chose,
+    # but across owners that number means nothing — this list is "what has been
+    # connected to this thing", and recency is the only ordering it can honestly
+    # claim.
+    query += " ORDER BY l.created_at DESC, l.id ASC"
+
+    out = []
+    for row in db.execute(query, params).fetchall():
+        d = row_to_dict(row)
+        if d["owner_type"] == "issue" and d["i_title"] is not None:
+            owner = {
+                "type": "issue", "id": d["owner_id"], "title": d["i_title"],
+                "status": d["i_status"], "priority": d["i_priority"],
+                "archived": d["i_archived"], "start_at": d["i_start_at"],
+                "due_at": d["i_due_at"], "project_id": d["i_project_id"],
+                "project_name": d["i_project_name"],
+            }
+        elif d["owner_type"] == "project" and d["p_name"] is not None:
+            # `title` on both, so one renderer can print a row without knowing
+            # which kind of thing it is holding; the rest is type-specific.
+            owner = {
+                "type": "project", "id": d["owner_id"], "title": d["p_name"],
+                "status": d["p_status"], "archived": d["p_archived"],
+                "colour": d["p_colour"], "icon": d["p_icon"], "area_id": d["p_area_id"],
+            }
+        else:
+            owner = None
+        link = {k: v for k, v in d.items() if not (k.startswith("i_") or k.startswith("p_"))}
+        link["owner"] = owner
+        out.append(link)
+
+    return jsonify({
+        "target": target,
+        "prefix": prefix,
+        "count": len(out),
+        "links": out,
+    })
 
 
 @app.post("/api/links")
 def create_link():
     data = request.get_json(force=True)
-    project_id, err = _required_id(data, "project_id")
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+    db = get_db()
+    owner_type, owner_id, project_id, err = _link_owner(db, data)
     if err:
         return err
+    if owner_type is None:
+        return jsonify({"error": "project_id or issue_id is required"}), 400
     label, err = _required_id(data, "label")
     if err:
         return err
@@ -869,25 +1143,21 @@ def create_link():
         return err
     lid = data.get("id") or "link_" + str(uuid4())[:8]
     ts = now()
-    db = get_db()
-    # links.project_id carries no FOREIGN KEY (see init_db), so nothing in the
-    # engine would reject an unknown parent — check it here so the client gets a
-    # 404 instead of a row pointing at nothing.
-    err = _project_exists(db, project_id)
-    if err:
-        return err
     # See create_project: a replayed create must not reset created_at.
     existing = db.execute("SELECT created_at FROM links WHERE id=?", (lid,)).fetchone()
     created_at = data.get("created_at") or (existing["created_at"] if existing else ts)
     updated_at = data.get("updated_at") or ts
     db.execute(
-        "INSERT OR REPLACE INTO links (id,project_id,label,url,kind,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO links (id,project_id,owner_type,owner_id,label,url,kind,sort_order,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
         (
             lid,
             project_id,
+            owner_type,
+            owner_id,
             label,
             url,
-            data.get("kind", "link"),
+            _link_kind(url, data.get("kind")),
             data.get("sort_order", 0),
             created_at, updated_at,
         ),
@@ -904,8 +1174,24 @@ def update_link(lid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
     fields = ["label", "url", "kind", "sort_order"]
     updates = {f: data[f] for f in fields if f in data}
+    # A link written on the project and then moved to the issue it is really
+    # about should not have to be deleted and re-made — the id is what a
+    # replayed offline op is keyed on, and losing it would resurrect the link.
+    owner_type, owner_id, project_id, err = _link_owner(db, data)
+    if err:
+        return err
+    if owner_type is not None:
+        updates["owner_type"] = owner_type
+        updates["owner_id"] = owner_id
+        updates["project_id"] = project_id
+    # The url may have changed under the kind, or the kind been sent without it;
+    # either way hub:// decides, so re-derive from whichever url now applies.
+    if "url" in updates or "kind" in updates:
+        updates["kind"] = _link_kind(updates.get("url", row["url"]), updates.get("kind", row["kind"]))
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)
     db.execute(f"UPDATE links SET {set_clause} WHERE id=?", (*updates.values(), lid))
@@ -1522,6 +1808,29 @@ def list_issues():
         query += " AND i.recurrence_parent IN (%s)" % ",".join("?" for _ in parents)
         params.extend(parents)
 
+    # "Show me everything connected to that book." links_to matches a link's
+    # url exactly; links_to_prefix matches the front of it, so
+    # ?links_to_prefix=hub://people/ is "anything to do with anybody". Both are
+    # multi-value and both OR together into one EXISTS — an issue qualifies by
+    # having any one of the links asked about, which is what a filter chip row
+    # means everywhere else in this query.
+    #
+    # EXISTS rather than a join: an issue with two links to the same target
+    # would come back twice from a join, and the row shape the clients parse has
+    # to stay exactly one row per issue.
+    links_to = _multi("links_to")
+    links_to_prefix = _multi("links_to_prefix")
+    if links_to or links_to_prefix:
+        clauses = []
+        for value in links_to:
+            clauses.append("LOWER(l.url) = ?")
+            params.append(value.lower())
+        for value in links_to_prefix:
+            clauses.append("LOWER(l.url) LIKE ? ESCAPE '\\'")
+            params.append(_like_escape(value.lower()) + "%")
+        query += (" AND EXISTS (SELECT 1 FROM links l"
+                  " WHERE l.owner_type='issue' AND l.owner_id = i.id AND (%s))" % " OR ".join(clauses))
+
     has_milestone = request.args.get("has_milestone")
     if has_milestone == "1":
         query += " AND i.milestone_id IS NOT NULL AND i.milestone_id != ''"
@@ -1795,6 +2104,10 @@ def delete_issue(iid):
     # delivered or dismissed one would not — it is kept on purpose, and once the
     # issue is gone it is a record of nothing.
     db.execute("DELETE FROM notifications WHERE issue_id=?", (iid,))
+    # Same argument for its links. Nothing reaps these, and an orphan would keep
+    # turning up in the backlinks Hub renders — an edge to an issue that no
+    # longer exists, which it can only draw as a blank row.
+    db.execute("DELETE FROM links WHERE owner_type='issue' AND owner_id=?", (iid,))
     db.commit()
     return jsonify({"deleted": iid})
 

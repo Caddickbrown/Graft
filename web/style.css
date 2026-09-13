@@ -1073,6 +1073,10 @@ button.area-header-name:hover { color: var(--ink); }
 /* Same block inside the slideover, where there is far less room */
 .so-links:not(:empty) { margin-top: 20px; padding-top: 4px; border-top: 1px solid var(--line); }
 .so-links .link-row-url { display: none; }
+/* …except on a hub row, where the address is the thing being pointed at and
+   the label above it is only a name somebody typed. Dropping it there would
+   leave "Tom" with nothing saying which Tom. */
+.so-links .link-row.link-hub .link-row-url { display: block; }
 .link-list { display: flex; flex-direction: column; gap: 2px; }
 .link-row {
   display: flex;
@@ -1112,6 +1116,14 @@ button.area-header-name:hover { color: var(--ink); }
 }
 .link-row:hover .link-row-external { color: var(--ink-2); }
 @media (hover: none) { .link-row-actions { display: flex; } }
+/* A hub:// link points at something inside the user's own system rather than
+   at a page on the web, so it must not look like somewhere to click through to.
+   No pointer, no external-tab arrow, and the address set in the accent rather
+   than the muted grey the outbound rows use for a hostname — this half of the
+   row is the thing being referred to, not a URL you are meant to read past. */
+.link-row.link-hub { cursor: default; }
+.link-row.link-hub .link-row-icon { color: var(--accent-text); }
+.link-row.link-hub .link-row-url { color: var(--accent-text); opacity: .85; }
 .link-add {
   display: inline-flex;
   align-items: center;
