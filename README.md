@@ -96,6 +96,47 @@ An issue with no date never matches a bound on that date — undated is not due.
 A date-only upper bound covers the whole of that day, so `updated_before=<today>`
 includes edits made today.
 
+### Clearing a field
+
+Every optional text column — `assignee`, `area_id`, `icon`, `repo_url`,
+`start_at`, `due_at` and the rest — holds `''` when it holds nothing, never
+`NULL`. Clients disagree about how to spell "nothing": a form sends `""`, a
+typed model that made the field optional sends `null`. Both are accepted and
+both land as `''`, so a cleared assignee still turns up under
+`?assignee=none` and a project filed under no area still turns up under
+`?area_id=none`.
+
+`milestone_id` is the exception and stays `NULL`, because it is a foreign key
+and that is what an absent one means there.
+
+Columns where there is no such thing as empty — `title`, `status`, `priority`,
+a project's `name` and `colour` — read a `null` as a confused client rather
+than an instruction, and keep what the row already says, exactly as an absent
+key does. Blanking a title is not something a request should be able to do by
+accident.
+
+### Replaying a toggle
+
+`PATCH …/archive` and `PATCH …/favourite` flip a flag rather than setting one,
+which is what lets an offline client queue them without knowing which way round
+the flag was. The cost is that a retry cannot be safe by itself: a client that
+never saw the response cannot tell a lost request from a lost reply, and the
+two want opposite things.
+
+So a client may name its request:
+
+```
+PATCH /api/projects/proj_1234/favourite
+X-Graft-Op-Id: 4C2E…-the-same-id-on-every-retry
+```
+
+The first request carrying that id flips the flag. Every later one changes
+nothing and reads the current state back — which stays the honest answer even
+if another client has since flipped it the other way. Ids are remembered per
+path for seven days; a retry a week later is a new intention, not a replay. A
+request with no `X-Graft-Op-Id` behaves exactly as it always has, so an older
+client is no worse off.
+
 ### No project
 
 `POST /api/issues` with no `project_id` (absent or `""`) files the issue under a

@@ -184,6 +184,20 @@ def init_db():
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
+
+        -- Which toggle requests have already been applied. /archive and
+        -- /favourite flip a flag rather than setting one, so a client that
+        -- never saw the response cannot tell a lost request from a lost reply,
+        -- and retrying the way it retries everything else would flip twice.
+        -- A client that names its request (X-Graft-Op-Id) gets the flip once,
+        -- however many times it asks. Rows are pruned by age: a retry days
+        -- later is a different intention, not a replay.
+        CREATE TABLE IF NOT EXISTS applied_ops (
+            op_id      TEXT NOT NULL,
+            path       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (op_id, path)
+        );
     """)
     db.commit()
     db.close()
@@ -482,6 +496,71 @@ def _multi(name):
     return values
 
 
+def _replayed_op(db):
+    """True when this exact request has already been applied.
+
+    A toggle cannot be retried safely: the client that never saw the response
+    has no way to tell "the request was lost" from "the reply was lost", and
+    the two want opposite things. Naming the request settles it. The client
+    sends the same X-Graft-Op-Id every time it retries a queued operation, and
+    the second one through here changes nothing and reads the current state
+    back — which is the honest answer even if somebody else has since flipped
+    the flag the other way.
+
+    A request with no op id behaves exactly as it always did, so an older
+    client is no worse off than before.
+    """
+    op_id = (request.headers.get("X-Graft-Op-Id") or "").strip()
+    if not op_id:
+        return False
+    row = db.execute(
+        "SELECT op_id FROM applied_ops WHERE op_id=? AND path=?", (op_id, request.path)
+    ).fetchone()
+    if row is not None:
+        return True
+    db.execute(
+        "INSERT OR IGNORE INTO applied_ops (op_id, path, created_at) VALUES (?,?,?)",
+        (op_id, request.path, now()),
+    )
+    # A replay arrives within minutes — a queue that has been stuck for a week
+    # is retrying an intention, not finishing a request — so the record only
+    # has to outlive the retry, and the table stays small without a sweeper.
+    db.execute(
+        "DELETE FROM applied_ops WHERE created_at < ?",
+        ((datetime.now() - timedelta(days=7)).isoformat(),),
+    )
+    return False
+
+
+def _text_value(value):
+    """Normalise an incoming optional string to the form we store: text, or ''.
+
+    The same rule as _date_value, for the same reason, applied to the columns
+    that say "nothing" with an empty string: assignee, area_id, icon and the
+    rest. A client clearing a field has two ways to spell it — '' from a form
+    and null from a typed model that made the field optional — and only one of
+    them may reach the column, or ?assignee=none stops finding rows the user
+    can plainly see are unassigned. milestone_id is deliberately not in this
+    set: it is a foreign key, and NULL is what an absent one means there.
+    """
+    if value is None:
+        return ""
+    return str(value)
+
+
+# The columns that hold '' rather than NULL for "unset" — passed through
+# _text_value on the way in, so that null and "" arrive as the same empty.
+_ISSUE_TEXT_FIELDS = ("description", "assignee", "recurrence_parent")
+_PROJECT_TEXT_FIELDS = ("description", "icon", "repo_url", "area_id")
+
+# The columns where there is no such thing as empty. A title, a status or a
+# colour is always something, so null here is a confused client rather than an
+# instruction: drop the key and keep what the row already says, which is what
+# an absent key has always meant.
+_ISSUE_REQUIRED_FIELDS = ("title", "status", "priority")
+_PROJECT_REQUIRED_FIELDS = ("name", "status", "colour")
+
+
 def _date_value(value):
     """Normalise an incoming date to the form we store: an ISO string, or ''.
 
@@ -645,13 +724,13 @@ def create_project():
     db.execute(
         "INSERT OR REPLACE INTO projects (id,name,description,status,colour,icon,repo_url,area_id,tags,archived,favourite,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (pid,
-             data.get("name", "Untitled"),
-             data.get("description", ""),
-             data.get("status", "active"),
-             data.get("colour", "#7C7FC4"),
-             data.get("icon", ""),
-             repo_url,
-             area_id,
+             _text_value(data.get("name") or "Untitled"),
+             _text_value(data.get("description", "")),
+             _text_value(data.get("status") or "active"),
+             _text_value(data.get("colour") or "#7C7FC4"),
+             _text_value(data.get("icon", "")),
+             _text_value(repo_url),
+             _text_value(area_id),
              tags,
             archived, favourite, created_at, updated_at,
         ),
@@ -696,6 +775,15 @@ def update_project(pid):
     fields = ["name", "description", "status", "colour", "icon", "archived", "favourite",
               "repo_url", "area_id", "tags"]
     updates = {f: data[f] for f in fields if f in data}
+    # Present and null means "clear it", and a cleared text column holds '' —
+    # see _text_value. area_id is the one that bites: NULL there would be a
+    # project filed under no area that ?area_id=none cannot find.
+    for key in _PROJECT_TEXT_FIELDS:
+        if key in updates:
+            updates[key] = _text_value(updates[key])
+    for key in _PROJECT_REQUIRED_FIELDS:
+        if key in updates and updates[key] is None:
+            del updates[key]
     if "tags" in updates and not isinstance(updates["tags"], str):
         updates["tags"] = json.dumps(updates["tags"])
     updates["updated_at"] = now()
@@ -741,8 +829,9 @@ def toggle_project_archive(pid):
     row = db.execute("SELECT id, archived FROM projects WHERE id=?", (pid,)).fetchone()
     if row is None:
         return jsonify({"error": "not found"}), 404
-    new_val = 0 if row["archived"] else 1
-    db.execute("UPDATE projects SET archived=?, updated_at=? WHERE id=?", (new_val, now(), pid))
+    if not _replayed_op(db):
+        new_val = 0 if row["archived"] else 1
+        db.execute("UPDATE projects SET archived=?, updated_at=? WHERE id=?", (new_val, now(), pid))
     db.commit()
     row = db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
     return jsonify(_project_with_counts(db, row))
@@ -760,8 +849,9 @@ def toggle_project_favourite(pid):
     # never appears in a list, so there is nothing for a pin to do to it.
     if pid == NO_PROJECT_ID:
         return jsonify({"error": "the no-project bucket cannot be favourited"}), 400
-    new_val = 0 if row["favourite"] else 1
-    db.execute("UPDATE projects SET favourite=?, updated_at=? WHERE id=?", (new_val, now(), pid))
+    if not _replayed_op(db):
+        new_val = 0 if row["favourite"] else 1
+        db.execute("UPDATE projects SET favourite=?, updated_at=? WHERE id=?", (new_val, now(), pid))
     db.commit()
     row = db.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
     return jsonify(_project_with_counts(db, row))
@@ -2005,12 +2095,12 @@ def create_issue():
             iid,
             project_id,
             milestone_id,
-            data.get("title", "Untitled"),
-            data.get("description", ""),
-            data.get("status", "backlog"),
-            data.get("priority", "normal"),
+            _text_value(data.get("title") or "Untitled"),
+            _text_value(data.get("description", "")),
+            _text_value(data.get("status") or "backlog"),
+            _text_value(data.get("priority") or "normal"),
             labels,
-            data.get("assignee", ""),
+            _text_value(data.get("assignee", "")),
             start_at,
             due_at,
             recurrence,
@@ -2024,7 +2114,7 @@ def create_issue():
     # the row (see _desired_notifications). Record it while we can still see that
     # the row is new — a replayed create is not a fresh assignment.
     if existing is None:
-        _record_assignment(db, iid, data.get("assignee", ""), ts)
+        _record_assignment(db, iid, _text_value(data.get("assignee", "")), ts)
     db.commit()
     row = db.execute(
         "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE i.id=?",
@@ -2057,6 +2147,16 @@ def update_issue(iid):
     for key in ("start_at", "due_at"):
         if key in updates:
             updates[key] = _date_value(updates[key])
+    # And the same for the text columns. A client that models assignee as an
+    # optional string sends null to clear it, which would land as NULL and drop
+    # the issue out of ?assignee=none — visibly unassigned, yet not in the
+    # unassigned pile.
+    for key in _ISSUE_TEXT_FIELDS:
+        if key in updates:
+            updates[key] = _text_value(updates[key])
+    for key in _ISSUE_REQUIRED_FIELDS:
+        if key in updates and updates[key] is None:
+            del updates[key]
     if "labels" in data:
         updates["labels"] = json.dumps(data["labels"])
     updates["updated_at"] = now()
@@ -2160,8 +2260,9 @@ def toggle_issue_archive(iid):
     row = db.execute("SELECT id, archived FROM issues WHERE id=?", (iid,)).fetchone()
     if row is None:
         return jsonify({"error": "not found"}), 404
-    new_val = 0 if row["archived"] else 1
-    db.execute("UPDATE issues SET archived=?, updated_at=? WHERE id=?", (new_val, now(), iid))
+    if not _replayed_op(db):
+        new_val = 0 if row["archived"] else 1
+        db.execute("UPDATE issues SET archived=?, updated_at=? WHERE id=?", (new_val, now(), iid))
     db.commit()
     row = db.execute(
         "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE i.id=?",
