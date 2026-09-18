@@ -298,13 +298,26 @@ struct IssueQuery: Codable, Equatable {
             guard !values.isEmpty else { return }
             items.append(URLQueryItem(name: name, value: values.joined(separator: ",")))
         }
+
+        /// The same, for the three params where the server gives `none` a
+        /// meaning: area_id, assignee and milestone_id. This client holds the
+        /// unset bucket as `""` — which is what the local filter and the saved
+        /// blob have always said, and what the web client writes too — and the
+        /// server drops blank fragments, so `?assignee=` asked for *no filter*
+        /// rather than for the unassigned pile. The response was a superset the
+        /// local filter then narrowed, so nothing looked wrong; the request was
+        /// simply a lie, and a wasteful one. Translated here, at the edge, so
+        /// the sentinel in the blob does not have to change under either client.
+        func multiWithNone(_ name: String, _ values: [String]) {
+            multi(name, values.map { $0.isEmpty ? "none" : $0 })
+        }
         multi("status", filters.status)
         multi("priority", filters.priority)
-        multi("assignee", filters.assignee)
+        multiWithNone("assignee", filters.assignee)
         multi("label", filters.label)
         multi("project_id", filters.projectId)
-        multi("milestone_id", filters.milestoneId)
-        multi("area_id", filters.areaId)
+        multiWithNone("milestone_id", filters.milestoneId)
+        multiWithNone("area_id", filters.areaId)
 
         // Deliberately NOT through `multi`. The date bounds are single-value on
         // the server — comma-joining them would send `due_before=a,b`, which is

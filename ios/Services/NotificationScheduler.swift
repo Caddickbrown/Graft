@@ -19,15 +19,20 @@ import UserNotifications
 //   overdue → due → starting → assigned → digest: lateness first, because it is
 //   the only kind the user cannot discover by looking at the right day.
 //
-//   `fire_at` is UTC. The server has no idea what timezone the phone is in, so
-//   whole-day dates are stamped 09:00 UTC (08:00 for the digest) and converted
-//   here. Scheduling the string as written would fire at the wrong hour
-//   everywhere but Greenwich.
+//   `fire_at` is UTC, and for a whole-day date it is an *intention* rather than
+//   an instant: 09:00:00 (08:00 for the digest) written in UTC because the
+//   server does not know where the phone is, meaning "the morning of that day,
+//   wherever the user is". So the date and the time-of-day are read out and
+//   rebuilt in the device's own calendar. Taking the instant instead — which is
+//   what this used to do — put a US East user's morning reminder at 05:00.
+//   An `assigned` row is the opposite: it carries the moment something actually
+//   happened, and that is an absolute instant to be left alone.
 //
 //   Rescheduling, not accumulating. Every sync rebuilds the whole pending set
 //   rather than adding to it. A due date that moved must move its notification,
 //   which means the old one has to be cancelled, which means the set is rebuilt
-//   from scratch each time.
+//   from scratch each time. Rebuilding is not re-firing, though: see the rule
+//   above `reschedule`.
 
 @MainActor
 @Observable
@@ -79,10 +84,24 @@ final class NotificationScheduler {
 
     /// A notification whose moment has already passed is usually stale — the
     /// due badge in the app is already saying it, and a phone buzzing about
-    /// Tuesday on Thursday is worse than silence. Inside this window it is
-    /// still today's news, so it is pushed to a few minutes out instead.
+    /// Tuesday on Thursday is worse than silence. Inside this window a row this
+    /// app has *never seen before* is still today's news, so it is pushed to a
+    /// few minutes out instead. A row already in the ledger gets no such
+    /// reprieve: its moment passing means it has been shown.
     private static let staleAfter: TimeInterval = 12 * 3600
     private static let catchUpDelay: TimeInterval = 15 * 60
+
+    /// How long an assignment made on this phone keeps its own notification
+    /// quiet. Long enough to cover the debounced typing in the issue form —
+    /// which writes two or three times, and so earns two or three rows — and
+    /// the sync that follows it, and no longer.
+    private static let ownAssignmentWindow: TimeInterval = 10 * 60
+
+    /// The kinds the server derives from the issues and the date, as against
+    /// the event kinds it records when something happens. Only the derived ones
+    /// carry a whole-day time that means a wall-clock hour; see the note at the
+    /// top.
+    private static let derivedKinds: Set<String> = ["due", "starting", "overdue", "digest"]
 
     // MARK: - Init
 
@@ -130,13 +149,13 @@ final class NotificationScheduler {
 
     // MARK: - The ledger
     //
-    // What this app has already scheduled *and acked*.
+    // What this app has put in front of the user, and what it still intends to.
     //
-    // It exists because acking at schedule time and reading with
-    // `?undelivered=true` pull against each other: the moment a row is acked it
-    // stops coming back, but it is still sitting in the pending set and still
-    // has to survive the next rebuild. Without a local record, every sync would
-    // cancel everything it scheduled on the previous one.
+    // It exists because `?undelivered=true` and the pending set pull against
+    // each other: a row this app has scheduled is still undelivered as far as
+    // the server is concerned, and a row it has shown must never be shown
+    // again. Only the phone knows which is which — iOS fires these, not the
+    // server — so the phone keeps the record.
 
     private struct ScheduledNote: Codable, Identifiable {
         let id: String
@@ -144,10 +163,45 @@ final class NotificationScheduler {
         let issueId: String
         let title: String
         let body: String
+        /// The absolute instant handed to iOS. For a whole-day row this is the
+        /// server's date at the intended hour *in the device's timezone*; for a
+        /// late arrival it is the catch-up moment. Either way, once it is in
+        /// the past the notification has been shown.
         let fireAt: Date
+        /// Whether iOS ever accepted this request. A row ranked out by the 64
+        /// cap has never been in front of anybody, so when its moment passes it
+        /// must not be recorded as shown.
+        var scheduledOnce: Bool?
+        /// Whether the server has been told the user saw this. Both flags are
+        /// optional so a ledger written by the previous build still decodes —
+        /// losing the ledger means losing every pending reminder on the phone.
+        var acked: Bool?
     }
 
     private var ledger: [String: ScheduledNote] = [:]
+
+    /// Issues whose assignee this phone changed, and when. The server writes an
+    /// `assigned` row for every assignee change because nothing downstream can
+    /// reconstruct the event — but it cannot tell who made the change, so the
+    /// one person who definitely does not need telling gets told anyway. The
+    /// debounced field in the issue form makes that two or three buzzes for
+    /// something the user did on this screen a moment ago.
+    ///
+    /// In memory only, deliberately: the window that matters is the second
+    /// between the write and the sync it triggers. A relaunch inside it is rare
+    /// and costs one buzz, where a file on disk would cost a file on disk.
+    private var ownAssignments: [String: Date] = [:]
+
+    /// Called by the store when *this* device writes an assignee change.
+    func noteOwnAssignment(issueId: String) {
+        let now = Date()
+        // Swept here rather than on a timer: this is the only thing that grows
+        // the dictionary, so it is the only thing that has to shrink it.
+        ownAssignments = ownAssignments.filter {
+            now.timeIntervalSince($0.value) <= Self.ownAssignmentWindow
+        }
+        ownAssignments[issueId] = now
+    }
 
     private static func loadLedger(from url: URL) -> [String: ScheduledNote] {
         let decoder = JSONDecoder()
@@ -168,7 +222,26 @@ final class NotificationScheduler {
 
     // MARK: - Rebuild
 
-    /// Pull, rank, schedule, ack. Safe to call on every sync.
+    /// Pull, reap, rank, schedule, ack. Safe to call on every sync — and "safe"
+    /// is the word that took the most work.
+    ///
+    /// The rule, because it is the whole of the fix for a phone that re-fired
+    /// every morning's reminders at every sync all day:
+    ///
+    ///   A ledger row whose moment has passed has been shown, and is never
+    ///   scheduled again. Only rows still ahead of us go back into the pending
+    ///   set. A row that arrives already slightly late — the server stamping an
+    ///   `assigned` event a minute ago, or a phone that was asleep at nine — is
+    ///   not in the ledger yet, so `entry(for:)` gives it a catch-up moment a
+    ///   few minutes out and *that* is what the ledger records. It fires once,
+    ///   and the next rebuild sees a past moment and leaves it alone.
+    ///
+    /// Acking follows the same line: the server is told the user was shown a
+    /// notification when it has actually fired, not when it was scheduled. That
+    /// is what lets the server retire a reminder whose due date moved before it
+    /// ever went off, instead of keeping it alive as something the user was
+    /// told — which is how a moved date used to end up with two reminders, one
+    /// of them wrong.
     ///
     /// `digestBody` is computed by the caller from what the phone already knows,
     /// because the digest row carries no issue of its own and a notification
@@ -184,13 +257,12 @@ final class NotificationScheduler {
         // Two reads, and the difference between them is the whole reason the
         // ledger exists.
         //
-        // `current` is everything still ahead of us, delivered or not. Rows this
-        // app has already acked come back here and nowhere else, which is what
-        // lets the reaper below tell "already told the user about this" apart
-        // from "the server has dropped this".
+        // `current` is every row the server still holds, delivered or not. It is
+        // what the ledger is re-validated against: a row that has gone from it
+        // is a notification about something that is no longer true.
         //
-        // `undelivered` is the set that still needs telling — and the only set
-        // that gets acked.
+        // `undelivered` is the set that has never been shown — the only set new
+        // ledger entries are made from.
         //
         // Both are `try`, not `try?`: an unreachable server must leave the
         // pending set exactly as it is. Treating a failed read as an empty
@@ -215,42 +287,85 @@ final class NotificationScheduler {
             return
         }
 
-        // Reap. A derived notification whose issue moved, was finished or was
-        // deleted is simply gone from the server — the reconciler drops rows
-        // nobody wants any more — so anything in the ledger the server no
-        // longer lists is a notification about something that is no longer
-        // true, and must not fire.
-        let live = Set(current.map(\.id))
-        ledger = ledger.filter { live.contains($0.key) && $0.value.fireAt > now.addingTimeInterval(-Self.staleAfter) }
-
-        // Fold in what is new. A row already in the ledger keeps its ledger
-        // entry — same id, same content — so this is only ever additive.
-        var pendingAck: [String] = []
-        for note in undelivered {
-            guard ledger[note.id] == nil else { continue }
-            guard let entry = Self.entry(for: note, now: now, digestBody: digestBody) else { continue }
-            ledger[note.id] = entry
-            pendingAck.append(note.id)
+        // Reap, against what the server says *now* rather than against the
+        // clock alone. A derived notification whose issue moved, was finished or
+        // was deleted is gone from the server — the reconciler drops rows nobody
+        // wants any more — and a row about an issue that has since been ticked
+        // off or waved away is no longer true even though it is still listed.
+        // Any of those must lose its pending notification, which happens by
+        // leaving the ledger before the pending set is rebuilt from it.
+        //
+        // Archived is not checked here because the row does not carry it: for
+        // the derived kinds the reconciler has already dropped the row, and an
+        // `assigned` event about an archived issue is rare enough to leave to
+        // the age backstop on the last line.
+        let byId = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        ledger = ledger.filter { entry in
+            guard let row = byId[entry.key] else { return false }
+            guard row.dismissedAt == nil else { return false }
+            if let status = row.issueStatus, status == "done" { return false }
+            return entry.value.fireAt > now.addingTimeInterval(-Self.staleAfter)
         }
 
-        let ranked = ledger.values.sorted(by: Self.ranked)
+        // Fold in what is new. A row already in the ledger keeps its ledger
+        // entry — same id, same content, same moment — so this is only ever
+        // additive, and a row that has already fired cannot be reinstated by it.
+        var ownAcks: [String] = []
+        for note in undelivered {
+            guard ledger[note.id] == nil else { continue }
+            if isOwnAssignment(note, now: now) {
+                // Acked rather than simply skipped: unacked it stays in the
+                // undelivered set and would be considered again on every sync
+                // until it went stale. The user has already seen this one — on
+                // the screen where they typed it.
+                ownAcks.append(note.id)
+                continue
+            }
+            guard let entry = Self.entry(for: note, now: now, digestBody: digestBody) else { continue }
+            ledger[note.id] = entry
+        }
+
+        // Past is past. Anything whose moment has been and gone was handed to
+        // iOS on an earlier pass and has fired; it stays in the ledger so the
+        // fold-in above cannot resurrect it, but it is never scheduled again.
+        let upcoming = ledger.values.filter { $0.fireAt > now }
+        let ranked = upcoming.sorted(by: Self.ranked)
         let keep = Array(ranked.prefix(Self.pendingLimit))
         droppedCount = max(0, ranked.count - keep.count)
 
         await clearPending()
         var scheduled: Set<String> = []
         for note in keep {
-            if await add(note) { scheduled.insert(note.id) }
+            if await add(note) {
+                scheduled.insert(note.id)
+                ledger[note.id]?.scheduledOnce = true
+            }
         }
         scheduledCount = scheduled.count
+
+        // Ack what has actually been shown: a ledger row that reached the
+        // notification centre, whose moment has passed, and which was not acked
+        // last time. Acking at schedule time instead — which is what this used
+        // to do — told the server the user had seen a reminder that had not yet
+        // gone off, and the server then kept it alive as a record of something
+        // that never happened.
+        let delivered = ledger.values
+            .filter { $0.fireAt <= now && $0.scheduledOnce == true && $0.acked != true }
+            .map(\.id)
         saveLedger()
 
-        // Ack only what actually reached the notification centre. A row that
-        // was ranked out by the cap, or that iOS refused, has not been shown to
-        // anybody and must still come back as undelivered next time.
-        for id in pendingAck where scheduled.contains(id) {
-            _ = try? await api.ackNotification(base: base, id: id)
+        for id in delivered + ownAcks {
+            if (try? await api.ackNotification(base: base, id: id)) != nil {
+                ledger[id]?.acked = true
+            }
         }
+        saveLedger()
+    }
+
+    /// True for an `assigned` row about an issue this phone has just reassigned.
+    private func isOwnAssignment(_ note: GraftNotification, now: Date) -> Bool {
+        guard note.kind == "assigned", let at = ownAssignments[note.issueId] else { return false }
+        return now.timeIntervalSince(at) <= Self.ownAssignmentWindow
     }
 
     /// Drops everything and forgets the ledger — for the switch being turned
@@ -258,6 +373,7 @@ final class NotificationScheduler {
     func clearAll() async {
         await clearPending()
         ledger = [:]
+        ownAssignments = [:]
         saveLedger()
         scheduledCount = 0
         droppedCount = 0
@@ -287,13 +403,15 @@ final class NotificationScheduler {
         content.userInfo = ["issue_id": note.issueId, "kind": note.kind, "note_id": note.id]
         content.threadIdentifier = note.issueId.isEmpty ? "graft.digest" : note.issueId
 
-        // The one place the UTC-to-local conversion happens. `note.fireAt` is an
-        // absolute instant, already parsed out of the server's naive-UTC string;
-        // `Calendar.current` is in the device's timezone, so these components
-        // are the local wall-clock time of that instant.
-        let fire = max(note.fireAt, Date().addingTimeInterval(60))
+        // `note.fireAt` is already the instant this should go off, in the
+        // device's timezone — `entry(for:)` did that conversion when the row
+        // was first seen, because only there is it known whether the stamp is a
+        // wall-clock intention or a moment that happened. Nothing is floored to
+        // "now" here: a past moment is one that has already been shown, and the
+        // caller has filtered those out rather than dragging them forward, which
+        // is what made every sync re-fire the morning's reminders.
         let parts = Calendar.current.dateComponents(
-            [.year, .month, .day, .hour, .minute], from: fire)
+            [.year, .month, .day, .hour, .minute], from: note.fireAt)
         let trigger = UNCalendarNotificationTrigger(dateMatching: parts, repeats: false)
 
         let request = UNNotificationRequest(
@@ -339,7 +457,7 @@ final class NotificationScheduler {
     ) -> ScheduledNote? {
         guard note.dismissedAt == nil else { return nil }
         if let status = note.issueStatus, status == "done" { return nil }
-        guard let fire = GraftDate.timestamp(from: note.fireAt) else { return nil }
+        guard let fire = fireInstant(kind: note.kind, stamp: note.fireAt) else { return nil }
 
         let when: Date
         if fire > now {
@@ -366,7 +484,35 @@ final class NotificationScheduler {
         guard !body.isEmpty else { return nil }
 
         return ScheduledNote(id: note.id, kind: note.kind, issueId: note.issueId,
-                             title: heading, body: body, fireAt: when)
+                             title: heading, body: body, fireAt: when,
+                             scheduledOnce: false, acked: false)
+    }
+
+    /// When a server row actually wants to go off, on this phone.
+    ///
+    /// The two kinds of stamp the server writes are not the same sort of thing:
+    ///
+    ///   A derived row carries a whole-day date with `_NOTE_HOUR` attached —
+    ///   `2026-09-01T09:00:00`, written UTC because the server has no idea where
+    ///   the phone is. It means nine in the morning *where the user is*, so the
+    ///   date and time-of-day are read straight back out in the device's own
+    ///   calendar. Reading it as an instant is what put a New York user's due
+    ///   reminder at 05:00 and an Auckland user's at ten the night before.
+    ///
+    ///   An `assigned` row carries the moment the assignment happened, down to
+    ///   the microsecond. That is a real instant and is parsed as one.
+    private static func fireInstant(kind: String, stamp: String) -> Date? {
+        guard derivedKinds.contains(kind) else { return GraftDate.timestamp(from: stamp) }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        // The device's zone, reading the written wall-clock as a local one.
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        if let local = f.date(from: String(stamp.prefix(19))) { return local }
+        // A shape this did not expect is better scheduled at the wrong hour
+        // than not at all.
+        return GraftDate.timestamp(from: stamp)
     }
 
     /// The server compares `since` as text against naive-UTC timestamps, so the

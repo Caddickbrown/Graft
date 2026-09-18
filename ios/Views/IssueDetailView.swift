@@ -45,6 +45,13 @@ struct IssueDetailView: View {
     /// from the background — and re-reading the store would overwrite whatever
     /// has been typed since.
     @State private var loaded = false
+    /// True while `load` is filling the eight fields below out of the store.
+    /// Every one of them has an `onChange` that schedules a save, so without
+    /// this simply opening an issue queued a PUT: `updated_at` moved, the issue
+    /// jumped to the top of every "last updated" list, and the bar said "Saved"
+    /// for an edit nobody made. The same guard the project, link and milestone
+    /// forms use, under the name they use for it.
+    @State private var hydrating = false
 
     enum SaveState: Equatable {
         case idle
@@ -137,7 +144,14 @@ struct IssueDetailView: View {
             // has not hit the debounce yet.
             guard !loaded else { return }
             loaded = true
+            hydrating = true
             load(current)
+            // Cleared on the next turn rather than at the end of `load`: the
+            // `onChange` handlers see the new values when SwiftUI processes this
+            // update, which is after this closure has returned. `save` checks
+            // the rebuilt issue against the stored one as well, so a phone that
+            // orders the two differently still writes nothing.
+            Task { hydrating = false }
             // If a previous visit left a write stuck in the queue, say so on
             // arrival rather than waiting for the next edit. Only those two —
             // "saved on phone" on a screen nobody has edited is just noise.
@@ -389,9 +403,12 @@ struct IssueDetailView: View {
             // parsed result is shown back here as the chips that now appear on
             // every row, so what you typed and what the list will show are
             // visibly the same thing.
+            // `uniqued` because an issue written elsewhere can carry the same
+            // label twice, and `id: \.self` would then hand two chips one
+            // identity.
             if !current.labels.isEmpty {
                 HStack(spacing: 5) {
-                    ForEach(current.labels, id: \.self) { label in
+                    ForEach(current.labels.uniqued, id: \.self) { label in
                         GraftLabelChip(text: label)
                     }
                     Spacer(minLength: 0)
@@ -584,6 +601,8 @@ struct IssueDetailView: View {
 
     /// Debounced so typing does not fire a request per keystroke.
     private func scheduleSave() {
+        // The eight fields being filled in from the store is not an edit.
+        guard !hydrating else { return }
         hasUnsavedEdits = true
         saveTask?.cancel()
         saveTask = Task {
@@ -604,21 +623,51 @@ struct IssueDetailView: View {
         save()
     }
 
-    private func save() {
+    /// `force` is for the Retry button and nothing else: after a dropped write
+    /// the local cache already holds the edit, so the rebuilt issue matches the
+    /// stored one and the guard below would turn the retry into nothing.
+    private func save(force: Bool = false) {
         hasUnsavedEdits = false
-        guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         var updated = current
-        updated.title = title
+        // A blank title used to abandon the whole save, silently taking the
+        // description, labels and dates typed in the same 700ms with it. An
+        // issue still has to be called something, so the previous title stands
+        // until a new one is typed — the field is showing what the user emptied,
+        // and the next keystroke replaces it either way.
+        let typed = title.trimmingCharacters(in: .whitespaces)
+        updated.title = typed.isEmpty ? current.title : title
         updated.description = description
         updated.assignee = assignee
+        // De-duplicated on the way in: both ends accept "bug, bug", and a
+        // repeated label is a duplicate id in every `ForEach` that renders one.
         updated.labels = labelsText.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+            .uniqued
         updated.startAt = startAt
         updated.dueAt = dueAt
         updated.recurrence = recurrence
         updated.recurrenceAnchor = recurrenceAnchor
+        // Nothing actually changed, so nothing is written. Opening an issue
+        // hydrates eight fields that each schedule a save; without this the
+        // visit alone bumped `updated_at`, reordered every "last updated" list
+        // and flashed "Saved" at somebody who had only looked.
+        guard force || !identical(updated, current) else { return }
         persist(updated)
+    }
+
+    /// Whether the rebuilt issue says anything the stored one does not. Only the
+    /// fields this screen's debounce writes: `updated_at` is stamped inside the
+    /// store, and comparing it would make every save look like a change.
+    private func identical(_ a: GraftIssue, _ b: GraftIssue) -> Bool {
+        a.title == b.title
+            && a.description == b.description
+            && a.assignee == b.assignee
+            && a.labels == b.labels
+            && a.startAt == b.startAt
+            && a.dueAt == b.dueAt
+            && a.recurrence == b.recurrence
+            && a.recurrenceAnchor == b.recurrenceAnchor
     }
 
     private func setStatus(_ status: String) {
@@ -680,7 +729,7 @@ struct IssueDetailView: View {
     private func retrySave() {
         store.syncEngine.clearDropped(forPath: issuePath)
         hasUnsavedEdits = true
-        save()
+        save(force: true)
     }
 
     private func archive() {

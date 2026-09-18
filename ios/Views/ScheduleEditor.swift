@@ -161,7 +161,17 @@ struct RecurrenceEditor: View {
     @Binding var anchor: String
 
     @State private var draft = Recurrence()
-    @State private var loaded = false
+    /// True once the user has actually changed something here.
+    ///
+    /// The draft used to be seeded once, in this view's own `onAppear`, behind a
+    /// `loaded` guard — and a child's `onAppear` runs before its parent's, while
+    /// the issue screen only fills `recurrence` in *its* `onAppear`. So the
+    /// editor seeded itself from `""`, an issue that repeats every Monday showed
+    /// "Never", and one tap on a frequency wrote a rule with the BYDAY, COUNT
+    /// and UNTIL thrown away. Until the user touches it, the draft simply
+    /// follows the bound rule wherever it goes; after that it is the truth and
+    /// the rule follows it.
+    @State private var touched = false
 
     private var anchorChoice: RecurrenceAnchor {
         RecurrenceAnchor(rawValue: anchor) ?? .schedule
@@ -178,24 +188,37 @@ struct RecurrenceEditor: View {
                 summary
             }
         }
-        .onAppear {
-            guard !loaded else { return }
-            loaded = true
-            draft = Recurrence(rule: rule)
-        }
+        .onAppear { followRule() }
+        .onChange(of: rule) { _, _ in followRule() }
         .onChange(of: draft) { _, new in
             // One direction of travel: the draft is the truth, and the rule
             // string is what it looks like on the wire.
             //
             // Compared against the *parsed* stored rule, not against the string.
-            // Seeding the draft in `onAppear` is a change too, and so is
-            // canonicalisation — `FREQ=WEEKLY;BYDAY=WE,MO` comes back as
-            // `BYDAY=MO,WE`, which is the same rule spelled tidily. Writing on
-            // either would mark the issue dirty and fire a save the moment the
-            // screen opened, for an edit nobody made.
+            // Seeding the draft is a change too, and so is canonicalisation —
+            // `FREQ=WEEKLY;BYDAY=WE,MO` comes back as `BYDAY=MO,WE`, which is
+            // the same rule spelled tidily. Writing on either would mark the
+            // issue dirty and fire a save the moment the screen opened, for an
+            // edit nobody made. It is also what tells a seeding apart from a
+            // tap, which is why `touched` is set here and nowhere else.
             guard new != Recurrence(rule: rule) else { return }
+            touched = true
             rule = new.rule
         }
+    }
+
+    /// Re-seed the draft from the bound rule, while the user has not yet edited
+    /// it. Called on appear *and* on every change to the rule, because the issue
+    /// screen fills its `recurrence` state after this view has already appeared,
+    /// and a rule that arrives a moment late is still this issue's rule.
+    private func followRule() {
+        guard !touched else { return }
+        let parsed = Recurrence(rule: rule)
+        // Guarded rather than assigned blindly: an equal assignment would be
+        // harmless, but writing @State on every change to the bound rule is a
+        // view invalidation for nothing.
+        guard parsed != draft else { return }
+        draft = parsed
     }
 
     // MARK: Frequency

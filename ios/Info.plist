@@ -22,11 +22,24 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Kept blanket, deliberately, rather than narrowed to an exception for
+	     .local. The server address is whatever the user types into Settings: the
+	     documented one is https://raspberrypi.local:8911, but a plain LAN IP, a
+	     Tailscale name or a hostname with no dot in it are all things people
+	     actually put there, and an NSExceptionDomains list cannot cover an
+	     address nobody has typed yet. Narrowing this would turn "I moved the Pi"
+	     into an app that silently cannot reach it. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!-- The documented server is raspberrypi.local, and resolving a .local name
+	     is mDNS, which iOS gates behind the Local Network prompt. Without a
+	     string here the prompt is refused outright and every request fails with
+	     no explanation beyond "could not connect". -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Graft talks to your own Graft server on your local network — a Raspberry Pi or a Mac at an address you enter yourself. Nothing leaves your network.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -35,11 +48,15 @@
 		<dict>
 			<key>UIWindowSceneSessionRoleApplication</key>
 			<array>
+				<!-- No UISceneDelegateClassName. It named
+				     $(PRODUCT_MODULE_NAME).SceneDelegate, a type that exists
+				     nowhere in this target: GraftApp is a SwiftUI App and its
+				     WindowGroup is what makes the scene. A manifest pointing at
+				     a class nobody wrote is a promise the app cannot keep, so
+				     the key goes rather than the class arriving. -->
 				<dict>
 					<key>UISceneConfigurationName</key>
 					<string>Default Configuration</string>
-					<key>UISceneDelegateClassName</key>
-					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
 				</dict>
 			</array>
 		</dict>

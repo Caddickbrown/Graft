@@ -560,7 +560,9 @@ struct KanbanCard: View {
 
     var body: some View {
         let priority = IssuePriority(rawValue: issue.priority) ?? .normal
-        let labels = issue.labels.filter { !$0.isEmpty }
+        // De-duplicated as well as emptied: a repeated label would give two
+        // chips the same `ForEach` identity, which SwiftUI renders as one.
+        let labels = issue.labels.filter { !$0.isEmpty }.uniqued
 
         VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS + 2) {
             NavigationLink(destination: IssueDetailView(issue: issue)) {

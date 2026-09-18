@@ -870,7 +870,9 @@ struct GraftIssueRow: View {
         let priority = IssuePriority(rawValue: issue.priority) ?? .normal
         let flagged = priority == .urgent || priority == .high
         let done = issue.status == "done"
-        let labels = issue.labels.filter { !$0.isEmpty }
+        // De-duplicated as well as emptied: a repeated label would give two
+        // chips the same `ForEach` identity, which SwiftUI renders as one.
+        let labels = issue.labels.filter { !$0.isEmpty }.uniqued
 
         HStack(spacing: 0) {
             if flagged {

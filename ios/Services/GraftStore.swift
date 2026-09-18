@@ -25,7 +25,19 @@ final class GraftStore {
 
     /// Pi server URL. Empty = local-only mode.
     var serverURL: String = "" {
-        didSet { saveSettings() }
+        didSet {
+            saveSettings()
+            // Unlinking a server has to take its notifications with it. They
+            // are about rows on a machine this phone no longer talks to, and
+            // nothing else would ever cancel them: `reschedule` returns early
+            // with no base, so the pending set would simply keep firing for as
+            // long as iOS held it. `clearAll` is documented as the answer to
+            // exactly this; nothing called it.
+            if serverURL.trimmingCharacters(in: .whitespaces).isEmpty,
+               !oldValue.trimmingCharacters(in: .whitespaces).isEmpty {
+                Task { await self.notifications.clearAll() }
+            }
+        }
     }
 
     var fallbackURL: String = "" {
@@ -110,8 +122,24 @@ final class GraftStore {
         prefix + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(8)
     }
 
+    /// A timestamp in the server's own format: naive UTC with microseconds and
+    /// no zone designator, which is what `datetime.utcnow().isoformat()` writes.
+    ///
+    /// `ISO8601DateFormatter` writes `2026-09-18T12:34:56Z`, and the POST and
+    /// PUT handlers store whatever the client sends them verbatim, so one column
+    /// ended up holding two formats. Everything that orders by `created_at` or
+    /// `updated_at` — the Inbox, "last updated", the series view — compares them
+    /// as text, and `…T12:34:56Z` sorts *after* `…T12:34:57.000001`, so a row
+    /// written on the phone jumped ahead of one written a second later on the
+    /// web. Built per call rather than held in a `static`: a `DateFormatter` is
+    /// not `Sendable`, and this is the shape the rest of the app uses too.
     private func nowISO() -> String {
-        ISO8601DateFormatter().string(from: Date())
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+        return f.string(from: Date())
     }
 
     // MARK: - Persistence helpers
@@ -215,11 +243,22 @@ final class GraftStore {
     func flushPending() async {
         guard let base = activeBase else { return }
         await syncEngine.flush(to: base)
-        // After flush, pull latest from server to reconcile
-        if syncEngine.pendingCount == 0 {
-            try? await fetchAll(from: base)
+        // After flush, pull latest from server to reconcile — but only once the
+        // queue is empty, or the pull would overwrite writes still waiting to
+        // go out.
+        guard syncEngine.pendingCount == 0 else { return }
+        do {
+            try await fetchAll(from: base)
+            // Stamped only on the pull that actually landed. `try?` used to
+            // swallow the failure and set it anyway, so Settings reported a
+            // successful sync at a moment when the phone and the Pi had not
+            // spoken — which is precisely the question that line answers.
             lastSynced = Date()
             saveCachedData()
+        } catch {
+            // Nothing to report here: the caller of a background flush has no
+            // banner, and `connection` already reads the queue and the last
+            // flush error for the sync strip.
         }
     }
 
@@ -233,6 +272,24 @@ final class GraftStore {
         // First flush any pending writes
         if let base = activeBase {
             await syncEngine.flush(to: base)
+        }
+
+        // And pull only if that emptied the queue.
+        //
+        // A pull replaces projects, issues, milestones and the rest wholesale,
+        // so running one over un-flushed writes puts the server's version of a
+        // row the phone has already changed back on screen: the optimistic edit
+        // vanishes under the user, and the obvious response is to tap it again —
+        // which cancels the queued toggle and leaves the two ends disagreeing
+        // for good. `flushPending` has always had this guard; `sync()` did not.
+        //
+        // Nothing is said here that the sync strip does not already say: it
+        // reads the queue itself and offers a Retry that flushes. The last
+        // flush error is handed over, so an unreachable server still reads as
+        // unreachable rather than as a queue that is merely taking its time.
+        if syncEngine.pendingCount > 0 {
+            errorMessage = syncEngine.lastFlushError
+            return
         }
 
         // Then pull
@@ -428,10 +485,20 @@ final class GraftStore {
         await flushPending()
     }
 
+    /// Deleting a project takes its issues, milestones and links with it, here
+    /// as well as on the server — which drops the orphans for the same reason
+    /// it does on `DELETE /api/issues/:id`: nothing reaps them, and a link whose
+    /// owner is gone renders as a blank row. Doing it locally too is what keeps
+    /// the screen honest between now and the next pull.
     func deleteProject(id: String) async throws {
+        let ownedIssues = Set(issues.filter { $0.projectId == id }.map(\.id))
         projects.removeAll { $0.id == id }
         issues.removeAll { $0.projectId == id }
         milestones.removeAll { $0.projectId == id }
+        links.removeAll { link in
+            (link.ownerType == "project" && link.ownerId == id)
+                || (link.ownerType == "issue" && ownedIssues.contains(link.ownerId))
+        }
         saveCachedData()
         syncEngine.enqueue(method: "DELETE", path: "/api/projects/\(id)")
         await flushPending()
@@ -475,6 +542,9 @@ final class GraftStore {
             updatedAt: ts
         )
         issues.append(issue)
+        // Creating an issue with a name on it is an assignment like any other,
+        // and the server records one — see `updateIssue`.
+        if !assignee.isEmpty { notifications.noteOwnAssignment(issueId: issue.id) }
         saveCachedData()
 
         var bodyDict: [String: Any] = [
@@ -504,6 +574,16 @@ final class GraftStore {
         // Update milestone name for display
         updated.milestoneName = milestones.first(where: { $0.id == issue.milestoneId })?.name
         if let idx = issues.firstIndex(where: { $0.id == issue.id }) {
+            // The server writes an `assigned` notification row for every
+            // assignee change, because nothing downstream can reconstruct the
+            // event — but it cannot tell who made the change. This is the one
+            // place that knows, so it says so, and the scheduler keeps quiet
+            // about a name the user typed on this phone a moment ago. The
+            // debounced field on the issue screen writes two or three times,
+            // which was two or three buzzes.
+            if issues[idx].assignee != updated.assignee {
+                notifications.noteOwnAssignment(issueId: issue.id)
+            }
             issues[idx] = updated
         }
         saveCachedData()
@@ -605,6 +685,9 @@ final class GraftStore {
 
     func deleteIssue(id: String) async throws {
         issues.removeAll { $0.id == id }
+        // The server deletes the issue's links with it; without this the phone
+        // kept showing them until the next pull.
+        links.removeAll { $0.ownerType == "issue" && $0.ownerId == id }
         saveCachedData()
         syncEngine.enqueue(method: "DELETE", path: "/api/issues/\(id)")
         await flushPending()

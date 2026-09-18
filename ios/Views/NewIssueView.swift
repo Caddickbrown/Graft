@@ -188,7 +188,9 @@ struct NewIssueView: View {
         guard !selectedProjectId.isEmpty else { return }
         isSaving = true
         defer { isSaving = false }
-        let labels = labelsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        // `uniqued`: "bug, bug" is one label, and two of them would share a
+        // `ForEach` identity everywhere the chips are drawn.
+        let labels = labelsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.uniqued
         try? await store.createIssue(
             projectId: selectedProjectId,
             title: title,

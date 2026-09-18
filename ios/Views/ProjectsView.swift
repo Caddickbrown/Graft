@@ -540,8 +540,9 @@ struct ProjectCardView: View {
                     }
                 }
 
-                // Tags
-                let tagList = project.tagList
+                // Tags. De-duplicated: two identical tags would be two rows
+                // with one `ForEach` identity, which SwiftUI mishandles.
+                let tagList = project.tagList.uniqued
                 if !tagList.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 4) {

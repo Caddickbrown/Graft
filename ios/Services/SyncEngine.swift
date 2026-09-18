@@ -27,7 +27,16 @@ final class SyncEngine {
     /// Retryable failures get a bounded number of goes. Without a cap, a single
     /// op that never succeeds stalls every op behind it *and* stops `GraftStore`
     /// pulling from the server at all, so the app quietly stops reconciling.
-    private static let maxAttempts = 8
+    ///
+    /// Only failures the *server* answered with count towards it — see
+    /// `OpFailure.unreachable`. A phone with no signal must be able to sit on
+    /// its queue indefinitely; the old cap of 8 counted every failed connection,
+    /// and since every write and every foreground calls `flush`, a day offline
+    /// was enough to throw a real edit away. What the cap is actually for is the
+    /// op the server keeps refusing in a way that reads as retryable — a 500 on
+    /// one bad row — and 24 tries of that is still a few minutes of flushing,
+    /// not a lifetime.
+    private static let maxAttempts = 24
 
     /// Only the most recent drops are worth keeping around for the UI.
     private static let maxDroppedKept = 20
@@ -81,11 +90,11 @@ final class SyncEngine {
             // including its sub-resources, whose requests would only 404.
             pendingOps.removeAll { $0.path == path || $0.path.hasPrefix(path + "/") }
         } else if isToggle(method: method, path: path) {
-            // Archive is a server-side *toggle*, not a value being set, so the
-            // "newest write supersedes the earlier ones" rule below is exactly
-            // wrong for it: archive-then-undo would collapse to a single net
-            // flip, leaving the server archived while the phone shows the issue
-            // live, and the next pull would re-archive it.
+            // Archive and favourite are server-side *toggles*, not values being
+            // set, so the "newest write supersedes the earlier ones" rule below
+            // is exactly wrong for them: archive-then-undo would collapse to a
+            // single net flip, leaving the server archived while the phone shows
+            // the issue live, and the next pull would re-archive it.
             //
             // Two toggles on the same path are a no-op, so they cancel out.
             // That keeps the queue short and matches local state, which also
@@ -111,10 +120,15 @@ final class SyncEngine {
         saveOps()
     }
 
-    /// `PATCH .../archive` flips a flag rather than setting one, so it is not
-    /// safe to treat as idempotent.
+    /// The server-side toggles: `PATCH .../archive` and `PATCH .../favourite`
+    /// both flip a flag rather than setting one, so neither is safe to treat as
+    /// idempotent. Favourite was missing here, which meant pin-then-unpin while
+    /// offline collapsed into a single PATCH under the rule below and left the
+    /// project pinned on the server and unpinned on the phone.
+    private static let togglePaths = ["/archive", "/favourite"]
+
     private func isToggle(method: String, path: String) -> Bool {
-        method == "PATCH" && path.hasSuffix("/archive")
+        method == "PATCH" && Self.togglePaths.contains { path.hasSuffix($0) }
     }
 
     // MARK: - Flush
@@ -149,7 +163,9 @@ final class SyncEngine {
                 if let body, !body.isEmpty { onResponse?(op, body) }
             } catch {
                 let failure: OpFailure = (error as? OpFailure)
-                    ?? OpFailure.transient(error.localizedDescription)
+                    ?? (Self.isUnreachable(error)
+                        ? OpFailure.unreachable(error.localizedDescription)
+                        : OpFailure.transient(error.localizedDescription))
                 switch failure {
                 case .permanent(let why):
                     // The server understood the request and refused it — a PUT
@@ -158,6 +174,15 @@ final class SyncEngine {
                     // let one dead op hold the whole queue hostage.
                     drop(op, reason: why)
                     problem = "Discarded \(op.method) \(op.path) — \(why)"
+                case .unreachable(let why):
+                    // The server was never reached, so this says nothing about
+                    // the op and must not be counted against it. Stop the flush
+                    // — if one request cannot get out, nor can the next — and
+                    // leave the queue exactly as it is for whenever the network
+                    // comes back.
+                    lastFlushError = problem.map { "\($0); \(why)" } ?? why
+                    saveOps()
+                    return
                 case .transient(let why):
                     let tries = recordAttempt(on: op.id)
                     if tries >= Self.maxAttempts {
@@ -224,8 +249,39 @@ final class SyncEngine {
     private enum OpFailure: Error {
         /// The server understood and refused. Sending it again changes nothing.
         case permanent(String)
-        /// Server trouble or no network. The same request may well work later.
+        /// The server answered, and badly — a 500, a 429, a reply that was not
+        /// HTTP at all. Worth retrying, and worth counting: something about this
+        /// request may be what the server keeps choking on.
         case transient(String)
+        /// Nothing answered. No signal, no route to the Pi, the connection died
+        /// mid-flight. This says nothing whatever about the op, so counting it
+        /// would be counting the user's commute, which is how a queue quietly
+        /// eats a day's edits.
+        case unreachable(String)
+    }
+
+    /// True for the URLSession errors that mean "the server was never reached".
+    ///
+    /// Listed rather than "any URLError", because plenty of URLErrors *are*
+    /// about the request — `.badURL`, `.dataLengthExceedsMaximum` — and those
+    /// should still burn an attempt rather than retry forever.
+    private static func isUnreachable(_ error: Error) -> Bool {
+        guard let url = error as? URLError else { return false }
+        switch url.code {
+        case .notConnectedToInternet,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .networkConnectionLost,
+             .timedOut,
+             .dnsLookupFailed,
+             .internationalRoamingOff,
+             .callIsActive,
+             .dataNotAllowed,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Returns the response body on success, for `onResponse`. Nothing here
@@ -239,6 +295,15 @@ final class SyncEngine {
         var req = URLRequest(url: url)
         req.httpMethod = op.method
         req.timeoutInterval = 10
+        // The op's own id, which is stable from the moment it was queued and
+        // survives relaunches, names this request for the server. A toggle
+        // cannot be retried safely otherwise: a client that never saw the reply
+        // cannot tell "the request was lost" from "the answer was lost", and the
+        // two want opposite things. The server records applied ids and answers a
+        // repeat without flipping again. Sent on every op, not just the toggles
+        // — it is ignored where it is not needed, and a retry after a timeout is
+        // exactly the case nobody remembers to special-case.
+        req.setValue(op.id, forHTTPHeaderField: "X-Graft-Op-Id")
         if let body = op.body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
@@ -251,7 +316,12 @@ final class SyncEngine {
             payload = data
             response = resp
         } catch {
-            // Anything URLSession itself raises is a reachability problem.
+            // Nothing came back. Whether that is worth counting against the op
+            // depends entirely on *why*, which is the one thing the old code
+            // threw away by calling every URLSession error transient.
+            if Self.isUnreachable(error) {
+                throw OpFailure.unreachable(error.localizedDescription)
+            }
             throw OpFailure.transient(error.localizedDescription)
         }
 

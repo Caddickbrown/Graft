@@ -560,6 +560,53 @@ struct GraftLink: Codable, Identifiable, Hashable {
 // a view saved on the web opens on the phone and vice versa. Stored as the raw
 // string rather than a decoded `IssueQuery` so a blob written by a newer client
 // survives a round trip through this one unchanged.
+//
+// On the wire it arrives as an OBJECT: the server stores JSON text and hands it
+// back parsed (`_view_row_to_dict`), the same way it does `issues.labels`.
+// Insisting on a string threw a typeMismatch that took the whole views array
+// down with it, which left the Saved views section permanently empty — the
+// array is the unit of decoding, so one bad field loses every row. Both shapes
+// are accepted here, exactly as the web client accepts both in `viewBlob`, and
+// what goes back out is still text, which `_view_query_text` takes either way.
+
+/// The smallest JSON tree that can be re-serialised faithfully. Decoding the
+/// object through `IssueQuery` instead would be two lines shorter and would
+/// quietly drop every key this build has not heard of — which is the one thing
+/// holding the blob as text is meant to prevent.
+private enum GraftJSONValue: Codable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([GraftJSONValue])
+    case object([String: GraftJSONValue])
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null; return }
+        // Bool before Double: JSONDecoder keeps the two apart, and asking for a
+        // Double first would be fine, but asking for a Bool first states the
+        // order the JSON grammar actually has.
+        if let b = try? c.decode(Bool.self) { self = .bool(b); return }
+        if let d = try? c.decode(Double.self) { self = .number(d); return }
+        if let s = try? c.decode(String.self) { self = .string(s); return }
+        if let a = try? c.decode([GraftJSONValue].self) { self = .array(a); return }
+        if let o = try? c.decode([String: GraftJSONValue].self) { self = .object(o); return }
+        throw DecodingError.dataCorruptedError(in: c, debugDescription: "unrepresentable JSON")
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null: try c.encodeNil()
+        case .bool(let b): try c.encode(b)
+        case .number(let d): try c.encode(d)
+        case .string(let s): try c.encode(s)
+        case .array(let a): try c.encode(a)
+        case .object(let o): try c.encode(o)
+        }
+    }
+}
 
 struct GraftSavedView: Codable, Identifiable, Hashable {
     let id: String
@@ -583,8 +630,27 @@ struct GraftSavedView: Codable, Identifiable, Hashable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
-        query = try c.decodeIfPresent(String.self, forKey: .query) ?? "{}"
+        query = Self.blobText(from: c)
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+    }
+
+    /// The `query` field as the text this client holds it in, whichever of the
+    /// two legal shapes it arrived in. Never throws: a blob nobody can read is
+    /// a view that opens on the defaults, not a views list that fails to load.
+    private static func blobText(from c: KeyedDecodingContainer<CodingKeys>) -> String {
+        if let text = try? c.decodeIfPresent(String.self, forKey: .query), !text.isEmpty {
+            return text
+        }
+        guard let value = try? c.decodeIfPresent(GraftJSONValue.self, forKey: .query) else {
+            return "{}"
+        }
+        let encoder = JSONEncoder()
+        // Sorted, like `IssueQuery.jsonString()`, so the same blob is the same
+        // text however it reached us and a round trip does not look like an edit.
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(value),
+              let text = String(data: data, encoding: .utf8) else { return "{}" }
+        return text
     }
 }
 
@@ -622,9 +688,12 @@ struct PendingOperation: Codable, Identifiable {
     let path: String        // e.g. /api/issues/iss_abc123
     let body: Data?         // JSON-encoded body, nil for DELETE
     let createdAt: Date
-    /// Flushes that tried this op and failed for a retryable reason. Retrying a
-    /// transient failure is right; retrying without limit is how one unlucky
-    /// request wedges the whole queue, so `SyncEngine` caps this.
+    /// Flushes on which the *server answered* and the answer was retryable.
+    /// Retrying such a failure is right; retrying without limit is how one
+    /// unlucky request wedges the whole queue, so `SyncEngine` caps this. A
+    /// flush that never reached a server does not count here — an afternoon out
+    /// of signal says nothing about the op, and counting it used to be enough to
+    /// throw a real edit away.
     var attempts: Int
 
     enum CodingKeys: String, CodingKey {
@@ -712,5 +781,26 @@ extension GraftProject {
         case "done": return "Done"
         default: return status
         }
+    }
+}
+
+// MARK: - Labels and tags
+
+extension Array where Element == String {
+    /// The same list with repeats removed, first occurrence winning.
+    ///
+    /// Labels and tags are free text on both sides of the wire, so "bug, bug"
+    /// is a thing a person can type and a thing the server will store. Every
+    /// place that renders them does `ForEach(labels, id: \.self)`, and two rows
+    /// claiming one identity is something SwiftUI does not so much handle as
+    /// survive. De-duplicating where they are parsed is the honest fix — a list
+    /// that says "bug" twice never meant it twice — and the render sites lean on
+    /// it as well, because the server can hand back a row written years ago.
+    ///
+    /// Order is kept: it is the order the user typed, and sorting it here would
+    /// reshuffle a field under the cursor.
+    var uniqued: [String] {
+        var seen = Set<String>()
+        return filter { seen.insert($0).inserted }
     }
 }

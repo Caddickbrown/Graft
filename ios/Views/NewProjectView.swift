@@ -40,8 +40,10 @@ struct NewProjectView: View {
             || !description.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    /// `uniqued` because a tag typed twice is still one tag, and two of them
+    /// would share a `ForEach` identity on the project row.
     private var parsedTags: [String] {
-        tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.uniqued
     }
 
     var body: some View {
@@ -130,8 +132,10 @@ struct EditProjectView: View {
             || colourHex.caseInsensitiveCompare(project.colour) != .orderedSame
     }
 
+    /// `uniqued` because a tag typed twice is still one tag, and two of them
+    /// would share a `ForEach` identity on the project row.
     private var parsedTags: [String] {
-        tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.uniqued
     }
 
     var body: some View {
