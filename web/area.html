@@ -117,7 +117,18 @@
         </div>
         <div class="form-group">
           <label class="form-label">Colour</label>
-          <div id="colour-picker"></div>
+          <div class="colour-picker" id="colour-picker">
+            <div class="colour-swatch" data-colour="#C2705A" style="background:#C2705A" title="Clay"></div>
+            <div class="colour-swatch" data-colour="#B58234" style="background:#B58234" title="Ochre"></div>
+            <div class="colour-swatch" data-colour="#848E3E" style="background:#848E3E" title="Olive"></div>
+            <div class="colour-swatch" data-colour="#4F9A6A" style="background:#4F9A6A" title="Moss"></div>
+            <div class="colour-swatch" data-colour="#3E9A93" style="background:#3E9A93" title="Teal"></div>
+            <div class="colour-swatch" data-colour="#5388C0" style="background:#5388C0" title="Harbour"></div>
+            <div class="colour-swatch selected" data-colour="#7C7FC4" style="background:#7C7FC4" title="Iris"></div>
+            <div class="colour-swatch" data-colour="#9A6BA8" style="background:#9A6BA8" title="Plum"></div>
+            <div class="colour-swatch" data-colour="#C06784" style="background:#C06784" title="Rose"></div>
+            <div class="colour-swatch" data-colour="#8A9098" style="background:#8A9098" title="Stone"></div>
+          </div>
           <input type="hidden" id="project-colour" value="#7C7FC4">
         </div>
       </div>
@@ -135,7 +146,7 @@
 
 <div id="slideover-overlay" style="display:none" onclick="GRAFT.closeSlideover()"></div>
 <div id="issue-slideover" class="slideover" style="display:none"></div>
-<div id="toast-container" class="toast-container" aria-live="polite"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script src="app.js"></script>
 <script>GRAFT.initArea();</script>

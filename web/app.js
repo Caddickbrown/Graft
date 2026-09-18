@@ -584,26 +584,56 @@
                         MONTHLY: ['month', 'months'], YEARLY: ['year', 'years'] };
 
   // The rule travels as RRULE because the server, ICS and EventKit all speak it.
-  // The form only ever produces the handful of parts the server accepts, so this
-  // pair never has to round-trip anything it cannot rebuild — but parse is
-  // tolerant anyway, because a rule may have been written by a newer client.
+  // The form exposes frequency, interval and weekdays; iOS can write BYMONTHDAY,
+  // COUNT and UNTIL as well. Those are parsed into `rest` and put back verbatim
+  // by the builder, because every edit resubmits the whole rule and anything the
+  // form cannot draw would otherwise be quietly deleted by a change of title.
+  //
+  // Which parts a rule may carry depends on its frequency — the server rejects
+  // BYDAY on anything but WEEKLY and BYMONTHDAY on anything but MONTHLY — so the
+  // builder, not the parser, decides what still applies.
+  const RECUR_CARRY = [
+    // part → the frequency it is only legal with, or '' for any.
+    ['BYMONTHDAY', 'MONTHLY'],
+    ['COUNT', ''],
+    ['UNTIL', ''],
+  ];
+
   function parseRecurrence(rule) {
-    const out = { freq: '', interval: 1, byday: [] };
+    const out = { freq: '', interval: 1, byday: [], rest: {} };
     String(rule || '').toUpperCase().split(';').forEach(part => {
       const [k, v] = part.split('=');
-      if (k === 'FREQ') out.freq = (v || '').trim();
-      else if (k === 'INTERVAL') out.interval = Math.max(1, parseInt(v, 10) || 1);
-      else if (k === 'BYDAY') out.byday = (v || '').split(',').map(x => x.trim()).filter(Boolean);
+      const key = (k || '').trim();
+      const value = (v || '').trim();
+      if (key === 'FREQ') out.freq = value;
+      else if (key === 'INTERVAL') out.interval = Math.max(1, parseInt(value, 10) || 1);
+      else if (key === 'BYDAY') out.byday = value.split(',').map(x => x.trim()).filter(Boolean);
+      else if (key && value) out.rest[key] = value;
     });
     if (!RECUR_UNITS[out.freq]) out.freq = '';
     return out;
   }
 
-  function buildRecurrence({ freq, interval, byday }) {
+  function buildRecurrence({ freq, interval, byday, rest }) {
     if (!freq) return '';
     const bits = [`FREQ=${freq}`];
     if (interval > 1) bits.push(`INTERVAL=${interval}`);
-    if (freq === 'WEEKLY' && byday.length) bits.push(`BYDAY=${byday.join(',')}`);
+    if (freq === 'WEEKLY' && byday && byday.length) bits.push(`BYDAY=${byday.join(',')}`);
+    // Parts outside this list are dropped rather than echoed: the server's
+    // whitelist would 400 on them, and failing to save a renamed issue is a
+    // worse answer than losing a part no version of Graft can have written.
+    let ends = false;
+    RECUR_CARRY.forEach(([key, onlyWith]) => {
+      const value = rest && rest[key];
+      if (!value || (onlyWith && onlyWith !== freq)) return;
+      // COUNT and UNTIL are two ways to say where the series stops, and RFC 5545
+      // — and the server — allow only one of them.
+      if (key === 'COUNT' || key === 'UNTIL') {
+        if (ends) return;
+        ends = true;
+      }
+      bits.push(`${key}=${value}`);
+    });
     return bits.join(';');
   }
 
@@ -643,7 +673,10 @@
     // Split by hand rather than new Date(dateStr): a bare yyyy-mm-dd parses as
     // UTC midnight and would print the day before west of Greenwich — the same
     // slip daysUntil avoids.
-    const [y, mo, dd] = dateStr.split('-').map(Number);
+    // slice(0, 10) rather than a plain split: due_at is a date today, but a
+    // datetime from any other writer would otherwise put "2026-09-18T00:00:00"
+    // through Number() and print Invalid Date.
+    const [y, mo, dd] = String(dateStr).slice(0, 10).split('-').map(Number);
     const text = Math.abs(d) <= 7
       ? dueLabel(dateStr)
       : new Date(y, mo - 1, dd).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
@@ -674,13 +707,43 @@
   // and invalidated by hand when a project is created, renamed or filed.
   let _railProjects = null;
 
+  // Responses do not come back in the order the requests left. Typing in the
+  // debounced search box can land q=bu after q=bug, and whichever answered last
+  // used to win — so the list showed results for what you typed before. Each
+  // loader takes a ticket before it asks and checks it is still the newest one
+  // after the await; a stale reply, success or failure, is simply dropped.
+  const _loadTickets = { issues: 0, projectIssues: 0, projects: 0 };
+  function _takeTicket(name) { return ++_loadTickets[name]; }
+  function _ticketCurrent(name, ticket) { return _loadTickets[name] === ticket; }
+
   function areaName(id) {
     if (!id) return 'No area';
     return _allAreas.find(a => a.id === id)?.name || 'Unknown area';
   }
 
+  // Every issue captured without a project is filed under this sentinel. The
+  // server keeps it out of GET /api/projects on purpose, so the cache can never
+  // name it — which is why its issues used to show a blank chip and group under
+  // "Unknown project". The name is fixed and documented, so it is answered here
+  // rather than fetched.
+  const NO_PROJECT_ID = 'proj_none';
+  const NO_PROJECT_NAME = 'No project';
+
   function projectName(id) {
+    if (id === NO_PROJECT_ID) return NO_PROJECT_NAME;
     return _allProjects.find(p => p.id === id)?.name || 'Unknown project';
+  }
+
+  // The chip on an issue row is meant to vanish when there is no name to show,
+  // so this stays undefined for a project we genuinely cannot resolve.
+  function stitchProjectName(project, id) {
+    if (project) return project.name;
+    return id === NO_PROJECT_ID ? NO_PROJECT_NAME : undefined;
+  }
+
+  function milestoneName(id) {
+    if (!id) return 'No milestone';
+    return _allMilestones.find(m => m.id === id)?.name || 'Unknown milestone';
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1348,7 +1411,21 @@
   };
 
   const ALL_SORTS = ['manual', 'updated', 'created', 'priority', 'title', 'status', 'milestone_due', 'area'];
+  // What the server can actually order issues by. 'area' belongs to a project,
+  // not to an issue, and _ISSUE_SORTS has no such key — asking for it fell back
+  // to manual order without saying so, which is a button that lies.
+  const ISSUE_SORTS = ALL_SORTS.filter(v => v !== 'area');
   const ALL_GROUPS = ['none', 'status', 'priority', 'assignee', 'milestone', 'project', 'area'];
+  // Every filter the issue list can post to the server. 'tag' is a project
+  // property that list_issues never reads, so it is offered on projects only.
+  const ISSUE_FILTER_KEYS = ORG_KEYS.filter(k => k !== 'tag');
+
+  // Which way round a sort reads when nobody has said. This mirrors the
+  // server's _ISSUE_SORT_DEFAULT_DIR: "most recently updated" means newest
+  // first, and sending dir=asc with every request was overriding that, so
+  // Updated and Created both opened at the oldest thing in the database.
+  const SORT_DEFAULT_DIR = { updated: 'desc', created: 'desc' };
+  function sortDefaultDir(sort) { return SORT_DEFAULT_DIR[sort] || 'asc'; }
 
   function orgDefaults() {
     return {
@@ -1370,8 +1447,13 @@
       out.filters[k] = Array.isArray(v) ? v.map(String).filter(Boolean) : [];
     });
     out.archived = !!blob.archived;
-    out.sort = ALL_SORTS.includes(blob.sort) ? blob.sort : 'manual';
-    out.dir = blob.dir === 'desc' ? 'desc' : 'asc';
+    // Against this surface's own list, not the union of all of them: a sort
+    // left over from another page (or an older build that offered more) has to
+    // fall back rather than sit in the bar doing nothing.
+    out.sort = orgSurface().sorts.includes(blob.sort) ? blob.sort : 'manual';
+    // Only an explicit direction overrides the sort's own; anything else — a
+    // URL without dir=, a blob written before this sort existed — takes it.
+    out.dir = blob.dir === 'desc' || blob.dir === 'asc' ? blob.dir : sortDefaultDir(out.sort);
     out.group = ALL_GROUPS.includes(blob.group) ? blob.group : 'none';
     return out;
   }
@@ -1399,8 +1481,8 @@
     issues: {
       noun: 'issues',
       placeholder: 'Search issues…',
-      keys: ORG_KEYS,
-      sorts: ALL_SORTS,
+      keys: ISSUE_FILTER_KEYS,
+      sorts: ISSUE_SORTS,
       groups: ALL_GROUPS,
       views: [['list', 'List'], ['board', 'Board'], ['table', 'Table']],
       apply: () => loadIssuesPage(),
@@ -1410,7 +1492,7 @@
       placeholder: 'Search this project…',
       // project_id and area_id are fixed by the page you are on.
       keys: ['status', 'priority', 'assignee', 'label', 'milestone_id'],
-      sorts: ALL_SORTS,
+      sorts: ISSUE_SORTS,
       groups: ['none', 'status', 'priority', 'assignee', 'milestone'],
       views: [['board', 'Board'], ['list', 'List']],
       apply: () => loadProjectIssues(),
@@ -1436,7 +1518,7 @@
     });
     blob.archived = q.get('archived') === '1';
     blob.sort = q.get('sort') || 'manual';
-    blob.dir = q.get('dir') || 'asc';
+    blob.dir = q.get('dir') || '';
     blob.group = q.get('group') || 'none';
     return orgNormalise(blob);
   }
@@ -1447,7 +1529,7 @@
     ORG_KEYS.forEach(k => { if (blob.filters[k]?.length) q.set(k, blob.filters[k].join(',')); });
     if (blob.archived) q.set('archived', '1');
     if (blob.sort !== 'manual') q.set('sort', blob.sort);
-    if (blob.dir !== 'asc') q.set('dir', blob.dir);
+    if (blob.dir !== sortDefaultDir(blob.sort)) q.set('dir', blob.dir);
     if (blob.group !== 'none') q.set('group', blob.group);
     const s = q.toString();
     return s ? `?${s}` : '';
@@ -1462,7 +1544,7 @@
     ORG_KEYS.forEach(k => { if (_org.filters[k].length) q.set(k, _org.filters[k].join(',')); });
     if (_org.archived) q.set('archived', '1');
     if (_org.sort !== 'manual') q.set('sort', _org.sort);
-    if (_org.dir !== 'asc') q.set('dir', _org.dir);
+    if (_org.dir !== sortDefaultDir(_org.sort)) q.set('dir', _org.dir);
     if (_org.group !== 'none') q.set('group', _org.group);
     const s = q.toString();
     history.replaceState(null, '', s ? `?${s}` : window.location.pathname);
@@ -1530,7 +1612,11 @@
       vocabulary.forEach(i => (i.labels || []).forEach(l => seen.add(l)));
       return [...seen].sort().map(v => ({ v, label: v }));
     }
-    if (key === 'project_id') return _allProjects.map(p => ({ v: p.id, label: p.name }));
+    if (key === 'project_id') {
+      // The sentinel is not in _allProjects and never will be, but its id
+      // filters exactly like any other, so "No project" can be asked for.
+      return [{ v: NO_PROJECT_ID, label: NO_PROJECT_NAME }, ..._allProjects.map(p => ({ v: p.id, label: p.name }))];
+    }
     if (key === 'milestone_id') {
       const ms = _orgName === 'project'
         ? _allMilestones.filter(m => m.project_id === _currentProjectId)
@@ -1540,6 +1626,10 @@
     if (key === 'area_id') {
       return [{ v: 'none', label: 'No area' }, ..._allAreas.map(a => ({ v: a.id, label: a.name }))];
     }
+    // Tags belong to projects, and the vocabulary is the server's own list
+    // rather than what the current page happens to hold — the menu is how you
+    // find a tag, so it cannot be narrowed by the filter you are standing in.
+    if (key === 'tag') return _allProjectTags.map(t => ({ v: t, label: t }));
     return [];
   }
 
@@ -1719,7 +1809,13 @@
     const items = s.sorts.map(v => ({
       label: SORT_LABELS[v],
       checked: _org.sort === v,
-      onClick: () => { _org.sort = v; orgPersist(); orgWriteURL(); renderOrgBar(); orgApply(); },
+      onClick: () => {
+        // Picking a sort picks its natural direction with it; the toggle
+        // underneath is still there for anyone who wants the other one.
+        _org.sort = v;
+        _org.dir = sortDefaultDir(v);
+        orgPersist(); orgWriteURL(); renderOrgBar(); orgApply();
+      },
     }));
     items.push({ separator: true });
     items.push({
@@ -1801,7 +1897,7 @@
 
     if (group === 'priority') return PRIORITY_LABELS[key] || key;
     if (group === 'assignee') return key ? key : 'Unassigned';
-    if (group === 'milestone')
+    if (group === 'milestone') return key ? milestoneName(key) : 'No milestone';
     if (group === 'project') return key ? projectName(key) : 'No project';
     if (group === 'area') return areaName(key);
     return '';
@@ -2029,6 +2125,15 @@
       `</tbody></table></div>`;
   }
 
+  // What "cleared" means depends on the column. assignee, due_at and the other
+  // text fields hold '' when empty — that is the convention the whole server
+  // relies on, and ?assignee=none looks for '' and not NULL, so a cleared name
+  // sent as null drops the issue out of the unassigned pile. milestone_id is
+  // the one column that genuinely holds NULL, because a foreign key that points
+  // at nothing is not the empty string.
+  const TBL_EMPTY = { milestone_id: null };
+  function _tblEmpty(field) { return field in TBL_EMPTY ? TBL_EMPTY[field] : ''; }
+
   async function _tblChange(el, field) {
     const id = el.dataset.id;
     const issue = _issue(id);
@@ -2036,13 +2141,14 @@
     const val = el.value;
     const prev = issue[field];
     if (val === (prev || '')) return;
-    issue[field] = val || null;
+    const sent = val || _tblEmpty(field);
+    issue[field] = sent;
     // Sync milestone_name so list view stays consistent
     if (field === 'milestone_id') {
       issue.milestone_name = _allMilestones.find(m => m.id === val)?.name || null;
     }
     try {
-      _applySpawn(await api('PUT', `/api/issues/${id}`, { [field]: val || null }));
+      _applySpawn(await api('PUT', `/api/issues/${id}`, { [field]: sent }));
     } catch {
       issue[field] = prev;
       toast('Could not save change');
@@ -2244,7 +2350,7 @@
   // chips are redrawn whenever the frequency changes, and reading checked-ness
   // back off elements that are about to be replaced is how a half-set rule gets
   // lost between two renders.
-  let _recurState = { freq: '', interval: 1, byday: [], anchor: 'schedule' };
+  let _recurState = { freq: '', interval: 1, byday: [], rest: {}, anchor: 'schedule' };
 
   function _recurLoad(issue) {
     const parsed = parseRecurrence(issue && issue.recurrence);
@@ -2252,6 +2358,8 @@
       freq: parsed.freq,
       interval: parsed.interval,
       byday: parsed.byday,
+      // Carried, not shown: see buildRecurrence.
+      rest: parsed.rest,
       anchor: (issue && issue.recurrence_anchor) || 'schedule',
     };
     _recurRender();
@@ -2327,7 +2435,8 @@
       const next = { ...res.spawned };
       // project_name is stitched on client-side from the projects cache, the
       // same way the lists do it; the server's issue rows never carry it.
-      next.project_name = _allProjects.find(p => p.id === next.project_id)?.name;
+      next.project_name = stitchProjectName(
+        _allProjects.find(p => p.id === next.project_id), next.project_id);
       _allIssues.push(next);
     }
     rerenderCurrentView();
@@ -2817,6 +2926,7 @@
   async function loadProjects() {
     const grid = document.getElementById('projects-grid');
     if (grid && !_projectsLoaded) grid.innerHTML = skeleton('project', 6);
+    const ticket = _takeTicket('projects');
     try {
       // area_id and archived are real query parameters; project status and the
       // search term are cheap enough to apply here over a list we already hold.
@@ -2828,12 +2938,14 @@
         api('GET', `/api/projects${suffix}`),
         api('GET', '/api/milestones'),
       ]);
+      if (!_ticketCurrent('projects', ticket)) return;
       _allProjects = projects;
       _allMilestones = milestones;
       _projectsLoaded = true;
       markFresh();
       renderProjects();
     } catch {
+      if (!_ticketCurrent('projects', ticket)) return;
       if (_projectsLoaded) {
         // The list on screen is still the last good one — say it is old rather
         // than blanking it, and leave a way to try again.
@@ -3007,6 +3119,10 @@
 
     try {
       await api('PUT', `/api/projects/${pid}`, { area_id: targetArea });
+      // The rail draws the same projects under the same areas, from its own
+      // cache, so without this the sidebar kept the project filed where it was.
+      _railProjects = null;
+      renderRail();
     } catch {
       project.area_id = previous;
       renderProjects();
@@ -3405,7 +3521,7 @@
       const byId = Object.fromEntries(projects.map(p => [p.id, p]));
       _allIssues = issues.map(i => ({
         ...i,
-        project_name: byId[i.project_id]?.name,
+        project_name: stitchProjectName(byId[i.project_id], i.project_id),
         project_icon: byId[i.project_id]?.icon,
       }));
       _todayLoaded = true;
@@ -3454,7 +3570,12 @@
       const rank = { urgent: 0, high: 1, normal: 2, low: 3 };
       const da = daysUntil(issueDue(a)), db = daysUntil(issueDue(b));
       if ((da !== null && da < 0) !== (db !== null && db < 0)) return (da !== null && da < 0) ? -1 : 1;
-      return 0;
+      // Late first, then by how much it matters, then by how soon it is due.
+      // An undated issue sorts after every dated one rather than at the top.
+      const byRank = (rank[a.priority] ?? 2) - (rank[b.priority] ?? 2);
+      if (byRank) return byRank;
+      if (da === null || db === null) return da === db ? 0 : (da === null ? 1 : -1);
+      return da - db;
     });
 
     const inProgress = open.filter(i => i.status === 'in-progress' && !needsYou.includes(i));
@@ -3601,18 +3722,21 @@
   // request and the server does the matching — including, at last, labels.
   async function loadIssuesPage() {
     const el = document.getElementById('issue-list');
+    const ticket = _takeTicket('issues');
     try {
       const issues = await api('GET', `/api/issues${orgQuery()}`);
+      if (!_ticketCurrent('issues', ticket)) return;
       const byId = Object.fromEntries(_allProjects.map(p => [p.id, p]));
       _allIssues = issues.map(i => ({
         ...i,
-        project_name: byId[i.project_id]?.name,
+        project_name: stitchProjectName(byId[i.project_id], i.project_id),
         project_icon: byId[i.project_id]?.icon,
       }));
       _issuesLoaded = true;
       markFresh();
       renderIssuesPage();
     } catch {
+      if (!_ticketCurrent('issues', ticket)) return;
       if (_issuesLoaded) { markStale(() => loadIssuesPage()); return; }
       if (el) {
         el.innerHTML = errorState({
@@ -3635,6 +3759,15 @@
     catch { /* keep the vocabulary we already have rather than emptying it */ }
   }
 
+  // A completed occurrence of a recurring issue comes back archived, and the
+  // cache keeps it so the series stays coherent — but the board, the list and
+  // the count all describe what is live. Without this the finished card sat in
+  // its column, ticked off, until the next reload. The "include archived"
+  // toggle still means what it says.
+  function liveIssues(list) {
+    return _org.archived ? list : list.filter(i => !i.archived);
+  }
+
   function facetTotal() {
     if (!_facetIssues.length) return _allIssues.length;
     return _org.archived ? _facetIssues.length : _facetIssues.filter(i => !i.archived).length;
@@ -3643,10 +3776,11 @@
   function renderIssuesPage() {
     const el = document.getElementById('issue-list');
     if (!el) return;
-    const total = Math.max(facetTotal(), _allIssues.length);
-    orgCount(_allIssues.length, total);
+    const shown = liveIssues(_allIssues);
+    const total = Math.max(facetTotal(), shown.length);
+    orgCount(shown.length, total);
 
-    if (!_allIssues.length) {
+    if (!shown.length) {
       if (!total) {
         el.innerHTML = emptyState({
           icon: '🌱',
@@ -3666,7 +3800,7 @@
       pruneSelection([]);
       return;
     }
-    renderIssueSurface(el, _allIssues, { showProject: true, board: _viewMode === 'board' });
+    renderIssueSurface(el, shown, { showProject: true, board: _viewMode === 'board' });
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -3701,7 +3835,34 @@
     await loadProjectPage();
     // Deep link from Today, search or a shared URL
     const focus = params.get('issue');
-    if (focus && _issue(focus)) openIssueSlideover(focus);
+    if (focus) await openDeepLinkedIssue(focus);
+  }
+
+  // Opening it only when it survived the current filters meant a link was as
+  // reliable as whatever the bar happened to be set to — and graft_org_project
+  // is one saved state shared by every project, so a filter left on one project
+  // silently swallowed links into the next. A link is a promise; honour it, and
+  // put the issue in the cache the slide-over reads from.
+  async function openDeepLinkedIssue(id) {
+    if (!_issue(id)) {
+      // The unfiltered copy of this project's issues is already in hand.
+      let issue = _facetIssues.find(i => i.id === id);
+      if (!issue) {
+        // There is no GET /api/issues/<id>, but q= searches the id as well as
+        // the text, so this finds one anywhere — including another project's.
+        try {
+          const found = await api('GET', `/api/issues?archived=1&q=${encodeURIComponent(id)}`);
+          issue = found.find(i => i.id === id);
+        } catch { /* a broken link is better left shut than half-open */ }
+      }
+      if (!issue) return;
+      _allIssues.push({
+        ...issue,
+        project_name: stitchProjectName(
+          _allProjects.find(p => p.id === issue.project_id), issue.project_id),
+      });
+    }
+    openIssueSlideover(id);
   }
 
   async function loadProjectPage() {
@@ -3814,11 +3975,15 @@
 
   async function loadProjectIssues() {
     if (_projectMissing) { renderProjectIssues(); return; }
+    const ticket = _takeTicket('projectIssues');
     try {
-      _allIssues = await api('GET', `/api/issues${orgQuery({ project_id: _currentProjectId })}`);
+      const issues = await api('GET', `/api/issues${orgQuery({ project_id: _currentProjectId })}`);
+      if (!_ticketCurrent('projectIssues', ticket)) return;
+      _allIssues = issues;
       markFresh();
       renderProjectIssues();
     } catch {
+      if (!_ticketCurrent('projectIssues', ticket)) return;
       if (_projectLoaded && _allIssues.length) { markStale(() => loadProjectIssues()); return; }
       document.getElementById('project-issues').innerHTML = errorState({
         title: 'Can’t reach the Graft server',
@@ -3845,10 +4010,11 @@
       return;
     }
 
-    const total = Math.max(facetTotal(), (_currentProject?.issue_counts || {}).total || 0, _allIssues.length);
-    orgCount(_allIssues.length, total);
+    const shown = liveIssues(sortedProjectIssues());
+    const total = Math.max(facetTotal(), (_currentProject?.issue_counts || {}).total || 0, shown.length);
+    orgCount(shown.length, total);
 
-    if (!_allIssues.length) {
+    if (!shown.length) {
       if (!total) {
         el.innerHTML = emptyState({
           icon: '🌱',
@@ -3868,7 +4034,7 @@
       pruneSelection([]);
       return;
     }
-    renderIssueSurface(el, sortedProjectIssues(), { board: _viewMode === 'board' });
+    renderIssueSurface(el, shown, { board: _viewMode === 'board' });
   }
 
   // The server already sorted these. Manual order is re-applied here because
@@ -3995,12 +4161,19 @@
       const updated = await api('PATCH', `/api/projects/${id}/archive`);
       _currentProject = updated;
       closeModal('modal-edit-project');
+      // Stay on the project. Leaving for the index half a second after offering
+      // a seven-second Undo took the offer with it — the toast cannot survive a
+      // navigation. An archived project still reads perfectly well here, and
+      // the way back to the list is the one that was always in the rail.
+      _railProjects = null;
       undoToast(`Project ${updated.archived ? 'archived' : 'unarchived'}`, async () => {
-        await api('PATCH', `/api/projects/${id}/archive`);
-        window.location.href = `project.html?id=${id}`;
+        _currentProject = await api('PATCH', `/api/projects/${id}/archive`);
+        _railProjects = null;
+        renderRail();
+        if (typeof reloadPage === 'function') await reloadPage();
       });
-      if (updated.archived) setTimeout(() => { window.location.href = 'index.html'; }, 600);
-      else if (typeof reloadPage === 'function') reloadPage();
+      renderRail();
+      if (typeof reloadPage === 'function') await reloadPage();
     } catch { toast('Could not archive project'); }
   }
 
@@ -4200,7 +4373,14 @@
       await api('DELETE', `/api/milestones/${id}`);
       _allMilestones = await api('GET', `/api/milestones?project_id=${_currentProjectId}`);
       const at = _org.filters.milestone_id.indexOf(id);
-      if (at >= 0) _org.filters.milestone_id.splice(at, 1);
+      if (at >= 0) {
+        _org.filters.milestone_id.splice(at, 1);
+        // Dropping it from _org alone left the dead id in localStorage and the
+        // URL, so the filter came back on the next load pointing at a milestone
+        // that no longer exists — a chip matching nothing, with no way to see why.
+        orgPersist();
+        orgWriteURL();
+      }
       renderMilestonesList();
       renderOrgBar();
       loadProjectIssues();
@@ -4469,7 +4649,10 @@
       const names = Object.fromEntries(projects.map(p => [p.id, p.name]));
       _paletteData = {
         projects,
-        issues: issues.map(i => ({ ...i, project_name: names[i.project_id] })),
+        issues: issues.map(i => ({
+          ...i,
+          project_name: i.project_id === NO_PROJECT_ID ? NO_PROJECT_NAME : names[i.project_id],
+        })),
       };
       renderPalette(document.getElementById('palette-input')?.value || '');
     } catch {
@@ -4595,7 +4778,10 @@
       if (e.key === '/') { e.preventDefault(); openPalette(); return; }
       if (e.key.toLowerCase() === 'c') {
         e.preventDefault();
-        if (_page === 'projects') openNewProject();
+        // "Create the thing this page is made of". The projects list and an
+        // area page both hold the new-project form and neither has an issue
+        // modal, so reaching for one there threw on the first missing field.
+        if (_page === 'projects' || _page === 'area') openNewProject();
         else openNewIssue(_currentProjectId || undefined);
       }
     });
@@ -4617,6 +4803,10 @@
     const id = params.get('id');
     if (!id) { window.location.href = 'index.html'; return; }
     initChrome('area', { title: 'Area' });
+    // This page has the same new-project form as the projects page, and the
+    // swatches are drawn by script — without this the picker was an empty div
+    // and every project created from an area kept the hidden field's default.
+    initColourPicker('colour-picker', 'project-colour');
     // Every other page fills the rail on the way in; this one did not, so the
     // sidebar sat empty and there was no way out of an area but the browser's
     // back button.

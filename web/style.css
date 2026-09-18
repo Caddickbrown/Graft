@@ -2304,7 +2304,12 @@ option { background: var(--surface); color: var(--ink); }
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .page-header-mobile .progress-row { margin-top: 0 !important; }
+  .page-header-mobile .progress-row { margin-top: 0 !important; flex-wrap: wrap; }
+  /* The label carries the next milestone's name, and nowrap turned a long one
+     into horizontal scroll for the whole page. On a phone it wraps under the
+     bar instead. Scoped to the phone header on purpose: the desktop row is
+     laid out differently and is left exactly as it was. */
+  .page-header-mobile .progress-label { white-space: normal; min-width: 0; }
   /* Actions become one scrolling strip rather than a wrapped pile */
   .page-header-mobile .header-actions {
     flex-wrap: nowrap;
