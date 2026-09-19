@@ -193,6 +193,9 @@ struct GraftTabBar: View {
     @Binding var selection: GraftTab
     /// Writes still waiting for the server, shown on Settings.
     var pendingCount: Int = 0
+    /// Called when the tab you are already on is tapped again — the platform's
+    /// "take me back to the top of this section" gesture. See `RootView`.
+    var onReselect: (GraftTab) -> Void = { _ in }
 
     private struct Item {
         let tab: GraftTab
@@ -211,8 +214,15 @@ struct GraftTabBar: View {
             ForEach(items, id: \.tab) { item in
                 let selected = selection == item.tab
                 Button {
-                    guard !selected else { return }
-                    selection = item.tab
+                    // A second tap on the tab you are on is not a no-op, which
+                    // is what it used to be: it unwinds that tab back to its
+                    // root screen. Tapping Projects from inside a project is
+                    // how you get back to the project list.
+                    if selected {
+                        onReselect(item.tab)
+                    } else {
+                        selection = item.tab
+                    }
                 } label: {
                     VStack(spacing: 3) {
                         ZStack(alignment: .topTrailing) {

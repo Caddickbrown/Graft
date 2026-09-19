@@ -103,12 +103,20 @@ struct GraftProject: Codable, Identifiable {
 
 // MARK: - GraftMilestone
 
-struct GraftMilestone: Codable, Identifiable {
+struct GraftMilestone: Codable, Identifiable, Hashable {
     let id: String
     var projectId: String
     var name: String
     var description: String
     var dueDate: String?
+    /// The order the user dragged them into, ascending.
+    ///
+    /// A milestone is a *stage* at least as often as it is a deadline — beta,
+    /// then launch, then v2 — and plenty of them carry no date at all, so due
+    /// date alone could not express what comes after what. The date is still
+    /// the tie-break, server-side and here, which is why a project nobody has
+    /// reordered looks exactly as it did before.
+    var sortOrder: Int
     var createdAt: String
     var updatedAt: String
 
@@ -116,8 +124,41 @@ struct GraftMilestone: Codable, Identifiable {
         case id, name, description
         case projectId = "project_id"
         case dueDate = "due_date"
+        case sortOrder = "sort_order"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+
+    init(id: String,
+         projectId: String,
+         name: String,
+         description: String,
+         dueDate: String?,
+         sortOrder: Int = 0,
+         createdAt: String,
+         updatedAt: String) {
+        self.id = id
+        self.projectId = projectId
+        self.name = name
+        self.description = description
+        self.dueDate = dueDate
+        self.sortOrder = sortOrder
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    /// See `GraftArea.init(from:)` — a server that has not run the `sort_order`
+    /// migration yet must not take the whole milestones list down with it.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        projectId = try c.decodeIfPresent(String.self, forKey: .projectId) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        dueDate = try c.decodeIfPresent(String.self, forKey: .dueDate)
+        sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        updatedAt = try c.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
     }
 }
 
@@ -802,5 +843,50 @@ extension Array where Element == String {
     var uniqued: [String] {
         var seen = Set<String>()
         return filter { seen.insert($0).inserted }
+    }
+}
+
+// MARK: - Identity, for navigation
+
+// Navigating by *value* — `NavigationLink(value:)` into a `NavigationStack`
+// holding a path — needs the value to be `Hashable`, and that is the only
+// reason these exist. Both are hashed on `id` alone, deliberately: a route is
+// "the issue with this id", and a row whose title changed underneath it while
+// the screen is open is still the same destination. Hashing the whole record
+// would make a pushed screen's route stop matching the moment anything on it
+// was edited.
+
+extension GraftIssue: Hashable {
+    static func == (lhs: GraftIssue, rhs: GraftIssue) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+extension GraftProject: Hashable {
+    static func == (lhs: GraftProject, rhs: GraftProject) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+// MARK: - Milestone ordering
+
+extension Array where Element == GraftMilestone {
+    /// The order both clients draw milestones in: the one the user dragged them
+    /// into, then by date, then by age.
+    ///
+    /// Mirrors the server's `ORDER BY sort_order, due_date, created_at`
+    /// exactly, `NULL` date first included — SQLite sorts NULLs to the front on
+    /// an ascending order, and a list that reshuffles itself depending on
+    /// whether it came from the cache or from the Pi is worse than either order
+    /// on its own.
+    var sortedForDisplay: [GraftMilestone] {
+        sorted { a, b in
+            if a.sortOrder != b.sortOrder { return a.sortOrder < b.sortOrder }
+            let ad = a.dueDate ?? "", bd = b.dueDate ?? ""
+            if ad != bd {
+                if ad.isEmpty { return true }
+                if bd.isEmpty { return false }
+                return ad < bd
+            }
+            return a.createdAt < b.createdAt
+        }
     }
 }

@@ -55,9 +55,9 @@ sudo systemctl enable graft
 | GET | /api/projects?archived=&area_id=&tag=&favourite=1 | All projects with issue counts |
 | POST | /api/projects | Create project |
 | PUT | /api/projects/:id | Update project |
-| PATCH | /api/projects/:id/favourite | Pin or unpin a project (toggles) |
+| PATCH | /api/projects/:id/favourite | Pin or unpin a project (sets `favourite` if the body carries one, otherwise toggles) |
 | DELETE | /api/projects/:id | Delete project + cascade |
-| GET | /api/milestones?project_id= | Milestones |
+| GET | /api/milestones?project_id= | Milestones, in `sort_order` then due-date order |
 | POST/PUT/DELETE | /api/milestones/:id | Milestone CRUD |
 | GET | /api/issues?project_id=&milestone_id=&status=&priority=&assignee=&area_id=&label=&q=&sort=&dir= | Issues with filters |
 | GET | /api/issues?due_before=&due_after=&starts_before=&starts_after=&updated_before=&updated_after= | Issues by date |
@@ -152,12 +152,21 @@ A project carries a `favourite` flag, `0` or `1`, alongside `archived`. It is a
 pin: the projects you are in every day, kept where you can reach them without
 reading the whole list first.
 
-`PATCH /api/projects/:id/favourite` toggles it and returns the project, the same
-shape and the same reasoning as `/archive` — a toggle rather than a value, so an
-offline client can replay the request without knowing which way round it was
-when it queued it. `PUT /api/projects/:id` also accepts `favourite` directly when
-a client does want to set a specific value, and `GET /api/projects?favourite=1`
-narrows to the pinned ones.
+`PATCH /api/projects/:id/favourite` returns the project, and takes two shapes:
+
+- **With a body** — `{"favourite": 1}` — it *sets* the flag. A client that has
+  already flipped its own copy says so, and the request then means the same
+  thing however long it waited and however many times it is retried. This is
+  what the phone sends, and it is what makes pinning work with no signal: the
+  star flips locally the moment you tap it, and what goes out afterwards is a
+  statement of that value rather than an instruction to flip whatever the
+  server happens to hold by the time it arrives.
+- **With no body** it toggles, which is what the web client sends and what
+  every build before this one sent. A bare toggle cannot be replayed safely on
+  its own, so that path keeps the `X-Graft-Op-Id` guard described above.
+
+`PUT /api/projects/:id` also accepts `favourite` directly, and
+`GET /api/projects?favourite=1` narrows to the pinned ones.
 
 Favouriting is orthogonal to everything else: an archived project keeps its pin,
 a pinned project keeps its area, and the no-project sentinel cannot be pinned
@@ -170,7 +179,23 @@ What the clients do with it:
 | Web sidebar | A **Favourites** section above Areas — the point of the feature. A favourite is still listed in its area and in the flat list below |
 | Web project cards | Favourites sort to the front of whatever group they are in, in every sort and both directions; a star on the card toggles it and stays lit once set |
 | Web project page | A star in the header, and the same entry in the overflow menu |
-| iOS | A **Favourites** section at the top of the project list, *removed* from their areas — one list, so a project appearing twice would read as a sync bug. Swipe a row from the leading edge, or use the star in a project's own toolbar |
+| iOS | A **Favourites** section at the top of the project list, *removed* from their areas — one list, so a project appearing twice would read as a sync bug. Swipe a row from the leading edge, or use the star in a project's own header. The write states a value rather than a toggle, so it survives being queued offline |
+
+### Milestone order
+
+Milestones carry a `sort_order`, and `GET /api/milestones` returns them by
+`sort_order`, then `due_date`, then `created_at`. A milestone is a *stage* at
+least as often as it is a deadline — beta, then launch, then v2 — and plenty of
+them carry no date at all, so date order alone could not say what comes after
+what.
+
+A create that does not name a `sort_order` lands at the end of its project, so
+a client that knows nothing about ordering (the web form) puts new milestones
+where the phone would have put them rather than at the front on a shared
+default of `0`. A replayed create keeps the order the row already had, for the
+same reason it keeps `created_at`. `PUT /api/milestones/:id` takes
+`sort_order`, which is how iOS writes a drag — one PUT per moved milestone,
+each carrying the whole record.
 
 ### /api/overview
 

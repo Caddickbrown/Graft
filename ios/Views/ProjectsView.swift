@@ -19,6 +19,7 @@ fileprivate struct AreaSection: Identifiable {
 
 struct ProjectsView: View {
     @Environment(GraftStore.self) private var store
+    @Environment(GraftRouter.self) private var router
     @State private var showNewProject = false
     @State private var showAreas = false
     @State private var searchText = ""
@@ -92,7 +93,9 @@ struct ProjectsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        // Path-driven, so the tab bar can unwind this stack when Projects is
+        // tapped from inside a project. See `GraftRouter`.
+        NavigationStack(path: router.binding(for: .projects)) {
             ZStack(alignment: .bottomTrailing) {
             VStack(spacing: 0) {
                 // The wordmark rather than a title: this is the one screen that
@@ -100,7 +103,22 @@ struct ProjectsView: View {
                 // between two clusters of bar buttons; here it heads the page
                 // the way it heads the web client's rail.
                 GraftScreenHeader(title: "Graft",
-                                  titleView: AnyView(GraftWordmark(size: 24))) {
+                                  titleView: AnyView(
+                                    // The mark is a control now: tapping it
+                                    // puts the keyboard away. It is the biggest
+                                    // thing on the screen that was doing
+                                    // nothing, it is nowhere near anything
+                                    // destructive, and mid-search it is often
+                                    // the only part of the page still visible.
+                                    Button {
+                                        graftDismissKeyboard()
+                                    } label: {
+                                        GraftWordmark(size: 24)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Graft. Dismiss the keyboard")
+                                  )) {
                     Menu {
                         Picker("Sort", selection: $projectSort) {
                             ForEach(ProjectSortOrder.allCases, id: \.self) { s in
@@ -153,6 +171,7 @@ struct ProjectsView: View {
             }
             .background(Color.gBg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
+            .graftRoutes()
             .sheet(isPresented: $showNewProject) {
                 NewProjectView()
             }
@@ -319,7 +338,7 @@ struct ProjectsView: View {
                 Section {
                     if !collapsed {
                         ForEach(section.projects) { project in
-                            NavigationLink(destination: ProjectDetailView(project: project)) {
+                            NavigationLink(value: GraftRoute.project(project.id)) {
                                 ProjectCardView(project: project)
                             }
                             .listRowBackground(Color.clear)

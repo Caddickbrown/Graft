@@ -71,6 +71,8 @@ struct NewProjectView: View {
             GraftSection(title: "Tags", footnote: "Comma-separated, e.g. client, ios, mvp") {
                 GraftTextField(label: "Tags", placeholder: "e.g. client, ios, mvp",
                                text: $tagsText, focused: $focus, field: .description)
+                GraftTokenSuggestions(text: $tagsText,
+                                      vocabulary: store.projectTagVocabulary)
             }
 
             GraftSection(title: "Appearance") {
@@ -163,6 +165,8 @@ struct EditProjectView: View {
             GraftSection(title: "Tags", footnote: "Comma-separated, e.g. client, ios, mvp") {
                 GraftTextField(label: "Tags", placeholder: "e.g. client, ios, mvp",
                                text: $tagsText, focused: $focus, field: .description)
+                GraftTokenSuggestions(text: $tagsText,
+                                      vocabulary: store.projectTagVocabulary)
             }
 
             GraftSection(title: "Icon", footnote: "One emoji, shown beside the project everywhere.") {

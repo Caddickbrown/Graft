@@ -76,7 +76,7 @@ struct IssueDetailView: View {
     }
 
     private var projectMilestones: [GraftMilestone] {
-        store.milestones.filter { $0.projectId == issue.projectId }
+        store.milestones(for: issue.projectId)
     }
 
     /// Where back goes — named, because a chevron on its own says nothing about
@@ -399,6 +399,13 @@ struct IssueDetailView: View {
                     .multilineTextAlignment(.trailing)
                     .onChange(of: labelsText) { _, _ in scheduleSave() }
             }
+            // Under the row rather than beside it: the field here is right-
+            // aligned in a property row with no room for anything else, and a
+            // suggestion you cannot read is not a suggestion.
+            GraftTokenSuggestions(text: $labelsText,
+                                  vocabulary: store.issueLabelVocabulary,
+                                  showsWhenEmpty: false)
+                .padding(.horizontal, 14)
             // Labels were editable in two places and rendered nowhere. The
             // parsed result is shown back here as the chips that now appear on
             // every row, so what you typed and what the list will show are
@@ -457,7 +464,7 @@ struct IssueDetailView: View {
                 .onChange(of: recurrenceAnchor) { _, _ in scheduleSave() }
 
             if current.repeats || !current.recurrenceParent.isEmpty {
-                NavigationLink(destination: IssueSeriesView(issue: current)) {
+                NavigationLink(value: GraftRoute.series(current)) {
                     HStack(spacing: GraftMetrics.spaceXS) {
                         Image(systemName: "clock.arrow.circlepath")
                             .font(.system(size: 13))
@@ -504,7 +511,7 @@ struct IssueDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                NavigationLink(destination: IssueDetailView(issue: spawned)) {
+                NavigationLink(value: GraftRoute.issue(spawned)) {
                     Text("Open")
                         .font(GraftFont.text(GraftType.secondary, .semibold))
                         .foregroundStyle(Color.gAccentText)

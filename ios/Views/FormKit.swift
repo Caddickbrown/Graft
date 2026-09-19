@@ -446,3 +446,97 @@ struct GraftToggleRow: View {
         .frame(minHeight: GraftMetrics.tap)
     }
 }
+
+// MARK: - Suggestions for a comma-separated field
+
+/// What has been typed before, offered under a tags or labels field.
+///
+/// Tags and labels are free text, which is the right call for a tracker three
+/// people use — nobody wants to administer a taxonomy for their own work — and
+/// also exactly how `ios`, `iOS` and `i-os` end up being three different tags.
+/// The fix is not to start validating. It is to show what already exists at the
+/// moment the user is deciding, which is while they are typing the word.
+///
+/// The field stays a plain comma-separated text field: this reads the token
+/// being typed (everything after the last comma), matches it, and writes the
+/// chosen value back in place of it. Nothing about the field's own behaviour
+/// changes, so a tag that has never been used before is still just typed.
+struct GraftTokenSuggestions: View {
+    @Binding var text: String
+    /// Every value in use elsewhere, most-used first.
+    let vocabulary: [String]
+    /// Shown before anything is typed, as "here is what you usually use".
+    var showsWhenEmpty: Bool = true
+    var limit: Int = 8
+
+    /// The token under the cursor: everything after the last comma.
+    private var fragment: String {
+        (text.components(separatedBy: ",").last ?? "")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The tokens already committed in this field, so the list never offers
+    /// something the user can see two inches above it.
+    private var taken: Set<String> {
+        var parts = text.components(separatedBy: ",")
+        if !parts.isEmpty { parts.removeLast() }
+        return Set(parts.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                        .filter { !$0.isEmpty })
+    }
+
+    private var matches: [String] {
+        let typed = fragment.lowercased()
+        if typed.isEmpty && !showsWhenEmpty { return [] }
+        let available = vocabulary.filter { !taken.contains($0.lowercased()) }
+        guard !typed.isEmpty else { return Array(available.prefix(limit)) }
+        // Prefix matches first — they are what the user is in the middle of
+        // typing — then anything else containing what was typed. An exact match
+        // is dropped: the word is already there, and offering to complete it
+        // with itself is a button that does nothing.
+        let prefix = available.filter { $0.lowercased().hasPrefix(typed) && $0.lowercased() != typed }
+        let rest = available.filter { !$0.lowercased().hasPrefix(typed) && $0.localizedCaseInsensitiveContains(fragment) }
+        return Array((prefix + rest).prefix(limit))
+    }
+
+    var body: some View {
+        if !matches.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: GraftMetrics.spaceXXS + 2) {
+                    ForEach(matches, id: \.self) { value in
+                        Button { complete(with: value) } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text(value)
+                                    .font(GraftFont.text(GraftType.caption, .medium))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(Color.gAccentText)
+                            .padding(.horizontal, GraftMetrics.spaceXS)
+                            .frame(minHeight: GraftMetrics.controlSmall)
+                            .background(Color.gAccentWash,
+                                        in: RoundedRectangle(cornerRadius: GraftMetrics.radiusTight))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Add \(value)")
+                    }
+                }
+                // The row is inside a card that already has its own padding;
+                // this is the breathing space under the field's rule.
+                .padding(.vertical, GraftMetrics.spaceXXS)
+            }
+            .scrollClipDisabled()
+        }
+    }
+
+    /// Replace the token being typed with the chosen one, and leave the field
+    /// ready for the next: the trailing `", "` means the keyboard's next
+    /// keystroke starts a new tag rather than extending this one.
+    private func complete(with value: String) {
+        var parts = text.components(separatedBy: ",")
+        if parts.isEmpty { parts = [""] }
+        parts[parts.count - 1] = " " + value
+        text = parts.joined(separator: ",").trimmingCharacters(in: .whitespaces) + ", "
+    }
+}

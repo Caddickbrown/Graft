@@ -16,6 +16,11 @@ struct MilestonesView: View {
     @State private var showNewMilestone = false
     @State private var editingMilestone: GraftMilestone? = nil
     @State private var pendingDelete: GraftMilestone? = nil
+    /// Drag-to-reorder is a mode rather than always-on, because the rows are
+    /// buttons: a long press has to be able to mean "open this one" as well as
+    /// "pick this one up", and on a list of three items being able to open one
+    /// matters more.
+    @State private var reordering = false
 
     var milestones: [GraftMilestone] {
         store.milestones(for: projectId)
@@ -25,10 +30,23 @@ struct MilestonesView: View {
         GraftSheetScaffold(
             title: "Milestones",
             trailingAccessory: AnyView(
-                GraftIconButton(systemImage: "plus",
-                                tint: Color.gAccentText,
-                                accessibilityTitle: "New milestone") {
-                    showNewMilestone = true
+                HStack(spacing: GraftMetrics.spaceXXS) {
+                    if milestones.count > 1 {
+                        GraftIconButton(
+                            systemImage: reordering ? "checkmark" : "arrow.up.arrow.down",
+                            tint: reordering ? Color.gAccentText : Color.gInk2,
+                            accessibilityTitle: reordering ? "Done reordering" : "Reorder milestones"
+                        ) {
+                            withAnimation(.snappy(duration: 0.2)) { reordering.toggle() }
+                        }
+                    }
+                    if !reordering {
+                        GraftIconButton(systemImage: "plus",
+                                        tint: Color.gAccentText,
+                                        accessibilityTitle: "New milestone") {
+                            showNewMilestone = true
+                        }
+                    }
                 }
             ),
             onDone: { dismiss() }
@@ -44,6 +62,8 @@ struct MilestonesView: View {
                         actionTitle: "Add a milestone",
                         action: { showNewMilestone = true }
                     )
+                } else if reordering {
+                    reorderList
                 } else {
                     ScrollView {
                         LazyVStack(spacing: GraftMetrics.spaceXS) {
@@ -114,6 +134,51 @@ struct MilestonesView: View {
             }
         }
     }
+
+    // MARK: - Reorder mode
+
+    /// A `List` purely for `.onMove` — it is the only thing in SwiftUI that
+    /// does drag-to-reorder, and the rest of this screen is a `LazyVStack`
+    /// because the rows are buttons. Styled back down to the app's own surfaces
+    /// so swapping between the two modes does not look like swapping apps.
+    private var reorderList: some View {
+        VStack(spacing: 0) {
+            Text("Drag to set the order milestones appear in, here and on the project.")
+                .font(GraftFont.text(GraftType.caption))
+                .foregroundStyle(Color.gInk2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, GraftMetrics.gutter)
+                .padding(.bottom, GraftMetrics.spaceXS)
+
+            List {
+                ForEach(milestones) { milestone in
+                    MilestoneRowView(
+                        milestone: milestone,
+                        issueCount: store.issueCount(usingMilestone: milestone.id),
+                        showsChevron: false
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    .listRowSeparator(.hidden)
+                }
+                .onMove(perform: move)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            // Always editing: there is no second mode inside this one, and an
+            // Edit button to reach the grabbers would be a mode within a mode.
+            .environment(\.editMode, .constant(.active))
+        }
+    }
+
+    private func move(from offsets: IndexSet, to destination: Int) {
+        var ids = milestones.map(\.id)
+        ids.move(fromOffsets: offsets, toOffset: destination)
+        // Written through straight away rather than on leaving the mode: the
+        // sheet can be swiped away at any point, and a drag that was not saved
+        // because of how you left the screen is the worst kind of lost work.
+        Task { try? await store.reorderMilestones(projectId: projectId, orderedIds: ids) }
+    }
 }
 
 // MARK: - Milestone Row
@@ -121,6 +186,9 @@ struct MilestonesView: View {
 struct MilestoneRowView: View {
     let milestone: GraftMilestone
     var issueCount: Int = 0
+    /// Off in reorder mode: the row does not open anything while it is being
+    /// dragged, and a chevron promising otherwise is a lie in a small space.
+    var showsChevron: Bool = true
 
     var body: some View {
         // Through `dueLabel`, like every other surface in the app — this was
@@ -169,9 +237,11 @@ struct MilestoneRowView: View {
 
             Spacer(minLength: 0)
 
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.gInk3)
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.gInk3)
+            }
         }
         .padding(.horizontal, GraftMetrics.spaceS)
         .padding(.vertical, GraftMetrics.spaceS)

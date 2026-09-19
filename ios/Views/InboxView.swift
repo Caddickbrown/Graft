@@ -17,6 +17,7 @@ import SwiftUI
 /// is legitimately empty says so.
 struct InboxView: View {
     @Environment(GraftStore.self) private var store
+    @Environment(GraftRouter.self) private var router
 
     @State private var showNewIssue = false
     @State private var showFilters = false
@@ -88,7 +89,7 @@ struct InboxView: View {
     var body: some View {
         @Bindable var store = store
 
-        NavigationStack {
+        NavigationStack(path: router.binding(for: .inbox)) {
             ZStack(alignment: .bottomTrailing) {
             VStack(spacing: 0) {
                 // The header, the filter row and the search field are all
@@ -133,6 +134,7 @@ struct InboxView: View {
             // with it, which is what used to push the + button under the bar.
             .background(Color.gBg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
+            .graftRoutes()
             .sheet(isPresented: $showFilters) {
                 FilterSortSheet(query: $store.inboxQuery)
             }
@@ -249,7 +251,7 @@ struct InboxView: View {
             }
 
             ForEach(issues) { issue in
-                NavigationLink(destination: IssueDetailView(issue: issue)) {
+                NavigationLink(value: GraftRoute.issue(issue)) {
                     GraftIssueRow(issue: issue,
                                   project: store.project(issue.projectId),
                                   due: store.dueDate(for: issue))

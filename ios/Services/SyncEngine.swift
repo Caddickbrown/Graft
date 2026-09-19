@@ -89,7 +89,7 @@ final class SyncEngine {
             // The record is going away, so anything queued against it is moot —
             // including its sub-resources, whose requests would only 404.
             pendingOps.removeAll { $0.path == path || $0.path.hasPrefix(path + "/") }
-        } else if isToggle(method: method, path: path) {
+        } else if isToggle(method: method, path: path, body: body) {
             // Archive and favourite are server-side *toggles*, not values being
             // set, so the "newest write supersedes the earlier ones" rule below
             // is exactly wrong for them: archive-then-undo would collapse to a
@@ -104,12 +104,15 @@ final class SyncEngine {
             // to apply it either way, so the second toggle has to be sent too
             // for the two ends to agree.
             if let idx = pendingOps.lastIndex(where: {
-                $0.method == method && $0.path == path && $0.id != inFlightOpID
+                $0.method == method && $0.path == path && $0.body == nil
+                    && $0.id != inFlightOpID
             }) {
                 pendingOps.remove(at: idx)
                 saveOps()
                 return
             }
+        } else if isAppendOnly(path: path) {
+            // Nothing to collapse — see `appendOnlyPaths`.
         } else if method == "PUT" || method == "PATCH" {
             // Genuinely idempotent whole-record writes: the newest one carries
             // everything the earlier ones said.
@@ -121,14 +124,43 @@ final class SyncEngine {
     }
 
     /// The server-side toggles: `PATCH .../archive` and `PATCH .../favourite`
-    /// both flip a flag rather than setting one, so neither is safe to treat as
+    /// flip a flag rather than setting one, so neither is safe to treat as
     /// idempotent. Favourite was missing here, which meant pin-then-unpin while
     /// offline collapsed into a single PATCH under the rule below and left the
     /// project pinned on the server and unpinned on the phone.
     private static let togglePaths = ["/archive", "/favourite"]
 
-    private func isToggle(method: String, path: String) -> Bool {
-        method == "PATCH" && Self.togglePaths.contains { path.hasSuffix($0) }
+    /// A request on one of those paths is only a *toggle* when it carries no
+    /// body. `favouriteProject` now sends `{"favourite": 1}`, which states a
+    /// value: replaying it lands the same way round however long it sat in the
+    /// queue, so it belongs under the ordinary newest-supersedes rule below
+    /// rather than under the cancel-in-pairs one. A bodyless PATCH — from an
+    /// older build's queue, or from `archiveProject`, which still toggles —
+    /// keeps the old handling.
+    private func isToggle(method: String, path: String, body: Data?) -> Bool {
+        method == "PATCH" && body == nil && Self.togglePaths.contains { path.hasSuffix($0) }
+    }
+
+    /// Paths where a queued write must never be superseded by a later one.
+    ///
+    /// `PATCH /api/issues/reorder` is a batch: its body names the issues it
+    /// moves and says nothing about the rest. Two drags in two different
+    /// projects are two disjoint statements, and collapsing them — which the
+    /// newest-supersedes rule would do, since the path is the same both times —
+    /// would silently throw the first project's order away.
+    private static let appendOnlyPaths = ["/api/issues/reorder"]
+
+    private func isAppendOnly(path: String) -> Bool {
+        Self.appendOnlyPaths.contains(path)
+    }
+
+    /// Every path with a write still waiting to go out, including the one on
+    /// the wire right now.
+    ///
+    /// Read by `GraftStore` when a pull lands, so a row this phone has changed
+    /// and not yet sent is not overwritten by the server's older copy of it.
+    var pendingPaths: Set<String> {
+        Set(pendingOps.map(\.path))
     }
 
     // MARK: - Flush

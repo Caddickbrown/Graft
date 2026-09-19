@@ -9,6 +9,7 @@ import SwiftUI
 /// hydrated once and applied as they are edited, so there is nothing to lose.
 struct SettingsView: View {
     @Environment(GraftStore.self) private var store
+    @Environment(GraftRouter.self) private var router
 
     @State private var serverURL = ""
     @State private var fallbackURL = ""
@@ -35,7 +36,7 @@ struct SettingsView: View {
     var pendingCount: Int { store.syncEngine.pendingCount }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: router.binding(for: .settings)) {
             VStack(spacing: 0) {
                 GraftScreenHeader(title: "Settings")
 
@@ -49,6 +50,7 @@ struct SettingsView: View {
                             syncSection
                         }
                         notificationsSection
+                        exportSection
                         aboutSection
                     }
                     .padding(.horizontal, GraftMetrics.spaceL)
@@ -59,6 +61,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.gBg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
+            .graftRoutes()
             .toolbar {
                 // No "Done" here. This is a tab root, so `dismiss()` did
                 // nothing — and the only thing it was doing besides was saving,
@@ -451,6 +454,56 @@ struct SettingsView: View {
     }
 
     // MARK: - About
+
+    /// Everything, as one Markdown file.
+    ///
+    /// Written from the local cache, so it works with no server and no signal —
+    /// which is the state the phone is in whenever this is the quickest way to
+    /// get something out of it.
+    private var exportSection: some View {
+        SettingsSection(title: "Export") {
+            VStack(alignment: .leading, spacing: GraftMetrics.spaceXS) {
+                // Inside a Menu so the document is built on the tap rather than
+                // on every redraw of Settings; the same reason the project
+                // screen puts its own export behind one.
+                Menu {
+                    ShareLink(item: store.markdownForEverything(),
+                              preview: SharePreview("Graft")) {
+                        Label("Every live project", systemImage: "square.grid.2x2")
+                    }
+                } label: {
+                    HStack(spacing: GraftMetrics.spaceS) {
+                        Image(systemName: "arrow.down.doc")
+                            .font(.system(size: 16))
+                            .foregroundStyle(Color.gAccentText)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Export as Markdown")
+                                .font(GraftFont.text(15, .medium))
+                                .foregroundStyle(Color.gInk)
+                            Text("\(store.projects.filter { !$0.archived }.count) projects, their milestones and every issue")
+                                .font(GraftFont.text(GraftType.caption))
+                                .foregroundStyle(Color.gInk2)
+                                .multilineTextAlignment(.leading)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.gInk3)
+                    }
+                    .padding(GraftMetrics.spaceS + 2)
+                    .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap)
+                    .background(Color.gSurface2)
+                    .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+                    .contentShape(Rectangle())
+                }
+
+                Text("One project on its own exports from that project's ⋯ menu.")
+                    .font(GraftFont.text(GraftType.caption))
+                    .foregroundStyle(Color.gInk3)
+            }
+        }
+    }
 
     private var aboutSection: some View {
         SettingsSection(title: "About Graft") {

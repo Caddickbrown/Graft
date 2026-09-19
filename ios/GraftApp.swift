@@ -105,10 +105,128 @@ enum GraftChrome {
 /// Settings, and a pushed view has no other way to get there.
 enum GraftTab: Hashable { case inbox, projects, settings }
 
+/// Everything a tab can push.
+///
+/// Navigation used to be `NavigationLink(destination:)`, which pushes a view
+/// the stack has no name for — so nothing could ask a stack to go back to its
+/// root, which is precisely what tapping the tab you are already on should do.
+/// Routes are values now, the stack holds a path of them, and "go home" is one
+/// line.
+///
+/// The issue cases carry the record rather than its id, because two of the
+/// places that push one — the replacement the server spawns when a recurring
+/// issue is completed, and an archived occurrence in a series — are rows the
+/// local cache may not hold. `GraftIssue` hashes on `id` alone (see
+/// `GraftModels`), so a route stays itself while the row is edited under it.
+enum GraftRoute: Hashable {
+    case project(String)
+    case issue(GraftIssue)
+    case series(GraftIssue)
+}
+
 @MainActor
 @Observable
 final class GraftRouter {
     var tab: GraftTab = .inbox
+
+    /// One path per tab, held here rather than in each screen so the tab bar
+    /// can reach them. They are separate on purpose: each tab keeps its own
+    /// history, which is the whole reason `RootView` stacks a `TabView` rather
+    /// than switching on an `if`.
+    var inboxPath = NavigationPath()
+    var projectsPath = NavigationPath()
+    var settingsPath = NavigationPath()
+
+    func path(for tab: GraftTab) -> NavigationPath {
+        switch tab {
+        case .inbox: return inboxPath
+        case .projects: return projectsPath
+        case .settings: return settingsPath
+        }
+    }
+
+    func setPath(_ path: NavigationPath, for tab: GraftTab) {
+        switch tab {
+        case .inbox: inboxPath = path
+        case .projects: projectsPath = path
+        case .settings: settingsPath = path
+        }
+    }
+
+    func binding(for tab: GraftTab) -> Binding<NavigationPath> {
+        Binding(get: { self.path(for: tab) }, set: { self.setPath($0, for: tab) })
+    }
+
+    /// Back to the top of a tab. Tapping the tab you are already on does this —
+    /// the platform convention, and the one thing the app's own tab bar was
+    /// missing: it guarded on `!selected` and a second tap did nothing at all,
+    /// so getting out of a project meant walking back up by hand.
+    ///
+    /// Returns whether it changed anything, so the caller can tell "went home"
+    /// from "was already home" and skip the haptic for the second.
+    @discardableResult
+    func popToRoot(_ tab: GraftTab) -> Bool {
+        var path = self.path(for: tab)
+        guard !path.isEmpty else { return false }
+        path.removeLast(path.count)
+        setPath(path, for: tab)
+        return true
+    }
+}
+
+/// Every destination a tab can push, registered once per stack.
+///
+/// A `navigationDestination` is looked up on the stack the link lives in, so
+/// each of the three tabs needs its own copy — and since all three can push an
+/// issue (the Inbox straight to one, Projects by way of a project), it is one
+/// modifier rather than three lists.
+struct GraftRoutes: ViewModifier {
+    @Environment(GraftStore.self) private var store
+
+    func body(content: Content) -> some View {
+        content.navigationDestination(for: GraftRoute.self) { route in
+            switch route {
+            case .project(let id):
+                // By id, resolved here: a project route outlives any particular
+                // copy of the row, so renaming a project while its screen is
+                // open does not break the way back to it.
+                if let project = store.projects.first(where: { $0.id == id }) {
+                    ProjectDetailView(project: project)
+                } else {
+                    GraftEmptyState(
+                        title: "Project gone",
+                        subtitle: "It was deleted, here or on another device.",
+                        systemImage: "questionmark.folder"
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.gBg.ignoresSafeArea())
+                }
+            case .issue(let issue):
+                IssueDetailView(issue: issue)
+            case .series(let issue):
+                IssueSeriesView(issue: issue)
+            }
+        }
+    }
+}
+
+extension View {
+    /// Registers `GraftRoute` on this navigation stack. Applied to the root
+    /// content of each tab's stack, once.
+    func graftRoutes() -> some View { modifier(GraftRoutes()) }
+}
+
+/// Put the keyboard away, from anywhere.
+///
+/// There is no SwiftUI-native way to do this without owning the `FocusState`
+/// the field is bound to, and the fields in question are scattered across
+/// half a dozen screens — a search box here, a title field there. Sending the
+/// action to `nil` hands it to whoever is first responder, which is exactly
+/// the question being asked.
+@MainActor
+func graftDismissKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                    to: nil, from: nil, for: nil)
 }
 
 /// Three top-level destinations. Settings used to be a gear in the corner of
@@ -145,7 +263,19 @@ struct RootView: View {
             }
             .tint(Color.gAccent)
 
-            GraftTabBar(selection: $router.tab, pendingCount: store.pendingBadgeCount)
+            GraftTabBar(selection: $router.tab,
+                        pendingCount: store.pendingBadgeCount,
+                        onReselect: { tab in
+                            // Tapping the tab you are on: put the keyboard away
+                            // and unwind to the top of that section. Both, in
+                            // that order — if a search field has focus the
+                            // keyboard is what is in the way, and popping the
+                            // stack out from under a focused field without
+                            // dismissing it leaves the keyboard up over a
+                            // screen that has nothing for it to type into.
+                            graftDismissKeyboard()
+                            router.popToRoot(tab)
+                        })
         }
         .background(Color.gBg)
     }

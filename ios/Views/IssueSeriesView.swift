@@ -149,7 +149,7 @@ struct IssueSeriesView: View {
     private func row(_ occurrence: GraftIssue) -> some View {
         let status = IssueStatus(rawValue: occurrence.status) ?? .backlog
         let isThisOne = occurrence.id == issue.id
-        return NavigationLink(destination: IssueDetailView(issue: occurrence)) {
+        return NavigationLink(value: GraftRoute.issue(occurrence)) {
             HStack(spacing: GraftMetrics.spaceS) {
                 StatusRing(status: status, size: GraftMetrics.ring)
 

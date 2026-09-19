@@ -58,7 +58,7 @@ struct NewIssueView: View {
     }
 
     var projectMilestones: [GraftMilestone] {
-        store.milestones.filter { $0.projectId == selectedProjectId }
+        store.milestones(for: selectedProjectId)
     }
 
     private var canSave: Bool {
@@ -180,6 +180,8 @@ struct NewIssueView: View {
                 GraftRowDivider()
                 GraftTextField(label: "Labels", placeholder: "design, backend",
                                text: $labelsText, focused: $focus, field: .label)
+                GraftTokenSuggestions(text: $labelsText,
+                                      vocabulary: store.issueLabelVocabulary)
             }
         }
     }

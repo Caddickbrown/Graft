@@ -87,6 +87,7 @@ def init_db():
             name        TEXT NOT NULL,
             description TEXT DEFAULT '',
             due_date    TEXT,
+            sort_order  INTEGER DEFAULT 0,
             created_at  TEXT NOT NULL,
             updated_at  TEXT NOT NULL
         );
@@ -258,6 +259,16 @@ def _migrate_db():
         # tags: JSON array of strings, free-text with autocomplete.
         if "tags" not in proj_cols:
             db.execute("ALTER TABLE projects ADD COLUMN tags TEXT DEFAULT '[]'")
+        # Milestones in the order the user put them in, rather than by date.
+        # A milestone is a stage as often as it is a deadline — "beta", then
+        # "launch", then "v2" — and half of them carry no date at all, so
+        # ordering by due_date alone filed every undated one in a block at one
+        # end and gave the user no way to say what comes after what. The date
+        # ordering is kept as the tie-break, so a project nobody has reordered
+        # looks exactly as it did.
+        ms_cols = {row[1] for row in db.execute("PRAGMA table_info(milestones)").fetchall()}
+        if "sort_order" not in ms_cols:
+            db.execute("ALTER TABLE milestones ADD COLUMN sort_order INTEGER DEFAULT 0")
         # area descriptions — freeform notes about an area
         area_cols = {row[1] for row in db.execute("PRAGMA table_info(areas)").fetchall()}
         if "description" not in area_cols:
@@ -530,6 +541,18 @@ def _replayed_op(db):
         ((datetime.now() - timedelta(days=7)).isoformat(),),
     )
     return False
+
+
+def _truthy(value):
+    """A flag as any of the three clients might send it.
+
+    JSON gives us `true`, the columns hold 1/0, and a form post sends the
+    string "1". All three mean the same thing, and "0"/"false" must not read as
+    true the way a bare non-empty string would.
+    """
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no")
+    return bool(value)
 
 
 def _text_value(value):
@@ -839,8 +862,20 @@ def toggle_project_archive(pid):
 
 @app.patch("/api/projects/<pid>/favourite")
 def toggle_project_favourite(pid):
-    """Pin or unpin a project. Toggles, like /archive, so an offline client can
-    replay the request without having to know which way round it was."""
+    """Pin or unpin a project.
+
+    Two shapes, because two kinds of client ask:
+
+    - With a body — `{"favourite": 1}` — this *sets* the flag. A client that
+      already knows what it is showing the user says so, and the request then
+      means the same thing however many times it is replayed and whatever
+      happened in between. That is what an offline queue needs: the phone flips
+      its own copy the moment you tap, and the request it sends afterwards is a
+      statement of that value, not an instruction to flip whatever is here.
+    - With no body, it toggles, which is what the web client and any build that
+      predates the above send. A toggle cannot be replayed safely on its own, so
+      that path keeps the X-Graft-Op-Id guard it has always had.
+    """
     db = get_db()
     row = db.execute("SELECT id, favourite FROM projects WHERE id=?", (pid,)).fetchone()
     if row is None:
@@ -849,7 +884,15 @@ def toggle_project_favourite(pid):
     # never appears in a list, so there is nothing for a pin to do to it.
     if pid == NO_PROJECT_ID:
         return jsonify({"error": "the no-project bucket cannot be favourited"}), 400
-    if not _replayed_op(db):
+
+    data = request.get_json(silent=True) or {}
+    wanted = data.get("favourite")
+    if wanted is not None:
+        new_val = 1 if _truthy(wanted) else 0
+        if new_val != row["favourite"]:
+            db.execute("UPDATE projects SET favourite=?, updated_at=? WHERE id=?",
+                       (new_val, now(), pid))
+    elif not _replayed_op(db):
         new_val = 0 if row["favourite"] else 1
         db.execute("UPDATE projects SET favourite=?, updated_at=? WHERE id=?", (new_val, now(), pid))
     db.commit()
@@ -867,12 +910,14 @@ def list_milestones():
     project_id = request.args.get("project_id")
     if project_id:
         rows = db.execute(
-            "SELECT * FROM milestones WHERE project_id=? ORDER BY due_date ASC, created_at ASC",
+            "SELECT * FROM milestones WHERE project_id=?"
+            " ORDER BY sort_order ASC, due_date ASC, created_at ASC",
             (project_id,),
         ).fetchall()
     else:
         rows = db.execute(
-            "SELECT * FROM milestones ORDER BY due_date ASC, created_at ASC"
+            "SELECT * FROM milestones"
+            " ORDER BY project_id ASC, sort_order ASC, due_date ASC, created_at ASC"
         ).fetchall()
     return jsonify([row_to_dict(r) for r in rows])
 
@@ -890,17 +935,37 @@ def create_milestone():
     if err:
         return err
     # See create_project: a replayed create must not reset created_at.
-    existing = db.execute("SELECT created_at FROM milestones WHERE id=?", (mid,)).fetchone()
+    existing = db.execute(
+        "SELECT created_at, sort_order FROM milestones WHERE id=?", (mid,)
+    ).fetchone()
     created_at = data.get("created_at") or (existing["created_at"] if existing else ts)
+    existing_order = existing["sort_order"] if existing else None
+    if existing_order is None:
+        # The end of this project's list, so a milestone created by a client
+        # that knows nothing about ordering — the web client, today — lands
+        # where the phone would have put it rather than jumping to the front
+        # on a shared default of 0.
+        row = db.execute(
+            "SELECT MAX(sort_order) AS top FROM milestones WHERE project_id=?", (project_id,)
+        ).fetchone()
+        next_order = 0 if row["top"] is None else row["top"] + 1
+    else:
+        next_order = existing_order
     updated_at = data.get("updated_at") or ts
     db.execute(
-        "INSERT OR REPLACE INTO milestones (id,project_id,name,description,due_date,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO milestones"
+        " (id,project_id,name,description,due_date,sort_order,created_at,updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?)",
         (
             mid,
             project_id,
             data.get("name", "Untitled"),
             data.get("description", ""),
             data.get("due_date"),
+            # A replayed create from a client that predates ordering carries no
+            # sort_order; keeping whatever the row already had is the same rule
+            # create_project uses for favourite.
+            data.get("sort_order", next_order),
             created_at, updated_at,
         ),
     )
@@ -916,7 +981,7 @@ def update_milestone(mid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
-    fields = ["name", "description", "due_date"]
+    fields = ["name", "description", "due_date", "sort_order"]
     updates = {f: data[f] for f in fields if f in data}
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)

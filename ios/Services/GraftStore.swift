@@ -338,6 +338,55 @@ final class GraftStore {
         return bits.joined(separator: " · ")
     }
 
+    /// A freshly pulled list, with any row this phone has changed and not yet
+    /// managed to send left alone.
+    ///
+    /// A pull replaces `projects`, `issues` and the rest wholesale, and both
+    /// callers check the queue is empty before starting one. That check happens
+    /// *before* six HTTP requests, though, and the user can tap something while
+    /// they are in the air — which is exactly what pinning a project on a phone
+    /// with a slow or absent connection looks like. The star flipped, the PATCH
+    /// queued, and then the in-flight pull landed and put the server's older row
+    /// back: the pin vanished under the user, while the queued write went on to
+    /// pin it on the server, so the *next* pull pinned it again out of nowhere.
+    ///
+    /// The rule is the one a local-first app needs everywhere: while a write
+    /// against a row is still queued, this phone's copy of that row is the
+    /// newer one, and the server's answer is stale by definition. Rows created
+    /// here and not yet sent are kept for the same reason — they are not
+    /// missing from the server's answer, they have simply never been offered
+    /// to it.
+    private func reconcile<T: Identifiable>(
+        _ fromServer: [T],
+        with local: [T],
+        pathPrefix: String
+    ) -> [T] where T.ID == String {
+        let pending = syncEngine.pendingPaths
+        guard !pending.isEmpty else { return fromServer }
+
+        func isPending(_ id: String) -> Bool {
+            let path = pathPrefix + id
+            return pending.contains { $0 == path || $0.hasPrefix(path + "/") }
+        }
+
+        let localById = Dictionary(local.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var merged = fromServer.map { row in
+            isPending(row.id) ? (localById[row.id] ?? row) : row
+        }
+        // Anything held back locally that the server has never heard of — a
+        // create still sitting in the queue. A POST goes to the collection
+        // (`/api/projects`), not to the row, so there is no per-id path to
+        // match on and the test has to be "is any create of this kind queued".
+        // Appended rather than inserted: where it belongs is whatever the
+        // list's own sort says.
+        let createsQueued = pending.contains(String(pathPrefix.dropLast()))
+        let known = Set(fromServer.map(\.id))
+        merged.append(contentsOf: local.filter {
+            !known.contains($0.id) && (createsQueued || isPending($0.id))
+        })
+        return merged
+    }
+
     private func fetchAll(from base: String) async throws {
         // archived=1 returns archived AND live projects. Without it an archived
         // project simply vanishes on the next pull — no way to see it, and no
@@ -353,18 +402,22 @@ final class GraftStore {
         async let v: [GraftSavedView] = api.get("\(base)/api/views")
 
         let (fp, fi, fm) = try await (p, i, m)
-        projects = fp
-        issues = fi
-        milestones = fm
+        // Read *after* the awaits, deliberately: those six requests are the
+        // window in which a local write can arrive, and it is the state as it
+        // stands now — cache plus anything tapped while the pull was in the
+        // air — that the server's answer has to be reconciled against.
+        projects = reconcile(fp, with: projects, pathPrefix: "/api/projects/")
+        issues = reconcile(fi, with: issues, pathPrefix: "/api/issues/")
+        milestones = reconcile(fm, with: milestones, pathPrefix: "/api/milestones/")
 
         // Areas, links and saved views are additive. A server that has not been
         // updated yet answers 404 for all three, and that must not stop the
         // projects and issues that *did* arrive from landing — nor make `sync()`
         // fall through to the fallback URL and report the Pi as unreachable.
         // Whatever is already cached stays until a real answer replaces it.
-        areas = (try? await a) ?? areas
-        links = (try? await l) ?? links
-        savedViews = (try? await v) ?? savedViews
+        areas = (try? await a).map { reconcile($0, with: areas, pathPrefix: "/api/areas/") } ?? areas
+        links = (try? await l).map { reconcile($0, with: links, pathPrefix: "/api/links/") } ?? links
+        savedViews = (try? await v).map { reconcile($0, with: savedViews, pathPrefix: "/api/views/") } ?? savedViews
     }
 
     // MARK: - Search / filter against the server
@@ -473,15 +526,22 @@ final class GraftStore {
         await flushPending()
     }
 
-    /// Pin or unpin a project. A toggle on both sides, like archive, so a queued
-    /// request replayed after the phone comes back online lands the same way
-    /// round regardless of how long it sat there.
+    /// Pin or unpin a project.
+    ///
+    /// The flip happens here, on this phone's copy, and the request that goes
+    /// out afterwards *states the value* rather than asking the server to flip
+    /// whatever it has — `PATCH .../favourite` takes a body now, see the
+    /// handler. That is what makes pinning work with no signal: a bare toggle
+    /// queued on Monday and sent on Thursday lands wherever the server happens
+    /// to be by then, whereas "this project is pinned" is true whenever it
+    /// arrives and however many times it is retried.
     func favouriteProject(id: String) async throws {
-        if let idx = projects.firstIndex(where: { $0.id == id }) {
-            projects[idx].isFavourite.toggle()
-        }
+        guard let idx = projects.firstIndex(where: { $0.id == id }) else { return }
+        projects[idx].isFavourite.toggle()
+        let wanted = projects[idx].isFavourite
         saveCachedData()
-        syncEngine.enqueue(method: "PATCH", path: "/api/projects/\(id)/favourite")
+        let body = try JSONSerialization.data(withJSONObject: ["favourite": wanted ? 1 : 0])
+        syncEngine.enqueue(method: "PATCH", path: "/api/projects/\(id)/favourite", body: body)
         await flushPending()
     }
 
@@ -606,6 +666,78 @@ final class GraftStore {
         await flushPending()
     }
 
+    /// Move an issue to a status, and to a position inside that status.
+    ///
+    /// This is what dragging a card on the board does. Both halves are needed:
+    /// dropping into another column changes the status, dropping between two
+    /// cards changes the order, and dropping into another column *between* two
+    /// cards does both.
+    ///
+    /// `before` names the card the dragged one was dropped on top of, or `nil`
+    /// for the end of the column. A position rather than an index because the
+    /// board draws a filtered, sorted slice of the project and the index in
+    /// that slice is not the index in the project.
+    ///
+    /// The whole project is renumbered from zero rather than just the cards
+    /// that moved. Board order is one sequence across all five columns —
+    /// `sort_order` has no per-status namespace on either side of the wire — so
+    /// patching one column's numbers in isolation is how two cards end up
+    /// claiming the same slot.
+    func moveIssue(id: String, toStatus status: String, before target: String?) async throws {
+        guard let moving = issues.first(where: { $0.id == id }) else { return }
+        guard target != id else { return }
+        let projectId = moving.projectId
+        let statusChanged = moving.status != status
+
+        // The project's own order, which is what `sort_order` means. Archived
+        // issues are in it: they hold numbers too, and skipping them would make
+        // every renumber shuffle them to the front.
+        var order = issues
+            .filter { $0.projectId == projectId }
+            .sorted { $0.sortOrder == $1.sortOrder ? $0.id < $1.id : $0.sortOrder < $1.sortOrder }
+            .map(\.id)
+        order.removeAll { $0 == id }
+
+        if let target, let at = order.firstIndex(of: target) {
+            order.insert(id, at: at)
+        } else if let last = order.lastIndex(where: { issueStatus($0) == status }) {
+            // Dropped on the column itself: after whatever is already in it.
+            order.insert(id, at: last + 1)
+        } else {
+            order.append(id)
+        }
+
+        let ts = nowISO()
+        var renumbered: [[String: Any]] = []
+        for (position, issueId) in order.enumerated() {
+            guard let idx = issues.firstIndex(where: { $0.id == issueId }) else { continue }
+            if issues[idx].sortOrder != position {
+                issues[idx].sortOrder = position
+                renumbered.append(["id": issueId, "sort_order": position])
+            }
+        }
+
+        if statusChanged, let idx = issues.firstIndex(where: { $0.id == id }) {
+            issues[idx].status = status
+            issues[idx].updatedAt = ts
+        }
+        saveCachedData()
+
+        if statusChanged, let updated = issues.first(where: { $0.id == id }) {
+            let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: ts))
+            syncEngine.enqueue(method: "PUT", path: "/api/issues/\(id)", body: body)
+        }
+        if !renumbered.isEmpty {
+            let body = try JSONSerialization.data(withJSONObject: ["issues": renumbered])
+            syncEngine.enqueue(method: "PATCH", path: "/api/issues/reorder", body: body)
+        }
+        await flushPending()
+    }
+
+    private func issueStatus(_ id: String) -> String {
+        issues.first(where: { $0.id == id })?.status ?? ""
+    }
+
     /// The body of every `PUT /api/issues/:id`, whoever is writing.
     ///
     /// It names every editable field, including the ones the screen making the
@@ -703,6 +835,10 @@ final class GraftStore {
             name: name,
             description: description,
             dueDate: dueDate,
+            // On the end of this project's list, which is where a new one
+            // belongs: a milestone you have just written down is the next
+            // thing you thought of, not the next thing that happens.
+            sortOrder: milestones.filter { $0.projectId == projectId }.count,
             createdAt: ts,
             updatedAt: ts
         )
@@ -712,6 +848,7 @@ final class GraftStore {
         var bodyDict: [String: Any] = [
             "id": milestone.id, "project_id": projectId,
             "name": name, "description": description,
+            "sort_order": milestone.sortOrder,
             "created_at": ts, "updated_at": ts
         ]
         if let due = dueDate { bodyDict["due_date"] = due }
@@ -731,6 +868,11 @@ final class GraftStore {
 
         var bodyDict: [String: Any] = [
             "name": milestone.name, "description": milestone.description,
+            // Always sent, for the reason `issueWriteBody` spells out: the
+            // queue drops an earlier PUT to the same path, so every PUT has to
+            // be a complete record or a reorder still waiting to go out would
+            // be superseded by an edit that never mentioned it.
+            "sort_order": milestone.sortOrder,
             "updated_at": ts
         ]
         // Explicit null, so turning "Set due date" off actually clears it. The
@@ -739,6 +881,42 @@ final class GraftStore {
         bodyDict["due_date"] = milestone.dueDate ?? NSNull()
         let body = try JSONSerialization.data(withJSONObject: bodyDict)
         syncEngine.enqueue(method: "PUT", path: "/api/milestones/\(milestone.id)", body: body)
+        await flushPending()
+    }
+
+    /// Put this project's milestones in a new order.
+    ///
+    /// One PUT per milestone rather than a batch endpoint: a project has a
+    /// handful of them, each PUT carries the whole record so the queue's
+    /// newest-supersedes rule stays honest, and the paths are distinct so two
+    /// milestones moved in the same drag cannot collapse into one another. The
+    /// numbers are reassigned from zero every time, so gaps left by a deleted
+    /// milestone never accumulate.
+    func reorderMilestones(projectId: String, orderedIds: [String]) async throws {
+        var rank: [String: Int] = [:]
+        for (position, id) in orderedIds.enumerated() { rank[id] = position }
+
+        var moved: [GraftMilestone] = []
+        for idx in milestones.indices where milestones[idx].projectId == projectId {
+            guard let position = rank[milestones[idx].id],
+                  milestones[idx].sortOrder != position else { continue }
+            milestones[idx].sortOrder = position
+            moved.append(milestones[idx])
+        }
+        guard !moved.isEmpty else { return }
+        saveCachedData()
+
+        let ts = nowISO()
+        for milestone in moved {
+            var bodyDict: [String: Any] = [
+                "name": milestone.name, "description": milestone.description,
+                "sort_order": milestone.sortOrder,
+                "updated_at": ts
+            ]
+            bodyDict["due_date"] = milestone.dueDate ?? NSNull()
+            let body = try JSONSerialization.data(withJSONObject: bodyDict)
+            syncEngine.enqueue(method: "PUT", path: "/api/milestones/\(milestone.id)", body: body)
+        }
         await flushPending()
     }
 
@@ -1053,7 +1231,7 @@ final class GraftStore {
     }
 
     func milestones(for projectId: String) -> [GraftMilestone] {
-        milestones.filter { $0.projectId == projectId }
+        milestones.filter { $0.projectId == projectId }.sortedForDisplay
     }
 
     /// How many issues a milestone is attached to. Deleting it strips it from
@@ -1261,6 +1439,52 @@ final class GraftStore {
             return .queued(syncEngine.pendingCount)
         }
         return .synced
+    }
+
+    // MARK: - What has been typed before
+    //
+    // Tags and labels are free text on both sides of the wire, which is the
+    // right call — nobody wants to administer a taxonomy for their own to-do
+    // list — and also how you end up with `ios`, `iOS` and `i-os` all meaning
+    // the same thing. The fix is not validation, it is offering what is
+    // already there while the user types.
+
+    /// Every tag on every project, most-used first.
+    var projectTagVocabulary: [String] {
+        Self.rank(projects.flatMap(\.tagList))
+    }
+
+    /// Every label on every issue, most-used first. Archived issues count: a
+    /// label is no less real for having been used on work that is finished.
+    var issueLabelVocabulary: [String] {
+        Self.rank(issues.flatMap(\.labels))
+    }
+
+    /// Ranked by how often each one appears, ties broken alphabetically so the
+    /// list is stable between keystrokes. Case-insensitively deduplicated, with
+    /// the most common spelling winning — which is the one thing that actually
+    /// pulls `iOS` and `ios` back together over time.
+    private static func rank(_ all: [String]) -> [String] {
+        var counts: [String: Int] = [:]
+        var spellings: [String: [String: Int]] = [:]
+        for raw in all {
+            let value = raw.trimmingCharacters(in: .whitespaces)
+            guard !value.isEmpty else { continue }
+            let key = value.lowercased()
+            counts[key, default: 0] += 1
+            spellings[key, default: [:]][value, default: 0] += 1
+        }
+        return counts.keys
+            .sorted { a, b in
+                counts[a] == counts[b]
+                    ? a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+                    : counts[a]! > counts[b]!
+            }
+            .compactMap { key in
+                spellings[key]?.max { lhs, rhs in
+                    lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value < rhs.value
+                }?.key
+            }
     }
 
     /// How the app as a whole is doing at reaching the server. Drives the sync

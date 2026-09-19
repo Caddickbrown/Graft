@@ -123,10 +123,34 @@ struct ProjectDetailView: View {
                                   ) {
                                       Task { try? await store.favouriteProject(id: project.id) }
                                   }
-                                  GraftIconButton(systemImage: "pencil",
-                                                  accessibilityTitle: "Edit project") {
-                                      showEditProject = true
+                                  Menu {
+                                      Button {
+                                          showEditProject = true
+                                      } label: {
+                                          Label("Edit project", systemImage: "pencil")
+                                      }
+                                      // Built when the menu opens, not on every
+                                      // render of the header: `markdown(for:)`
+                                      // walks every issue in the project, and
+                                      // the search field two rows down redraws
+                                      // this view on each keystroke.
+                                      ShareLink(item: store.markdown(for: currentProject),
+                                                preview: SharePreview(currentProject.name)) {
+                                          Label("Export as Markdown", systemImage: "arrow.down.doc")
+                                      }
+                                  } label: {
+                                      Image(systemName: "ellipsis")
+                                          .font(.system(size: 15, weight: .medium))
+                                          .foregroundStyle(Color.gInk2)
+                                          .frame(width: GraftMetrics.control,
+                                                 height: GraftMetrics.control)
+                                          .background(Color.gSurface2,
+                                                      in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+                                          .frame(minWidth: GraftMetrics.tap,
+                                                 minHeight: GraftMetrics.tap)
+                                          .contentShape(Rectangle())
                                   }
+                                  .accessibilityLabel("Project actions")
                               })
 
             HStack(spacing: GraftMetrics.spaceXS) {
@@ -391,7 +415,7 @@ struct ProjectDetailView: View {
 
     @ViewBuilder
     private func issueRow(_ issue: GraftIssue) -> some View {
-        NavigationLink(destination: IssueDetailView(issue: issue)) {
+        NavigationLink(value: GraftRoute.issue(issue)) {
             GraftIssueRow(
                 issue: issue,
                 due: store.dueDate(for: issue),
@@ -449,13 +473,37 @@ struct ProjectDetailView: View {
                     KanbanColumn(
                         status: bucket.id,
                         issues: bucket.issues,
-                        onAddIssue: { showNewIssueInStatus = bucket.id }
+                        canReorder: canReorder,
+                        onAddIssue: { showNewIssueInStatus = bucket.id },
+                        onMove: { id, target in move(id, to: bucket.id, before: target) }
                     )
                 }
             }
             .padding(.horizontal, GraftMetrics.gutter)
             .padding(.bottom, 100)
             .padding(.top, GraftMetrics.spaceXS)
+        }
+    }
+
+    /// Whether a drop position on the board means anything.
+    ///
+    /// Dragging a card *between* columns is always a status change and always
+    /// makes sense. Dragging it to a particular *slot* only does while the
+    /// board is in its own order: under "sort by priority" the card would
+    /// spring straight back to wherever the sort puts it, which reads as the
+    /// drag having failed. So under any other sort a drop still moves the card
+    /// to the column, and simply does not claim to have placed it.
+    private var canReorder: Bool {
+        query.sort == .manual && query.group == .none
+    }
+
+    private func move(_ issueId: String, to status: String, before target: String?) {
+        Task {
+            if canReorder {
+                try? await store.moveIssue(id: issueId, toStatus: status, before: target)
+            } else if store.issues.first(where: { $0.id == issueId })?.status != status {
+                try? await store.updateIssueStatus(id: issueId, status: status)
+            }
         }
     }
 
@@ -486,7 +534,20 @@ struct KanbanColumn: View {
     @Environment(GraftStore.self) private var store
     let status: String
     let issues: [GraftIssue]
+    /// False when the board is under a sort of its own — see `canReorder`.
+    /// The column still accepts drops; it just does not draw a slot for them.
+    var canReorder: Bool = true
     let onAddIssue: () -> Void
+    /// (id of the card being dropped, id of the card to put it in front of —
+    /// `nil` for the end of this column).
+    var onMove: (String, String?) -> Void = { _, _ in }
+
+    /// The card the finger is currently over, so the gap opens where the card
+    /// is actually going to land. Nil when the drag is over the column's empty
+    /// space, which means the end.
+    @State private var insertBefore: String?
+    /// True while a drag is anywhere over this column.
+    @State private var targeted = false
 
     var statusInfo: IssueStatus { IssueStatus(rawValue: status) ?? .backlog }
 
@@ -514,8 +575,44 @@ struct KanbanColumn: View {
             // Cards
             VStack(spacing: 6) {
                 ForEach(issues) { issue in
-                    KanbanCard(issue: issue)
-                        .padding(.horizontal, GraftMetrics.spaceXS)
+                    VStack(spacing: 6) {
+                        // The gap the card would drop into. Drawn above the
+                        // card being hovered, because a drop *on* a card means
+                        // "in front of this one".
+                        if canReorder && insertBefore == issue.id {
+                            DropSlot()
+                        }
+                        KanbanCard(issue: issue)
+                    }
+                    .padding(.horizontal, GraftMetrics.spaceXS)
+                    // Hold to pick a card up. `.draggable` is a long press on
+                    // iOS, which leaves the tap to the NavigationLink inside
+                    // the card and the scroll to the two scroll views around
+                    // it — three gestures on one view, and none of them had to
+                    // be hand-rolled.
+                    .draggable(issue.id) {
+                        KanbanDragPreview(issue: issue)
+                    }
+                    .dropDestination(for: String.self) { ids, _ in
+                        insertBefore = nil
+                        targeted = false
+                        guard let dropped = ids.first else { return false }
+                        onMove(dropped, issue.id)
+                        return true
+                    } isTargeted: { over in
+                        if over {
+                            insertBefore = issue.id
+                        } else if insertBefore == issue.id {
+                            insertBefore = nil
+                        }
+                    }
+                }
+
+                // The end of the column, and the only target at all when the
+                // column is empty — which is the case that matters, because an
+                // empty column has no card to drop onto.
+                if canReorder && targeted && insertBefore == nil {
+                    DropSlot().padding(.horizontal, GraftMetrics.spaceXS)
                 }
 
                 // Add button
@@ -539,12 +636,62 @@ struct KanbanColumn: View {
             Spacer(minLength: 0)
         }
         .frame(width: 220)
-        .background(Color.gSurface)
+        .frame(minHeight: 120, alignment: .top)
+        .background(targeted ? Color.gAccentWash : Color.gSurface)
         .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radius))
         .overlay(
             RoundedRectangle(cornerRadius: GraftMetrics.radius)
-                .stroke(Color.gHairline, lineWidth: GraftMetrics.border)
+                .stroke(targeted ? Color.gAccent : Color.gHairline,
+                        lineWidth: targeted ? 2 : GraftMetrics.border)
         )
+        .animation(.easeOut(duration: 0.12), value: targeted)
+        .animation(.easeOut(duration: 0.12), value: insertBefore)
+        // The whole column, so the gaps between cards and the space under the
+        // last one are targets too. A card's own destination sits on top of
+        // this and wins where the two overlap.
+        .dropDestination(for: String.self) { ids, _ in
+            let before = insertBefore
+            insertBefore = nil
+            targeted = false
+            guard let dropped = ids.first else { return false }
+            onMove(dropped, before)
+            return true
+        } isTargeted: { targeted = $0 }
+    }
+}
+
+/// The gap that opens where a dragged card will land.
+private struct DropSlot: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: GraftMetrics.radiusTight)
+            .fill(Color.gAccent.opacity(0.25))
+            .frame(height: 3)
+            .frame(maxWidth: .infinity)
+            .transition(.opacity)
+            .accessibilityHidden(true)
+    }
+}
+
+/// What follows the finger. Deliberately smaller and plainer than the card —
+/// the full card lifted whole obscures the columns it is being dragged past,
+/// which is the one thing you need to see while dragging.
+private struct KanbanDragPreview: View {
+    let issue: GraftIssue
+
+    var body: some View {
+        HStack(spacing: GraftMetrics.spaceXXS) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill((IssuePriority(rawValue: issue.priority) ?? .normal).color)
+                .frame(width: 3, height: 14)
+            Text(issue.title)
+                .font(GraftFont.text(GraftType.secondary, .medium))
+                .foregroundStyle(Color.gInk)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, GraftMetrics.spaceS)
+        .padding(.vertical, GraftMetrics.spaceXS)
+        .frame(maxWidth: 200, alignment: .leading)
+        .background(Color.gSurface2, in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
     }
 }
 
@@ -565,7 +712,7 @@ struct KanbanCard: View {
         let labels = issue.labels.filter { !$0.isEmpty }.uniqued
 
         VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS + 2) {
-            NavigationLink(destination: IssueDetailView(issue: issue)) {
+            NavigationLink(value: GraftRoute.issue(issue)) {
                 VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS + 2) {
                     HStack(spacing: 0) {
                         RoundedRectangle(cornerRadius: 1)
