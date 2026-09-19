@@ -29,6 +29,14 @@ struct GraftApp: App {
                     await store.sync()
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    if phase != .active {
+                        // On the way out — backgrounded, or the app switcher.
+                        // Every view-state change already writes itself, so
+                        // this is the safety net rather than the mechanism; it
+                        // is also the last moment the system promises to tell
+                        // us about anything at all.
+                        store.flushViewState()
+                    }
                     if phase == .active {
                         // App foregrounded — flush any queued mutations, then
                         // rebuild the reminder set. Rebuilt here and on `sync`

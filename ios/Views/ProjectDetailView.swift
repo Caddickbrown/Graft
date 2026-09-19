@@ -53,13 +53,16 @@ struct ProjectDetailView: View {
     }
 
     private var viewMode: ViewMode {
-        ViewMode(rawValue: store.projectViewModes[project.id] ?? "") ?? .board
+        ViewMode(rawValue: store.viewMode(for: project.id)) ?? .board
     }
 
     private var viewModeBinding: Binding<ViewMode> {
         Binding(
             get: { viewMode },
-            set: { store.projectViewModes[project.id] = $0.rawValue }
+            // Through the store's own setter, which writes the file. Assigning
+            // into `projectViewModes` from here was the bug: the choice was
+            // made, drawn, and gone by the next launch.
+            set: { store.setViewMode($0.rawValue, for: project.id) }
         )
     }
 

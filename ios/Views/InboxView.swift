@@ -86,9 +86,26 @@ struct InboxView: View {
 
     // MARK: - Body
 
-    var body: some View {
-        @Bindable var store = store
+    /// The Inbox's own filter/sort state, read from the store and written back
+    /// through it so every change is saved. `$store.inboxQuery` looked like it
+    /// did the same and did not — writing through it mutates the query *inside*
+    /// the property, which is not a change the store can see coming.
+    private var queryBinding: Binding<IssueQuery> {
+        Binding(get: { store.inboxQuery }, set: { store.setInboxQuery($0) })
+    }
 
+    private var searchBinding: Binding<String> {
+        Binding(
+            get: { store.inboxQuery.q },
+            set: { newValue in
+                var next = store.inboxQuery
+                next.q = newValue
+                store.setInboxQuery(next)
+            }
+        )
+    }
+
+    var body: some View {
         NavigationStack(path: router.binding(for: .inbox)) {
             ZStack(alignment: .bottomTrailing) {
             VStack(spacing: 0) {
@@ -114,7 +131,7 @@ struct InboxView: View {
                     // filters locally on every keystroke so it still works
                     // with no server.
                     GraftSearchField(placeholder: "Search issues",
-                                     text: $store.inboxQuery.q) {
+                                     text: searchBinding) {
                         let snapshot = store.inboxQuery
                         Task { await store.refreshIssues(matching: snapshot) }
                     }
@@ -136,7 +153,7 @@ struct InboxView: View {
             .toolbar(.hidden, for: .navigationBar)
             .graftRoutes()
             .sheet(isPresented: $showFilters) {
-                FilterSortSheet(query: $store.inboxQuery)
+                FilterSortSheet(query: queryBinding)
             }
             .sheet(isPresented: $showNewIssue) {
                 // The Inbox spans every project, so there is no right project to
@@ -197,7 +214,9 @@ struct InboxView: View {
                     activeFilters: query.badgeCount,
                     clearTitle: "Clear filters"
                 ) {
-                    store.inboxQuery.reset()
+                    var next = store.inboxQuery
+                    next.reset()
+                    store.setInboxQuery(next)
                 }
                 Spacer(minLength: 0)
             }

@@ -50,21 +50,43 @@ final class GraftStore {
     // leaving a project and coming back reset every choice. The web client
     // persists its equivalent, so these live in the store and on disk.
 
-    var inboxQuery = IssueQuery() { didSet { saveViewState() } }
+    // Every one of these is `private(set)`, and every change to one goes
+    // through a method below that writes the file afterwards. They used to be
+    // freely settable with a `didSet { saveViewState() }` on each, which looks
+    // like it says the same thing and does not: an observer is reached by
+    // assigning the *whole* property, and half of these are never assigned
+    // whole. `projectViewModes[id] = "List"`, `collapsedAreaIds.insert(id)`
+    // and `inboxQuery.q = text` are in-place mutations of the value inside the
+    // property, and under `@Observable` — where the property is no longer a
+    // plain stored one — that is not a path anything can rely on the observer
+    // seeing. The board/list choice was the visible half of it: chosen, shown,
+    // and gone by the next launch.
+    //
+    // Closing that off entirely is worth more than the convenience: with the
+    // setter private there is no way to change one of these and forget to save
+    // it, which is the bug rather than any particular missing call.
+
+    private(set) var inboxQuery = IssueQuery()
 
     /// Per-project, keyed by project id — narrowing one project's board has
     /// never meant narrowing another's.
-    var projectQueries: [String: IssueQuery] = [:] { didSet { saveViewState() } }
+    private(set) var projectQueries: [String: IssueQuery] = [:]
 
-    var projectScope: ProjectScope = .active { didSet { saveViewState() } }
+    private(set) var projectScope: ProjectScope = .active
 
     /// Board or list, per project. Not part of the saved-view blob — it is how
     /// you like to look at one project, not a query, and the web client has no
     /// equivalent to sync it with.
-    var projectViewModes: [String: String] = [:] { didSet { saveViewState() } }
+    private(set) var projectViewModes: [String: String] = [:]
+
+    /// The last board/list choice made anywhere, used for a project you have
+    /// not expressed one for. Opening a new project on the board when you work
+    /// in the list all day is the same complaint as the choice not sticking,
+    /// one project along.
+    private(set) var lastViewMode: String = ""
 
     /// Areas the user has folded shut on the Projects tab.
-    var collapsedAreaIds: Set<String> = [] { didSet { saveViewState() } }
+    private(set) var collapsedAreaIds: Set<String> = []
 
     /// The whole of the above, as one file.
     private struct ViewState: Codable {
@@ -73,6 +95,7 @@ final class GraftStore {
         var projectScope: String?
         var collapsedAreaIds: [String]?
         var projectViewModes: [String: String]?
+        var lastViewMode: String?
     }
 
     // MARK: - Private
@@ -179,7 +202,8 @@ final class GraftStore {
             projectQueries: projectQueries,
             projectScope: projectScope.rawValue,
             collapsedAreaIds: Array(collapsedAreaIds),
-            projectViewModes: projectViewModes
+            projectViewModes: projectViewModes,
+            lastViewMode: lastViewMode
         )
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: viewStateFileURL, options: .atomic)
@@ -194,7 +218,17 @@ final class GraftStore {
         projectScope = ProjectScope(rawValue: state.projectScope ?? "") ?? .active
         collapsedAreaIds = Set(state.collapsedAreaIds ?? [])
         projectViewModes = state.projectViewModes ?? [:]
+        lastViewMode = state.lastViewMode ?? ""
     }
+
+    /// Write the view state out now, whatever has happened to it.
+    ///
+    /// Called when the app leaves the foreground. Everything below saves as it
+    /// goes, so this is belt and braces — but it is cheap, it is the one moment
+    /// the system will tell us about before the app is taken away, and "it did
+    /// not survive me leaving the app" is exactly the report this is here to
+    /// make impossible.
+    func flushViewState() { saveViewState() }
 
     /// The saved query for one project, defaulting to "everything, manual order".
     func projectQuery(_ projectId: String) -> IssueQuery {
@@ -203,6 +237,32 @@ final class GraftStore {
 
     func setProjectQuery(_ query: IssueQuery, for projectId: String) {
         projectQueries[projectId] = query
+        saveViewState()
+    }
+
+    func setInboxQuery(_ query: IssueQuery) {
+        inboxQuery = query
+        saveViewState()
+    }
+
+    func setProjectScope(_ scope: ProjectScope) {
+        projectScope = scope
+        saveViewState()
+    }
+
+    // MARK: Board or list
+
+    /// How this project was last looked at: its own choice, or the last one
+    /// made anywhere, or the board.
+    func viewMode(for projectId: String) -> String {
+        if let chosen = projectViewModes[projectId], !chosen.isEmpty { return chosen }
+        return lastViewMode
+    }
+
+    func setViewMode(_ mode: String, for projectId: String) {
+        projectViewModes[projectId] = mode
+        lastViewMode = mode
+        saveViewState()
     }
 
     func isAreaCollapsed(_ areaId: String) -> Bool {
@@ -215,6 +275,7 @@ final class GraftStore {
         } else {
             collapsedAreaIds.insert(areaId)
         }
+        saveViewState()
     }
 
     func saveSettings() {

@@ -210,7 +210,7 @@ struct ProjectsView: View {
         Menu {
             Picker("Show", selection: Binding(
                 get: { store.projectScope },
-                set: { store.projectScope = $0 }
+                set: { store.setProjectScope($0) }
             )) {
                 ForEach(ProjectScope.allCases, id: \.self) { scope in
                     Label(scope.label, systemImage: scope.systemImage).tag(scope)
@@ -282,7 +282,7 @@ struct ProjectsView: View {
     /// narrower scope — there is no such thing for Active, which is the default.
     private var showAllAction: (() -> Void)? {
         guard store.projectScope != .active, store.projectScope != .all else { return nil }
-        return { store.projectScope = .all }
+        return { store.setProjectScope(.all) }
     }
 
     private var emptyTitle: String {
