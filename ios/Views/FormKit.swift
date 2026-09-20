@@ -540,3 +540,110 @@ struct GraftTokenSuggestions: View {
         text = parts.joined(separator: ",").trimmingCharacters(in: .whitespaces) + ", "
     }
 }
+
+// MARK: Status & priority
+
+/// The tile both pickers below are made of: a drawn glyph over its label, in a
+/// slot the same size whichever option it is.
+///
+/// The glyph always keeps its own meaning colour; the *selection* is always the
+/// accent. This is the rule `GraftChoiceRow` states above, and it is the one
+/// thing that changed when the issue screen's hand-rolled status row moved in
+/// here: that version tinted the whole selected tile with the option's own
+/// colour, which for the two grey-by-meaning options — Backlog, and Normal
+/// priority — drew a grey tile with grey text at the exact moment you chose it,
+/// and read as disabled. Keeping meaning in the glyph and selection in the
+/// accent says both things at once.
+private struct GraftOptionTile<Glyph: View>: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+    @ViewBuilder let glyph: () -> Glyph
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: GraftMetrics.spaceXXS) {
+                glyph()
+                Text(title)
+                    .font(GraftFont.text(GraftType.micro, selected ? .bold : .regular))
+                    .foregroundStyle(selected ? Color.gAccentText : Color.gInk2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap)
+            .background(selected ? Color.gAccentWash : Color.gSurface2,
+                        in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+            .overlay(
+                RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall)
+                    .strokeBorder(selected ? Color.gAccent : Color.gHairline,
+                                  lineWidth: GraftMetrics.border)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+}
+
+/// Five tappable rings rather than a menu that hides the current value behind a
+/// tap. `StatusRing` is drawn rather than symbolised so that it is identical to
+/// the web client's, and a picker is where people learn what the rings mean.
+struct GraftStatusPicker: View {
+    var label: String = "Status"
+    @Binding var selection: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceXS) {
+            if !label.isEmpty { GraftFieldLabel(label) }
+            HStack(spacing: GraftMetrics.spaceXXS + 2) {
+                ForEach(IssueStatus.allCases, id: \.self) { status in
+                    GraftOptionTile(title: status.label,
+                                    selected: selection == status.rawValue,
+                                    action: { selection = status.rawValue }) {
+                        StatusRing(status: status, size: GraftMetrics.ring)
+                    }
+                }
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: selection)
+    }
+}
+
+/// The same row for priority. `PriorityDot` rather than a plain circle: the
+/// four priorities read by shape as well as by colour everywhere else in the
+/// app, and a picker that flattened them all to a coloured dot taught the
+/// colour without the shape.
+struct GraftPriorityPicker: View {
+    var label: String = "Priority"
+    @Binding var selection: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceXS) {
+            if !label.isEmpty { GraftFieldLabel(label) }
+            HStack(spacing: GraftMetrics.spaceXXS + 2) {
+                ForEach(IssuePriority.allCases, id: \.self) { priority in
+                    GraftOptionTile(title: priority.label,
+                                    selected: selection == priority.rawValue,
+                                    action: { selection = priority.rawValue }) {
+                        PriorityDot(priority: priority.rawValue, size: GraftMetrics.ring)
+                    }
+                }
+            }
+        }
+        .animation(.snappy(duration: 0.18), value: selection)
+    }
+}
+
+/// The small uppercase caption over a field. Both pickers above use it; it was
+/// three separate copies of the same four modifiers before.
+struct GraftFieldLabel: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(GraftFont.text(GraftType.micro, .semibold))
+            .foregroundStyle(Color.gInk3)
+            .tracking(GraftType.microTracking)
+    }
+}

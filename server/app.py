@@ -199,9 +199,57 @@ def init_db():
             created_at TEXT NOT NULL,
             PRIMARY KEY (op_id, path)
         );
+
+        -- One row, one number, bumped by a trigger on every write to every
+        -- table a client draws. It exists so a polling client can ask "has
+        -- anything changed?" for the price of a single-row lookup, instead of
+        -- re-fetching six lists to find out that nothing has.
+        --
+        -- A counter rather than MAX(updated_at) across the tables, which is
+        -- the obvious cheaper thing and is wrong twice over: a DELETE removes
+        -- the newest row as often as not, and the iOS queue replays an offline
+        -- write with the timestamp it was made at, so an edit made yesterday
+        -- and landed today moves no maximum at all.
+        CREATE TABLE IF NOT EXISTS revision (
+            id  INTEGER PRIMARY KEY CHECK (id = 1),
+            rev INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO revision (id, rev) VALUES (1, 0);
     """)
+    db.executescript(_revision_triggers_sql())
     db.commit()
     db.close()
+
+
+# The tables whose contents a client draws. `notifications` is deliberately
+# absent: the server writes rows there as a side effect of issue writes, which
+# already bump the counter, and nothing on the web draws them — counting them
+# would redraw every open page each time a digest row was written. `applied_ops`
+# is bookkeeping for the offline queue and is never drawn at all.
+#
+# A new table added to this list gets its triggers on the next start, because
+# init_db() runs at import. A new table *not* added to it is invisible to
+# polling clients, which is the one thing to remember when adding one.
+_REVISION_TABLES = ("projects", "milestones", "issues", "areas", "links", "views")
+
+
+def _revision_triggers_sql():
+    """AFTER INSERT/UPDATE/DELETE triggers that bump `revision`.
+
+    Triggers rather than a bump in each handler: they fire inside the writing
+    transaction whatever wrote the row, so a counter cannot drift from the data
+    because somebody added an endpoint and forgot. The names interpolated below
+    come from the literal tuple above, never from a request.
+    """
+    return "\n".join(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS rev_{table}_{verb.lower()}
+        AFTER {verb} ON {table} BEGIN
+            UPDATE revision SET rev = rev + 1 WHERE id = 1;
+        END;"""
+        for table in _REVISION_TABLES
+        for verb in ("INSERT", "UPDATE", "DELETE")
+    )
 
 
 def _migrate_db():
@@ -627,6 +675,25 @@ def _like_escape(text):
 @app.get("/api/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.get("/api/revision")
+def revision():
+    """A number that changes whenever anything a client draws changes.
+
+    The web client polls this on a timer and only re-fetches — and only
+    redraws — when the answer has moved. The saving that matters is not the
+    server's: a redraw closes open menus, discards what is half-typed in an
+    inline field and cancels a drag, so the common case of "nothing happened"
+    has to cost the page nothing at all.
+
+    Opaque on purpose. It is an integer today because a trigger increments it,
+    and a client that only ever compares it to the last one it saw will not
+    care if that stops being true.
+    """
+    db = get_db()
+    row = db.execute("SELECT rev FROM revision WHERE id = 1").fetchone()
+    return jsonify({"rev": row["rev"] if row else 0})
 
 
 # ---------------------------------------------------------------------------
@@ -2196,7 +2263,7 @@ def update_issue(iid):
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
     fields = ["title", "description", "status", "priority", "assignee", "milestone_id",
-              "start_at", "due_at", "recurrence_parent", "sort_order", "archived"]
+              "project_id", "start_at", "due_at", "recurrence_parent", "sort_order", "archived"]
     updates = {f: data[f] for f in fields if f in data}
     recurrence, recurrence_anchor, err = _recurrence_from_body(data)
     if err:
@@ -2224,6 +2291,32 @@ def update_issue(iid):
             del updates[key]
     if "labels" in data:
         updates["labels"] = json.dumps(data["labels"])
+
+    # Moving an issue to another project. project_id was missing from `fields`
+    # above, so this handler silently ignored it: the project select on the web
+    # form has always been able to say "this belongs somewhere else" on a new
+    # issue and never on an existing one, and the change was dropped without a
+    # word either way.
+    if "project_id" in updates:
+        target = (updates["project_id"] or "").strip() or NO_PROJECT_ID
+        updates["project_id"] = target
+        err = _project_exists(db, target)
+        if err:
+            return err
+        if target != row["project_id"]:
+            # A milestone belongs to one project, so it cannot come along. The
+            # milestone named in this same PUT counts too — a move and a
+            # milestone set in one request must not leave the issue pointing at
+            # a milestone in the project it has just left. None rather than '',
+            # because milestone_id is the one column that holds NULL for empty.
+            keep = updates.get("milestone_id", row["milestone_id"])
+            if keep:
+                owner = db.execute(
+                    "SELECT project_id FROM milestones WHERE id=?", (keep,)
+                ).fetchone()
+                if owner is None or owner["project_id"] != target:
+                    updates["milestone_id"] = None
+
     updates["updated_at"] = now()
     set_clause = ", ".join(f"{k}=?" for k in updates)
     db.execute(f"UPDATE issues SET {set_clause} WHERE id=?", (*updates.values(), iid))

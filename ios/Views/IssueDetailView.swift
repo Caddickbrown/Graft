@@ -76,7 +76,14 @@ struct IssueDetailView: View {
     }
 
     private var projectMilestones: [GraftMilestone] {
-        store.milestones(for: issue.projectId)
+        store.milestones(for: current.projectId)
+    }
+
+    /// Archived projects are not somewhere work should be moved to — but if the
+    /// issue is already in one it stays offered, so opening the menu cannot
+    /// silently relocate it. Same rule as `NewIssueView`.
+    private var availableProjects: [GraftProject] {
+        store.projects.filter { !$0.archived || $0.id == current.projectId }
     }
 
     /// Where back goes — named, because a chevron on its own says nothing about
@@ -120,6 +127,7 @@ struct IssueDetailView: View {
                     titleField
                     descriptionField
                     statusPicker
+                    priorityPicker
                     spawnNotice
                     properties
                     schedule
@@ -278,7 +286,7 @@ struct IssueDetailView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(Color.gSurface2, in: RoundedRectangle(cornerRadius: 5))
-            if let project = store.project(issue.projectId) {
+            if let project = store.project(current.projectId) {
                 Text(project.name)
                     .font(GraftFont.text(GraftType.caption))
                     .foregroundStyle(Color.gInk2)
@@ -313,61 +321,48 @@ struct IssueDetailView: View {
         }
     }
 
-    /// Five tappable glyphs rather than a Picker that hides the current value
-    /// behind a tap.
+    /// Status and priority, in the shared pickers. Both used to be different
+    /// controls here than on the create sheet — this row was hand-rolled, and
+    /// priority was a menu inside the properties card that hid three of its
+    /// four options behind a tap. They are one component each now, and priority
+    /// has come up here because status and priority are read as a pair.
     private var statusPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Status")
-            HStack(spacing: 6) {
-                ForEach(IssueStatus.allCases, id: \.self) { status in
-                    let selected = current.status == status.rawValue
-                    Button {
-                        setStatus(status.rawValue)
-                    } label: {
-                        VStack(spacing: GraftMetrics.spaceXXS) {
-                            // The ring, not an SF Symbol: this is the one
-                            // component that has to be identical to the web
-                            // client, and a picker is where people learn it.
-                            StatusRing(status: status, size: GraftMetrics.ring)
-                            Text(status.label)
-                                .font(GraftFont.text(GraftType.micro, selected ? .bold : .regular))
-                                .foregroundStyle(selected ? status.color : Color.gInk2)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap)
-                        .background(selected ? status.color.opacity(0.14) : Color.gSurface2,
-                                    in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall)
-                                .strokeBorder(selected ? status.color : Color.gHairline,
-                                              lineWidth: GraftMetrics.border)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(status.label)
-                    .accessibilityAddTraits(selected ? [.isSelected] : [])
-                }
-            }
-        }
+        GraftStatusPicker(selection: Binding(
+            get: { current.status },
+            set: { setStatus($0) }
+        ))
+    }
+
+    private var priorityPicker: some View {
+        GraftPriorityPicker(selection: Binding(
+            get: { current.priority },
+            set: { setPriority($0) }
+        ))
     }
 
     private var properties: some View {
         VStack(spacing: 0) {
-            propertyRow("Priority") {
+            // Where the issue lives. This was display-only text in `identity`
+            // for as long as the screen has existed: the create sheet could
+            // choose a project and nothing afterwards could change it, so an
+            // issue captured from the Inbox into whichever project came back
+            // first was stuck there. The server has always accepted the move on
+            // PUT — it was the phone that never offered it, and never sent it.
+            propertyRow("Project") {
                 Menu {
-                    ForEach(IssuePriority.allCases, id: \.self) { p in
-                        Button(p.label) { setPriority(p.rawValue) }
+                    ForEach(availableProjects) { p in
+                        Button(p.name) { setProject(p.id) }
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        let p = IssuePriority(rawValue: current.priority) ?? .normal
-                        // The shape, not a symbol: priority reads by shape as
-                        // well as colour everywhere else in the system.
-                        PriorityDot(priority: p.rawValue, size: 12)
-                        Text(p.label).font(GraftFont.text(GraftType.body))
+                        Text(store.project(current.projectId)?.name ?? "No project")
+                            .font(GraftFont.text(GraftType.body))
+                            .foregroundStyle(Color.gInk)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.gInk3)
                     }
-                    .foregroundStyle((IssuePriority(rawValue: current.priority) ?? .normal).color)
                 }
             }
             divider
@@ -570,13 +565,6 @@ struct IssueDetailView: View {
 
     // MARK: - Helpers
 
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(GraftFont.text(12, .semibold))
-            .kerning(0.6)
-            .foregroundStyle(Color.gInk2)
-    }
-
     private var divider: some View {
         Rectangle().fill(Color.gHairline).frame(height: 0.5).padding(.leading, 14)
     }
@@ -692,6 +680,25 @@ struct IssueDetailView: View {
     private func setMilestone(_ id: String?) {
         var updated = current
         updated.milestoneId = id
+        persist(updated)
+    }
+
+    /// Moving the issue to another project.
+    ///
+    /// A milestone belongs to one project and cannot come along, so it is
+    /// dropped here rather than left pointing into the project the issue has
+    /// just left. The server does the same thing on its side — see the
+    /// `project_id` branch in `update_issue` — but the local cache is what the
+    /// list behind this screen redraws from, and leaving a stale milestone in
+    /// it means the row shows a milestone that the next refresh will remove.
+    private func setProject(_ id: String) {
+        guard id != current.projectId else { return }
+        var updated = current
+        updated.projectId = id
+        if let keep = updated.milestoneId, store.milestone(keep)?.projectId != id {
+            updated.milestoneId = nil
+            updated.milestoneName = nil
+        }
         persist(updated)
     }
 

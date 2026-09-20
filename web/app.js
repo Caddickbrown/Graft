@@ -25,6 +25,10 @@
       err.status = r.status;
       throw err;
     }
+    // A write of ours moves the revision counter exactly as anyone else's
+    // does, and the page it was made from has already redrawn itself. Telling
+    // the poller about it keeps that from reading as news — see noteLocalWrite.
+    if (method !== 'GET') noteLocalWrite();
     if (r.status === 204) return null;
     return r.json();
   }
@@ -327,7 +331,7 @@
   // ══════════════════════════════════════════════════════════════
   // Every overlay in the client used to leave focus behind it: you could tab
   // into the page underneath a modal, and closing one dropped focus back to
-  // <body>. One trap, used by the modals, the slide-over and the palette.
+  // <body>. One trap, used by the modals and the palette.
   const FOCUSABLE = [
     'a[href]', 'button:not([disabled])', 'input:not([disabled])',
     'select:not([disabled])', 'textarea:not([disabled])',
@@ -520,7 +524,6 @@
 
   function anyModalOpen() {
     return [...document.querySelectorAll('.modal-overlay')].some(m => m.style.display === 'flex')
-      || document.getElementById('issue-slideover')?.style.display === 'flex'
       || !!document.getElementById('palette');
   }
 
@@ -899,11 +902,10 @@
     return `https://${v.replace(/^[a-z][a-z0-9+.-]*:\/*/i, '')}`;
   }
 
-  // Links are now per-owner — a project or an issue — and the slide-over shows
-  // both at once, so one flat cache is no longer enough. Keyed by the owner
-  // rather than held in a single variable, because the issue's links and its
-  // project's links are on screen together and the second load used to erase
-  // the first.
+  // Links are per-owner — a project or an issue — so one flat cache is not
+  // enough. Keyed by the owner rather than held in a single variable, because
+  // a project's links and an issue's can be on screen together (the issue
+  // modal over the project page) and the second load used to erase the first.
   const _linkCache = {};
   function _ownerKey(type, id) { return `${type}:${id}`; }
   function linksFor(type, id) { return _linkCache[_ownerKey(type, id)] || []; }
@@ -982,9 +984,9 @@
       </div>`;
   }
 
-  // The same owner's list can be on screen more than once — the project page
-  // and the slide-over behind it, or an issue's links in the modal and the
-  // panel — so every surface bound to that owner is redrawn from the one cache.
+  // The same owner's list can be on screen more than once — a project's links
+  // on the page and again in a dialog over it — so every surface bound to that
+  // owner is redrawn from the one cache.
   function refreshLinkSurfaces(ownerType, ownerId) {
     Object.keys(_linkSurfaces).forEach(containerId => {
       const bound = _linkSurfaces[containerId];
@@ -1229,7 +1231,10 @@
         const inside = active.filter(p => p.area_id === a.id);
         const shut = collapsed.has(a.id);
         return `
-          <div class="area-section${shut ? ' collapsed' : ''}">
+          <div class="area-section${shut ? ' collapsed' : ''}"
+               ondragover="GRAFT._railAreaOver(event)"
+               ondragleave="GRAFT._railLeave(event)"
+               ondrop="GRAFT._railAreaDrop(event,'${jsStr(a.id)}')">
             <button class="area-header" type="button" aria-expanded="${!shut}"
                     onclick="GRAFT._toggleRailArea('${jsStr(a.id)}')">
               <span class="area-dot" aria-hidden="true" ${a.colour ? `style="background:${esc(a.colour)}"` : ''}></span>
@@ -1255,15 +1260,23 @@
         <div class="nav-section-label">Favourites</div>
         ${favourites.map(p => railProjectItem(p, current)).join('')}` : '';
 
+      // Dropping a project on the flat list's heading takes it out of whatever
+      // area it was in. Without it the rail could file a project but never
+      // unfile one, and the only way back was the projects page.
+      const unfiled = `<div class="nav-section-label" title="Drop a project here to remove it from its area"
+             ondragover="GRAFT._railAreaOver(event)"
+             ondragleave="GRAFT._railLeave(event)"
+             ondrop="GRAFT._railAreaDrop(event,'')">Projects</div>`;
+
       el.innerHTML = `
         ${favSection}
         ${_allAreas.length ? `<div class="nav-section-label">Areas</div>${areaTree}` : ''}
         ${_areasFailed ? `<div class="nav-section-label">Areas</div>
           <div class="rail-error">Couldn’t load areas.
             <button class="chip-clear" type="button" onclick="GRAFT._retryRail()">Retry</button></div>` : ''}
-        ${active.length ? `<div class="nav-section-label">Projects</div>
+        ${active.length ? `${unfiled}
           ${active.map(p => railProjectItem(p, current)).join('')}`
-          : `<div class="nav-section-label">Projects</div>
+          : `${unfiled}
              <div class="rail-empty">No projects yet.
                <a href="index.html">Create one</a></div>`}
         ${renderRailViews()}
@@ -1284,14 +1297,187 @@
   function railProjectItem(p, current) {
     const c = p.issue_counts || {};
     const open = (c.backlog || 0) + (c.todo || 0) + (c.in_progress || 0) + (c.review || 0);
+    const id = jsStr(p.id);
     return `
       <a href="project.html?id=${esc(p.id)}" class="nav-item${p.id === current ? ' active' : ''}${p.favourite ? ' nav-item-fav' : ''}"
+         draggable="true"
+         ondragstart="GRAFT._railProjectDragStart(event,'${id}')"
+         ondragend="GRAFT._railProjectDragEnd(event)"
+         ondragover="GRAFT._railOver(event)"
+         ondragleave="GRAFT._railLeave(event)"
+         ondrop="GRAFT._railDrop(event,'${id}')"
          ${p.status !== 'active' ? `title="${esc(p.name)} — ${esc(p.status)}" style="opacity:.7"` : ''}>
         ${p.icon ? `<span class="nav-project-icon">${esc(p.icon)}</span>`
                  : `<span class="nav-project-dot" style="background:${esc(p.colour)}"></span>`}
         ${esc(p.name)}
         ${open ? `<span style="margin-left:auto;font-size:11.5px;color:var(--dim)">${open}</span>` : ''}
       </a>`;
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Drag-and-drop in the rail
+  // ══════════════════════════════════════════════════════════════
+  // Two different drops land here, and they are told apart by what is being
+  // dragged rather than by where it lands — a project item sits inside an area
+  // section, so by position alone both would claim the same pixels:
+  //
+  //   an issue   → a project        moves the issue into that project
+  //   a project  → an area section  files the project under that area
+  //   a project  → "Projects"       takes it out of whatever area it was in
+  //
+  // Only the handler matching the drag in progress calls preventDefault, and a
+  // dragover without one is not a drop target at all. So a project dragged over
+  // a project item is quietly declined there and the event carries on up to the
+  // area section behind it, which does want it.
+
+  function railClearDrop() {
+    document.querySelectorAll('.rail-drop').forEach(el => el.classList.remove('rail-drop'));
+  }
+
+  function railMark(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (e.currentTarget.classList.contains('rail-drop')) return;
+    railClearDrop();
+    e.currentTarget.classList.add('rail-drop');
+  }
+
+  function _railOver(e) {
+    if (!_dragId) return;          // not an issue; let it through to the section
+    railMark(e);
+  }
+
+  function _railAreaOver(e) {
+    if (!_dndDragId) return;       // not a project
+    railMark(e);
+  }
+
+  // dragleave fires on the way into a child as well as on the way out, so the
+  // highlight only comes off when the pointer has actually left the element.
+  function _railLeave(e) {
+    if (!e.relatedTarget || !e.currentTarget.contains(e.relatedTarget)) {
+      e.currentTarget.classList.remove('rail-drop');
+    }
+  }
+
+  function _railProjectDragStart(e, projectId) {
+    _dndDragId = projectId;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', projectId);
+    e.currentTarget.classList.add('dragging');
+    document.body.classList.add('dragging-project');
+  }
+
+  function _railProjectDragEnd(e) {
+    _dndDragId = null;
+    e.currentTarget.classList.remove('dragging');
+    document.body.classList.remove('dragging-project');
+    railClearDrop();
+  }
+
+  // ── An issue, dropped on a project ───────────────────────────────
+  async function _railDrop(e, projectId) {
+    if (!_dragId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const issueId = _dragId;
+    _dragId = null;
+    railClearDrop();
+    document.body.classList.remove('dragging-issue');
+
+    const issue = _allIssues.find(i => i.id === issueId);
+    if (!issue || issue.project_id === projectId) return;
+    const target = (_railProjects || []).find(p => p.id === projectId)
+      || _allProjects.find(p => p.id === projectId);
+    await moveIssueToProject(issue, projectId, target?.name || 'that project');
+  }
+
+  async function moveIssueToProject(issue, projectId, projectLabel) {
+    const before = {
+      project_id: issue.project_id,
+      project_name: issue.project_name,
+      milestone_id: issue.milestone_id,
+      milestone_name: issue.milestone_name,
+    };
+    const listBefore = _allIssues;
+
+    // Optimistic, because a card that sits still for a round trip reads as a
+    // drop that missed and invites a second go at it.
+    issue.project_id = projectId;
+    issue.project_name = projectLabel;
+    // The milestone does not travel with it — a milestone belongs to one
+    // project. The server clears it for the same reason; this is only so the
+    // screen does not show a stale one in the meantime.
+    issue.milestone_id = null;
+    issue.milestone_name = null;
+    // On a single project's page the issue has just left the page.
+    if (window._pageMode === 'project' && _currentProjectId !== projectId) {
+      _allIssues = _allIssues.filter(i => i.id !== issue.id);
+    }
+    rerenderCurrentView();
+
+    try {
+      await api('PUT', `/api/issues/${issue.id}`, { project_id: projectId });
+    } catch {
+      _allIssues = listBefore;
+      Object.assign(issue, before);
+      rerenderCurrentView();
+      toast('Couldn’t move the issue — try again');
+      return;
+    }
+
+    // The rail carries an open-issue count per project, and two of them just
+    // changed.
+    _railProjects = null;
+    renderRail();
+
+    // A project is a click-sized target in a narrow sidebar, and the one below
+    // the one you meant is a plausible miss — so this is offered back rather
+    // than left to be undone by hand through the edit form.
+    undoToast(`Moved to ${projectLabel}`, async () => {
+      await api('PUT', `/api/issues/${issue.id}`, {
+        project_id: before.project_id,
+        milestone_id: before.milestone_id,
+      });
+      _railProjects = null;
+      renderRail();
+      await window.reloadPage();
+    });
+  }
+
+  // ── A project, dropped on an area ────────────────────────────────
+  async function _railAreaDrop(e, areaId) {
+    if (!_dndDragId) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pid = _dndDragId;
+    _dndDragId = null;
+    railClearDrop();
+    document.body.classList.remove('dragging-project');
+
+    // The rail and the projects page keep their own lists, holding their own
+    // objects for the same project, so both are moved — otherwise the grid
+    // behind the sidebar goes on showing it filed where it was.
+    const copies = [_railProjects, _allProjects]
+      .map(list => (list || []).find(x => x.id === pid))
+      .filter(Boolean);
+    if (!copies.length || copies[0].area_id === areaId) return;
+
+    const previous = copies[0].area_id;
+    copies.forEach(p => { p.area_id = areaId; });
+    renderRail();
+    if (window._pageMode === 'projects') renderProjects();
+
+    try {
+      await api('PUT', `/api/projects/${pid}`, { area_id: areaId });
+      _railProjects = null;
+      renderRail();
+    } catch {
+      copies.forEach(p => { p.area_id = previous; });
+      renderRail();
+      if (window._pageMode === 'projects') renderProjects();
+      toast('Couldn’t move the project — try again');
+    }
   }
 
   function renderRailViews() {
@@ -1952,8 +2138,8 @@
            tabindex="0"
            role="button"
            aria-label="${esc(issue.title)}"
-           onclick="GRAFT.openIssueSlideover('${id}')"
-           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();GRAFT.openIssueSlideover('${id}')}"
+           onclick="GRAFT.openIssue('${id}')"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();GRAFT.openIssue('${id}')}"
            ondragstart="GRAFT._dragStart(event)"
            ondragend="GRAFT._dragEnd(event)">
         <div class="kanban-card-title">${esc(issue.title)}</div>
@@ -1985,8 +2171,11 @@
     return `
       <div class="issue-row${archivedClass}${selected}" data-priority="${esc(issue.priority)}" data-id="${esc(issue.id)}"
            tabindex="0" role="button" aria-label="${esc(issue.title)}"
-           onclick="GRAFT.openIssueSlideover('${id}')"
-           onkeydown="if(event.key==='Enter'){GRAFT.openIssueSlideover('${id}')}">
+           draggable="true"
+           ondragstart="GRAFT._rowDragStart(event)"
+           ondragend="GRAFT._dragEnd(event)"
+           onclick="GRAFT.openIssue('${id}')"
+           onkeydown="if(event.key==='Enter'){GRAFT.openIssue('${id}')}">
         ${check}
         <button class="status-btn" type="button"
                 aria-label="Change status — currently ${esc(STATUS_LABELS[issue.status] || issue.status)}"
@@ -1994,7 +2183,7 @@
         <div class="issue-row-title ${issue.status === 'done' ? 'done-title' : ''}">${esc(issue.title)}</div>
         <div class="issue-row-actions">
           <button class="icon-btn" type="button" title="Edit" aria-label="Edit issue"
-                  onclick="event.stopPropagation();GRAFT.openEditIssue(GRAFT._issue('${id}'))">${svg(NAV_ICONS.edit, 15)}</button>
+                  onclick="event.stopPropagation();GRAFT.openIssue('${id}')">${svg(NAV_ICONS.edit, 15)}</button>
           <button class="icon-btn" type="button" title="${issue.archived ? 'Unarchive' : 'Archive'}"
                   aria-label="${issue.archived ? 'Unarchive issue' : 'Archive issue'}"
                   onclick="event.stopPropagation();GRAFT.archiveIssue('${id}')">${svg(NAV_ICONS.archive, 15)}</button>
@@ -2098,7 +2287,7 @@
         </td>
         <td class="tbl-actions">
           <button class="icon-btn" type="button" title="Open" aria-label="Open issue"
-                  onclick="event.stopPropagation();GRAFT.openIssueSlideover('${id}')">${svg(NAV_ICONS.edit, 14)}</button>
+                  onclick="event.stopPropagation();GRAFT.openIssue('${id}')">${svg(NAV_ICONS.edit, 14)}</button>
         </td>
       </tr>`;
     }
@@ -2465,12 +2654,16 @@
     // An issue that does not exist yet has nothing to hang a link on — links
     // are rows of their own keyed by owner id, and there is no id until Save.
     // Rather than invent one and hope, the section is simply absent until the
-    // issue is real, and the slide-over is where a link gets attached.
+    // issue is real; reopen it once saved and the links are there to attach.
     const linksGroup = document.getElementById('issue-links-group');
     if (linksGroup) linksGroup.style.display = 'none';
     document.getElementById('modal-issue-title').textContent = 'New issue';
+    const idBadge = document.getElementById('modal-issue-id');
+    if (idBadge) { idBadge.textContent = ''; idBadge.style.display = 'none'; }
     const delBtn = document.getElementById('issue-delete-btn');
     if (delBtn) delBtn.style.display = 'none';
+    const arcBtn = document.getElementById('issue-archive-btn');
+    if (arcBtn) arcBtn.style.display = 'none';
 
     const projectSel = document.getElementById('issue-project');
     if (projectSel) {
@@ -2514,8 +2707,20 @@
       loadLinksInto('issue-links', 'issue', issue.id, { header: false });
     }
     document.getElementById('modal-issue-title').textContent = 'Edit issue';
+    // The panel showed the issue's id in its header and it is the only handle
+    // you can quote to somebody else, so the form carries it too.
+    const idBadge = document.getElementById('modal-issue-id');
+    if (idBadge) {
+      idBadge.textContent = issue.id.replace('iss_', '#');
+      idBadge.style.display = '';
+    }
     const delBtn = document.getElementById('issue-delete-btn');
     if (delBtn) delBtn.style.display = 'inline-flex';
+    const arcBtn = document.getElementById('issue-archive-btn');
+    if (arcBtn) {
+      arcBtn.style.display = 'inline-flex';
+      arcBtn.textContent = issue.archived ? 'Unarchive' : 'Archive';
+    }
 
     const projectSel = document.getElementById('issue-project');
     if (projectSel) {
@@ -2531,6 +2736,14 @@
     const msSel = document.getElementById('issue-milestone');
     if (msSel && issue.milestone_id) msSel.value = issue.milestone_id;
     openModal('modal-new-issue');
+  }
+
+  // Delete and Archive are reachable from a list row as well as from the open
+  // form, so the close has to be conditional: blanking body.overflow when no
+  // dialog was open would unlock the page behind a confirm that is still up.
+  function closeIssueModal() {
+    const el = document.getElementById('modal-new-issue');
+    if (el && el.style.display === 'flex') closeModal('modal-new-issue');
   }
 
   async function submitIssue(e) {
@@ -2569,6 +2782,14 @@
     }
   }
 
+  // Archive is the reversible neighbour of Delete, and it lived in the panel's
+  // footer; it is in the form's footer now so the two sit together.
+  async function archiveIssueFromModal() {
+    const editId = document.getElementById('issue-edit-id')?.value;
+    if (!editId) return;
+    await archiveIssue(editId);
+  }
+
   async function deleteIssue() {
     const editId = document.getElementById('issue-edit-id').value;
     if (!editId) return;
@@ -2590,7 +2811,7 @@
     try {
       await api('DELETE', `/api/issues/${id}`);
       toast('Issue deleted');
-      closeSlideover();
+      closeIssueModal();
       _allIssues = _allIssues.filter(i => i.id !== id);
       if (typeof reloadPage === 'function') reloadPage();
     } catch { toast('Could not delete issue'); }
@@ -2606,298 +2827,27 @@
         await api('PATCH', `/api/issues/${id}/archive`);
         if (typeof reloadPage === 'function') reloadPage();
       });
-      closeSlideover();
+      closeIssueModal();
       if (typeof reloadPage === 'function') reloadPage();
     } catch { toast('Could not archive issue'); }
   }
 
   // ══════════════════════════════════════════════════════════════
-  //  Issue slide-over
+  //  Opening an issue
   // ══════════════════════════════════════════════════════════════
-  let _slideoverIssueId = null;
-
-  async function openIssueSlideover(id) {
-    const issue = _allIssues.find(i => i.id === id);
+  // There used to be two different editors for one issue: this modal for
+  // "New issue" and the pencil on a list row, and a right-hand slide-over for
+  // clicking the issue itself. They disagreed about more than looks — the
+  // slide-over had no Project and no Repeats, so a card click could neither
+  // move an issue nor show you its repeat rule, and it saved on blur while the
+  // form saved on a button. One form now, wherever you open it from.
+  function openIssue(id) {
+    const issue = _issue(id);
     if (!issue) return;
-    _slideoverIssueId = id;
-    document.getElementById('detail-id').textContent = id.replace('iss_', '#');
-
-    const msOptions = _allMilestones
-      .filter(m => m.project_id === issue.project_id)
-      .map(m => `<option value="${esc(m.id)}" ${issue.milestone_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`)
-      .join('');
-
-    document.getElementById('slideover-body').innerHTML = `
-      <div class="so-field">
-        <div class="so-title"
-             contenteditable="true"
-             role="textbox"
-             aria-label="Issue title"
-             data-field="title"
-             onblur="GRAFT._soSave()"
-             onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
-        >${esc(issue.title)}</div>
-      </div>
-
-      <div class="so-field">
-        <div class="so-desc"
-             contenteditable="true"
-             role="textbox"
-             aria-label="Description"
-             data-field="description"
-             onblur="GRAFT._soSave()"
-             placeholder="Add a description…"
-        >${esc(issue.description || '')}</div>
-      </div>
-
-      <div class="so-meta">
-        <div class="so-meta-row">
-          <span class="so-label">Status</span>
-          <select class="so-select" aria-label="Status" data-field="status" onchange="GRAFT._soSave()">
-            ${STATUSES.map(st => `<option value="${st}" ${issue.status === st ? 'selected' : ''}>${STATUS_LABELS[st]}</option>`).join('')}
-          </select>
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Priority</span>
-          <select class="so-select" aria-label="Priority" data-field="priority" onchange="GRAFT._soSave()">
-            ${PRIORITIES.map(p => `<option value="${p}" ${issue.priority === p ? 'selected' : ''}>${PRIORITY_LABELS[p]}</option>`).join('')}
-          </select>
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Assignee</span>
-          <input class="so-input" data-field="assignee" aria-label="Assignee"
-                 value="${esc(issue.assignee || '')}"
-                 placeholder="Unassigned"
-                 onblur="GRAFT._soSave()">
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Milestone</span>
-          <select class="so-select" aria-label="Milestone" data-field="milestone_id" onchange="GRAFT._soSave()">
-            <option value="">None</option>
-            ${msOptions}
-          </select>
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Start</span>
-          <input class="so-input" type="date" data-field="start_at" aria-label="Start date"
-                 value="${esc(issue.start_at || '')}"
-                 onchange="GRAFT._soSave()">
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Due</span>
-          <input class="so-input" type="date" data-field="due_at" aria-label="Due date"
-                 value="${esc(issue.due_at || '')}"
-                 onchange="GRAFT._soSave()">
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Labels</span>
-          <input class="so-input" data-field="labels" aria-label="Labels"
-                 value="${esc((issue.labels || []).join(', '))}"
-                 placeholder="bug, frontend…"
-                 onblur="GRAFT._soSave()">
-        </div>
-      </div>
-
-      <div class="so-links" id="so-issue-links"></div>
-
-      <div class="so-footer">
-        <button class="btn btn-ghost btn-sm" type="button" onclick="GRAFT._archiveIssueFromSlideover('${jsStr(id)}')"
-                title="${issue.archived ? 'Unarchive' : 'Archive'}">
-          ${issue.archived ? '↩ Unarchive' : '⊘ Archive'}
-        </button>
-        <button class="btn btn-ghost btn-danger btn-sm" type="button" onclick="GRAFT._deleteIssueFromSlideover('${jsStr(id)}')">Delete issue</button>
-      </div>
-
-      <div class="so-project-section">
-        <div class="so-project-header" role="button" tabindex="0"
-             onclick="GRAFT._toggleProjectSection()"
-             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();GRAFT._toggleProjectSection()}"
-             id="so-project-toggle" aria-expanded="false">
-          <span class="so-project-label">Project — ${esc(_allProjects.find(p => p.id === issue.project_id)?.name || '')}</span>
-          <svg class="so-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div class="so-project-body" id="so-project-body" style="display:none">
-          ${_renderProjectSection(issue.project_id)}
-        </div>
-      </div>
-    `;
-    const panel = document.getElementById('issue-slideover');
-    document.getElementById('slideover-overlay').style.display = 'block';
-    panel.style.display = 'flex';
-    panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-modal', 'true');
-    panel.setAttribute('aria-label', `Issue ${issue.title}`);
-    document.body.style.overflow = 'hidden';
-    // Opening it never used to move focus into it, so a keyboard user was left
-    // tabbing through the list behind the panel.
-    trapFocus(panel);
-
-    // Both link lists are separate requests, so the panel opens straight away
-    // and the sections fill in — neither is a reason to wait. The issue's own
-    // links load here; the project's load with the project section, which is
-    // collapsed on open and often never expanded.
-    await loadLinksInto('so-issue-links', 'issue', issue.id);
+    openEditIssue(issue);
   }
-
-  async function _soSave() {
-    const id = _slideoverIssueId;
-    if (!id) return;
-    const body = document.getElementById('slideover-body');
-    if (!body) return;
-    const issue = _allIssues.find(i => i.id === id);
-
-    // The title is checked before anything else is read, because the check
-    // used to sit after every field had been gathered and before the write:
-    // clearing the title silently threw away every other edit in that save.
-    const titleEl = body.querySelector('[data-field="title"]');
-    const title = titleEl?.innerText?.trim();
-    if (!title) {
-      if (titleEl && issue) titleEl.innerText = issue.title;
-      toast('An issue needs a title — the rest of your changes are still here');
-      return;
-    }
-
-    const description = body.querySelector('[data-field="description"]')?.innerText?.trim();
-    const status = body.querySelector('[data-field="status"]')?.value;
-    const priority = body.querySelector('[data-field="priority"]')?.value;
-    const assignee = body.querySelector('[data-field="assignee"]')?.value?.trim();
-    const milestone_id = body.querySelector('[data-field="milestone_id"]')?.value || null;
-    // '' rather than null: it is what the server stores for "no date", and a
-    // cleared input must clear the stored value rather than be treated as absent.
-    const start_at = body.querySelector('[data-field="start_at"]')?.value || '';
-    const due_at = body.querySelector('[data-field="due_at"]')?.value || '';
-    const labelsRaw = body.querySelector('[data-field="labels"]')?.value || '';
-    const labels = labelsRaw.split(',').map(l => l.trim()).filter(Boolean);
-
-    const previous = issue ? { ...issue } : null;
-    if (issue) {
-      Object.assign(issue, { title, description, status, priority, assignee, milestone_id, start_at, due_at, labels });
-      issue.milestone_name = _allMilestones.find(m => m.id === milestone_id)?.name || null;
-    }
-
-    // Refresh the board/list behind the slide-over quietly
-    rerenderCurrentView();
-
-    try {
-      const res = await api('PUT', `/api/issues/${id}`, { title, description, status, priority, assignee, milestone_id, start_at, due_at, labels });
-      if (_applySpawn(res)) closeSlideover();
-    } catch {
-      // The edit was shown before it was saved, so a failure has to take it
-      // back — otherwise the value sits there until you navigate away.
-      if (issue && previous) Object.assign(issue, previous);
-      rerenderCurrentView();
-      if (_slideoverIssueId === id) openIssueSlideover(id);
-      toast('That didn’t save — the server didn’t answer');
-    }
-  }
-
-  function closeSlideover() {
-    const panel = document.getElementById('issue-slideover');
-    if (!panel) return;
-    releaseFocus(panel);
-    _slideoverIssueId = null;
-    document.getElementById('slideover-overlay').style.display = 'none';
-    panel.style.display = 'none';
-    document.body.style.overflow = '';
-  }
-
-  async function _deleteIssueFromSlideover(id) { await deleteIssueById(id); }
-
-  async function _archiveIssueFromSlideover(id) { await archiveIssue(id); }
 
   function _issue(id) { return _allIssues.find(i => i.id === id); }
-
-  function _renderProjectSection(pid) {
-    const p = _allProjects.find(proj => proj.id === pid);
-    if (!p) return '<div class="so-empty">No project</div>';
-    const areaOptions = [{ id: '', name: 'No area' }, ..._allAreas]
-      .map(a => `<option value="${esc(a.id)}" ${String(p.area_id || '') === String(a.id) ? 'selected' : ''}>${esc(a.name)}</option>`)
-      .join('');
-    return `
-      <div class="so-meta" style="margin-top:10px">
-        <div class="so-meta-row">
-          <span class="so-label">Name</span>
-          <input class="so-input" aria-label="Project name" data-pfield="name" value="${esc(p.name)}" onblur="GRAFT._soProjectSave('${jsStr(pid)}')">
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Status</span>
-          <select class="so-select" aria-label="Project status" data-pfield="status" onchange="GRAFT._soProjectSave('${jsStr(pid)}')">
-            ${PROJECT_STATUSES.map(s => `<option value="${s}" ${p.status === s ? 'selected' : ''}>${PROJECT_STATUS_LABELS[s]}</option>`).join('')}
-          </select>
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Area</span>
-          <select class="so-select" aria-label="Area" data-pfield="area_id" onchange="GRAFT._soProjectSave('${jsStr(pid)}')">
-            ${areaOptions}
-          </select>
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Icon</span>
-          <input class="so-input" aria-label="Project icon" data-pfield="icon" value="${esc(p.icon || '')}" placeholder="Paste emoji…" onblur="GRAFT._soProjectSave('${jsStr(pid)}')">
-        </div>
-        <div class="so-meta-row">
-          <span class="so-label">Description</span>
-          <input class="so-input" aria-label="Project description" data-pfield="description" value="${esc(p.description || '')}" placeholder="Add description…" onblur="GRAFT._soProjectSave('${jsStr(pid)}')">
-        </div>
-      </div>
-      <div class="so-links" id="so-links"></div>`;
-  }
-
-  function _toggleProjectSection() {
-    const body = document.getElementById('so-project-body');
-    const head = document.getElementById('so-project-toggle');
-    const chevron = document.querySelector('.so-chevron');
-    const open = body.style.display !== 'none';
-    body.style.display = open ? 'none' : 'block';
-    head?.setAttribute('aria-expanded', String(!open));
-    if (chevron) chevron.style.transform = open ? '' : 'rotate(180deg)';
-    // The project's links are fetched when the section is first opened rather
-    // than when the panel is. Two link requests on every issue you glance at,
-    // for a section that starts collapsed, is two requests to show nothing.
-    const issue = _issue(_slideoverIssueId);
-    if (!open && issue) loadLinksInto('so-links', 'project', issue.project_id);
-  }
-
-  async function _soProjectSave(pid) {
-    const body = document.getElementById('so-project-body');
-    if (!body) return;
-    const proj = _allProjects.find(p => p.id === pid);
-
-    // Same shape of bug as the issue title: the guard belongs before any of
-    // this is written anywhere, not between reading the fields and sending.
-    const nameEl = body.querySelector('[data-pfield="name"]');
-    const name = nameEl?.value?.trim();
-    if (!name) {
-      if (nameEl && proj) nameEl.value = proj.name;
-      toast('A project needs a name — the rest of your changes are still here');
-      return;
-    }
-
-    const status = body.querySelector('[data-pfield="status"]')?.value;
-    const icon = body.querySelector('[data-pfield="icon"]')?.value?.trim();
-    const description = body.querySelector('[data-pfield="description"]')?.value?.trim();
-    const area_id = body.querySelector('[data-pfield="area_id"]')?.value ?? '';
-
-    const previous = proj
-      ? { name: proj.name, status: proj.status, icon: proj.icon, description: proj.description, area_id: proj.area_id }
-      : null;
-    if (proj) Object.assign(proj, { name, status, icon, description, area_id });
-    const label = document.querySelector('.so-project-label');
-    if (label) label.textContent = `Project — ${name}`;
-    try {
-      await api('PUT', `/api/projects/${pid}`, { name, status, icon, description, area_id });
-      _railProjects = null;
-      renderRail();
-    } catch {
-      // The fields were written before the request, so put the old values
-      // back rather than leave an edit that was never saved on screen.
-      if (proj && previous) Object.assign(proj, previous);
-      const section = document.getElementById('so-project-body');
-      if (section) section.innerHTML = _renderProjectSection(pid);
-      if (label) label.textContent = `Project — ${previous?.name || ''}`;
-      toast('That didn’t save — the server didn’t answer');
-    }
-  }
 
   // ══════════════════════════════════════════════════════════════
   //  PAGE: index.html  (Projects)
@@ -3813,6 +3763,7 @@
     if (window._pageMode === 'project') await loadProjectPage();
     else if (window._pageMode === 'issues') { await loadFacets(); await loadIssuesPage(); }
     else if (window._pageMode === 'today') await loadToday();
+    else if (window._pageMode === 'area') await loadAreaPage();
     else await loadProjects();
   };
 
@@ -3842,7 +3793,7 @@
   // reliable as whatever the bar happened to be set to — and graft_org_project
   // is one saved state shared by every project, so a filter left on one project
   // silently swallowed links into the next. A link is a promise; honour it, and
-  // put the issue in the cache the slide-over reads from.
+  // put the issue in the cache the editor reads from.
   async function openDeepLinkedIssue(id) {
     if (!_issue(id)) {
       // The unfiltered copy of this project's issues is already in hand.
@@ -3862,7 +3813,7 @@
           _allProjects.find(p => p.id === issue.project_id), issue.project_id),
       });
     }
-    openIssueSlideover(id);
+    openIssue(id);
   }
 
   async function loadProjectPage() {
@@ -4190,11 +4141,27 @@
     e.dataTransfer.setData('text/plain', _dragId);
     // Slight delay so the drag ghost renders before we dim the card
     setTimeout(() => card.classList.add('drag-ghost'), 0);
+    document.body.classList.add('dragging-issue');
+  }
+
+  // A row in the list and the table, which the rail accepts as a drop the same
+  // way it accepts a card. No source status: a row is not sitting in a column,
+  // so the board's reordering has nothing to read off it.
+  function _rowDragStart(e) {
+    const row = e.currentTarget;
+    _dragId = row.dataset.id;
+    _dragSourceStatus = null;
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', _dragId);
+    document.body.classList.add('dragging-issue');
   }
 
   function _dragEnd(e) {
     e.currentTarget.classList.remove('dragging', 'drag-ghost');
     document.querySelectorAll('.kanban-col').forEach(c => c.classList.remove('drop-target'));
+    document.body.classList.remove('dragging-issue');
+    railClearDrop();
     _dragId = null;
     _dragSourceStatus = null;
   }
@@ -4536,6 +4503,9 @@
     }
 
     initShortcuts();
+    // Every page goes through here, so this is the one place the refresh timer
+    // has to be started.
+    startLiveRefresh();
   }
 
   function setTopbarTitle(text) {
@@ -4764,7 +4734,6 @@
         // A popover is the shallowest thing on screen, so it closes first.
         if (document.querySelector('.popover')) { closeMenus(); return; }
         if (document.getElementById('drawer')?.classList.contains('open')) { closeDrawer(); return; }
-        if (document.getElementById('issue-slideover')?.style.display === 'flex') { closeSlideover(); return; }
         const open = [...document.querySelectorAll('.modal-overlay')].find(m => m.style.display === 'flex');
         if (open?.id) { closeModal(open.id); return; }
         if (_selection.size) { clearSelection(); return; }
@@ -4812,6 +4781,16 @@
     // back button.
     await loadAreas();
     renderRail();
+    await loadAreaPage();
+  }
+
+  // Split out of initArea so the live refresh can call it. Every other page
+  // already had its load step separate from its setup step; this one did not,
+  // which is why `reloadPage` used to fall through to the projects page here
+  // and redraw a grid that is not on this page.
+  async function loadAreaPage() {
+    const id = new URLSearchParams(window.location.search).get('id');
+    if (!id) return;
     try {
       // ?archived=1 asks for both halves in one request. An archived project
       // keeps its area, so this page is the one place it stays reachable —
@@ -4905,27 +4884,215 @@
     }
   }
 
+  // ══════════════════════════════════════════════════════════════
+  //  Live refresh
+  // ══════════════════════════════════════════════════════════════
+  // A page is drawn once and then only redrawn by what you do to it, so an
+  // issue captured on the phone, an edit made in another tab, or a recurring
+  // issue the server spawned overnight all sat invisible behind a stale page
+  // until somebody hit reload.
+  //
+  // Polling rather than a socket: the server is a small Flask app on a Pi with
+  // a thread per request, and one short GET every twenty seconds from the tab
+  // you actually have open costs it far less than a connection it has to hold.
+  //
+  // What gets polled is a counter, not the data. /api/revision is one row and
+  // one integer, bumped by a trigger on every write, so "nothing has changed"
+  // — which is nearly every tick — costs one small request and touches no DOM
+  // at all. That last part is the real reason for the counter: redrawing the
+  // page closes any open menu, throws away whatever is half-typed in an inline
+  // field and cancels a drag, so a refresh has to happen only when there is
+  // genuinely something new to show.
+
+  const POLL_MS = 20000;
+  // What a server too old to know /api/revision gets. It has to be reloaded
+  // blind to find out whether anything moved, so it is asked far less often.
+  const POLL_BLIND_MS = 90000;
+  const POLL_MAX_MS = 5 * 60 * 1000;
+
+  let _pollTimer = null;
+  let _pollStarted = false;
+  let _revision = null;
+  let _pollDelay = POLL_MS;
+  // Areas, links and views already treat a 404 as "this server is older than
+  // this client" and carry on degraded rather than breaking the page. The same
+  // applies here: no revision endpoint means fall back to a slow blind reload,
+  // not to no refreshing at all.
+  let _revisionUnsupported = false;
+
+  // The last time anybody typed anywhere. A focused field on its own is not
+  // reason enough to hold a refresh off forever — a caret left in the search
+  // box while someone goes to lunch would do exactly that — but a field being
+  // typed into right now is.
+  let _lastTyped = 0;
+  const TYPING_GRACE_MS = 10000;
+  document.addEventListener('keydown', () => { _lastTyped = Date.now(); }, true);
+
+  // Redrawing under someone is worse than being twenty seconds stale, so a
+  // tick that lands while they are in the middle of something is skipped
+  // rather than queued — the counter does not move on while we wait, so the
+  // next tick still sees the change.
+  function refreshBlocked() {
+    if (anyModalOpen()) return true;
+    // An open popover menu is built around the row it was opened from, and
+    // that row is about to be replaced.
+    if (document.querySelector('.popover')) return true;
+    if (_dragId || _dndDragId) return true;
+    const el = document.activeElement;
+    // Project and area notes, and the inline titles in the table view: the
+    // text in one of these is unsaved by definition until it blurs, so it is
+    // not ours to throw away whether anyone is typing at this instant or not.
+    if (el && el.isContentEditable) return true;
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)
+        && Date.now() - _lastTyped < TYPING_GRACE_MS) return true;
+    return false;
+  }
+
+  // A refresh redraws the org bar, and the search box inside it, so focus and
+  // caret are put back afterwards. renderOrgBarChipsOnly already does this by
+  // hand for its own redraw; a refresh needs it more, because it can land at
+  // any moment rather than in answer to a keystroke.
+  function captureFocus() {
+    const el = document.activeElement;
+    if (!el || !el.id || el === document.body) return null;
+    return { id: el.id, caret: typeof el.selectionStart === 'number' ? el.selectionStart : null };
+  }
+
+  function restoreFocus(snap) {
+    if (!snap) return;
+    const el = document.getElementById(snap.id);
+    if (!el || el === document.activeElement) return;
+    try {
+      el.focus();
+      if (snap.caret !== null && typeof el.setSelectionRange === 'function') {
+        el.setSelectionRange(snap.caret, snap.caret);
+      }
+    } catch { /* it came back as something that cannot take focus */ }
+  }
+
+  // Everything a page shows, re-fetched. The rail is included because it is
+  // drawn from a list fetched once per page and invalidated by hand: without
+  // this, a project created on the phone would never appear in the sidebar
+  // however many times the surface beside it reloaded.
+  async function refreshNow() {
+    const focus = captureFocus();
+    _railProjects = null;
+    await loadAreas();
+    await renderRail();
+    await window.reloadPage();
+    restoreFocus(focus);
+  }
+
+  // One refresh at a time. Coming back to the tab schedules a tick immediately,
+  // which can land on top of one already running, and two refreshes in flight
+  // is two sets of requests racing to render the same thing.
+  let _pollBusy = false;
+
+  async function pollOnce() {
+    if (document.hidden || refreshBlocked() || _pollBusy) return;
+    _pollBusy = true;
+    try {
+      await pollInner();
+    } finally {
+      _pollBusy = false;
+    }
+  }
+
+  async function pollInner() {
+    if (_revisionUnsupported) { await refreshNow(); return; }
+
+    let rev;
+    try {
+      rev = (await api('GET', '/api/revision')).rev;
+    } catch (err) {
+      if (err.status === 404) { _revisionUnsupported = true; return; }
+      // Unreachable, or answering badly. Back off so a closed laptop lid or a
+      // Pi that is rebooting is not asked four times a minute until it comes
+      // back, and say nothing: a poll nobody asked for has no business putting
+      // an error in front of anyone. The page keeps showing what it had.
+      _pollDelay = Math.min(_pollDelay * 2, POLL_MAX_MS);
+      return;
+    }
+    _pollDelay = POLL_MS;
+
+    // The first answer is the baseline, not a change: it describes the data
+    // the page has already drawn.
+    if (_revision === null) { _revision = rev; return; }
+    if (rev === _revision) return;
+    _revision = rev;
+    await refreshNow();
+  }
+
+  function schedulePoll(delay) {
+    clearTimeout(_pollTimer);
+    const wait = delay !== undefined
+      ? delay
+      : (_revisionUnsupported ? POLL_BLIND_MS : _pollDelay);
+    _pollTimer = setTimeout(async () => {
+      try { await pollOnce(); } finally { schedulePoll(); }
+    }, wait);
+  }
+
+  // Called after every successful write this tab makes. Our own edit bumps the
+  // counter like anyone else's, and without this the next tick would read it
+  // as news and redraw a page that is already showing exactly that change —
+  // most visibly right after dropping a card, which is when a redraw is least
+  // welcome. Fire-and-forget, and never allowed to move the baseline backwards,
+  // because two quick writes put two of these in the air at once.
+  function noteLocalWrite() {
+    if (!_pollStarted || _revisionUnsupported) return;
+    api('GET', '/api/revision')
+      .then(r => { _revision = Math.max(_revision ?? 0, r.rev); })
+      .catch(() => { /* the next tick will sort it out */ });
+  }
+
+  function startLiveRefresh() {
+    if (_pollStarted) return;
+    _pollStarted = true;
+
+    // Primed now rather than on the first tick, so the baseline describes the
+    // data this page is loading rather than the world twenty seconds later —
+    // otherwise anything that happened in between would be folded into the
+    // baseline and never shown.
+    pollOnce();
+    schedulePoll();
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      // Coming back to the tab is the moment a stale page is most obvious, and
+      // the one time a check off-schedule is worth making. The backoff is
+      // dropped too: whatever was unreachable while this tab was in the
+      // background is worth one more try now that somebody is looking.
+      _pollDelay = POLL_MS;
+      schedulePoll(0);
+    });
+
+    // Same argument, for the laptop that just found wifi again.
+    window.addEventListener('online', () => {
+      _pollDelay = POLL_MS;
+      schedulePoll(0);
+    });
+  }
+
   // ── Public API ──────────────────────────────────────────────────
   window.GRAFT = {
     init, initIssues, initProject, initArea, initToday,
     openNewProject, openNewIssue, openEditIssue,
-    submitProject, deleteProject, submitIssue, deleteIssue,
+    submitProject, deleteProject, submitIssue, deleteIssue, archiveIssueFromModal,
     archiveCurrentProject,
     _saveAreaNotes, _saveProjectNotes,
     setView,
     openMilestones, submitMilestone, cancelMilestone,
-    openIssueSlideover, closeSlideover,
+    openIssue,
     editCurrentProject,
     loadMilestonesForProject,
     closeModal, openModal,
     // the recurrence control on the issue form
     _recurSync, _recurToggleDay,
-    _issue, _deleteIssueFromSlideover, _archiveIssueFromSlideover,
+    _issue,
     _addIssueInStatus, _editMilestone, _deleteMilestone,
     _dragStart, _dragEnd, _dragOver, _dragEnter, _dragLeave, _drop,
-    _soSave,
     toggleTheme, initIconPicker, _pickIcon,
-    _renderProjectSection, _toggleProjectSection, _soProjectSave,
     // chrome
     openDrawer, closeDrawer, openPalette, closePalette, _retryPalette,
     // the organisation bar
@@ -4937,6 +5104,9 @@
     _applyView: applySavedView, _deleteView: deleteSavedView,
     // drag and drop
     _onCardDragStart, _onCardDragEnd, _onAreaDragOver, _onAreaDragLeave, _onAreaDrop,
+    // drag and drop in the rail
+    _rowDragStart, _railProjectDragStart, _railProjectDragEnd,
+    _railOver, _railAreaOver, _railLeave, _railDrop, _railAreaDrop,
     // retries
     _retryRail, _retryProjects, _retryIssues, _retryProject, _retryToday,
     _retryLinks,

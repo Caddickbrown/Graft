@@ -39,9 +39,6 @@ struct NewIssueView: View {
     @State private var loaded = false
     @FocusState private var focus: GraftFormField?
 
-    let statuses = ["backlog", "todo", "in-progress", "review", "done"]
-    let priorities = ["urgent", "high", "normal", "low"]
-
     /// Anything typed is worth protecting from an accidental swipe-down.
     private var hasDraft: Bool {
         !title.trimmingCharacters(in: .whitespaces).isEmpty
@@ -137,14 +134,16 @@ struct NewIssueView: View {
                 .onChange(of: selectedProjectId) { _, _ in milestoneId = "" }
             }
 
+            // The same two pickers the issue screen uses. These were
+            // `GraftChoiceRow` capsules with a plain coloured dot, which taught
+            // the colour of a status or a priority but not its shape — and the
+            // shape is what the rings and the priority marks are read by on
+            // every row, card and chip in both clients. Learning them on the
+            // screen where you first set them is the point.
             GraftSection(title: "Status & priority") {
-                GraftChoiceRow(label: "Status", options: statuses, selection: $status,
-                               title: statusLabel,
-                               dot: { IssueStatus(rawValue: $0)?.color })
+                GraftStatusPicker(selection: $status)
                 GraftRowDivider()
-                GraftChoiceRow(label: "Priority", options: priorities, selection: $priority,
-                               title: priorityLabel,
-                               dot: { IssuePriority(rawValue: $0)?.color })
+                GraftPriorityPicker(selection: $priority)
             }
 
             if !projectMilestones.isEmpty {
@@ -208,16 +207,5 @@ struct NewIssueView: View {
             recurrenceAnchor: recurrenceAnchor
         )
         dismiss()
-    }
-
-    /// Through the design system rather than a third hand-written copy of the
-    /// same switch — this one said "To do" where the rest of both clients say
-    /// "Todo".
-    private func statusLabel(_ s: String) -> String {
-        IssueStatus(rawValue: s)?.label ?? s
-    }
-
-    private func priorityLabel(_ p: String) -> String {
-        IssuePriority(rawValue: p)?.label ?? p
     }
 }

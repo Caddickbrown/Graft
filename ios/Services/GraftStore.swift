@@ -814,6 +814,12 @@ final class GraftStore {
             "title": issue.title, "description": issue.description,
             "status": issue.status, "priority": issue.priority,
             "assignee": issue.assignee, "labels": issue.labels,
+            // The issue's project. Absent from this body until now, so a move
+            // made on the phone was written to the local cache and then quietly
+            // dropped on the next sync — the issue snapped back to where it was
+            // the moment the server answered. Harmless to send when nothing has
+            // moved: the handler compares it to the stored row first.
+            "project_id": issue.projectId,
             // `""` rather than null for the dates: it is what the server stores
             // for "no date", and a cleared picker must clear the stored value
             // rather than read as absent.

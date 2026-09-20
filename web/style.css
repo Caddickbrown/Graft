@@ -955,38 +955,6 @@ button.area-header-name:hover { color: var(--ink); }
 .status-icon.status-review      { color: var(--s-review); }
 .status-icon.status-done        { color: var(--s-done); }
 
-/* ── Slide-over ─────────────────────────────────────────────────── */
-.slideover-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 100;
-  backdrop-filter: blur(2px);
-}
-
-.slideover {
-  position: fixed; top: 0; right: 0; bottom: 0;
-  width: 440px;
-  background: var(--surface);
-  border-left: 1px solid var(--line);
-  z-index: 101;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-lg);
-  overflow-y: auto;
-}
-
-.slideover-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 22px;
-  border-bottom: 1px solid var(--line);
-  position: sticky;
-  top: 0;
-  background: var(--surface);
-  z-index: 1;
-}
-
-.slideover-body { padding: 22px; flex: 1; }
-
 .issue-id-badge {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1070,13 +1038,6 @@ button.area-header-name:hover { color: var(--ink); }
 .area-notes:hover { border-color: var(--line-2); color: var(--ink); }
 .area-notes:focus { border-color: var(--accent); background: var(--surface-2); color: var(--ink); }
 .area-notes:empty::before { content: attr(placeholder); color: var(--ink-3); pointer-events: none; }
-/* Same block inside the slideover, where there is far less room */
-.so-links:not(:empty) { margin-top: 20px; padding-top: 4px; border-top: 1px solid var(--line); }
-.so-links .link-row-url { display: none; }
-/* …except on a hub row, where the address is the thing being pointed at and
-   the label above it is only a name somebody typed. Dropping it there would
-   leave "Tom" with nothing saying which Tom. */
-.so-links .link-row.link-hub .link-row-url { display: block; }
 .link-list { display: flex; flex-direction: column; gap: 2px; }
 .link-row {
   display: flex;
@@ -2012,95 +1973,6 @@ option { background: var(--surface); color: var(--ink); }
 }
 .kanban-col.drop-target { background: var(--surface-2); border-color: var(--line-2); }
 
-/* ── Slideover inline form ──────────────────────────────────────── */
-.so-field { margin-bottom: 4px; }
-
-.so-title {
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: -0.015em;
-  color: var(--ink);
-  padding: 6px 8px;
-  border-radius: var(--r-sm);
-  border: 1px solid transparent;
-  transition: border-color .15s, background .15s;
-  min-height: 1.4em;
-  cursor: text;
-}
-.so-title:hover { border-color: var(--line); background: var(--surface-2); }
-.so-title:focus { border-color: var(--line-2); background: var(--surface-2); }
-.so-title:empty::before { content: 'Issue title'; color: var(--ink-3); }
-
-.so-desc {
-  font-size: 13.5px;
-  color: var(--ink-2);
-  line-height: 1.65;
-  padding: 6px 8px;
-  border-radius: var(--r-sm);
-  border: 1px solid transparent;
-  min-height: 60px;
-  transition: border-color .15s, background .15s;
-  cursor: text;
-  white-space: pre-wrap;
-}
-.so-desc:hover { border-color: var(--line); background: var(--surface-2); }
-.so-desc:focus { border-color: var(--line-2); background: var(--surface-2); color: var(--ink); }
-.so-desc:empty::before { content: attr(placeholder); color: var(--ink-3); pointer-events: none; }
-
-.so-meta {
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  overflow: hidden;
-  margin: 16px 0;
-}
-
-.so-meta-row {
-  display: flex;
-  align-items: center;
-  min-height: var(--h-md);
-  padding: 6px 14px;
-  border-bottom: 1px solid var(--line);
-  gap: 12px;
-}
-.so-meta-row:last-child { border-bottom: none; }
-
-.so-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--ink-3);
-  width: 82px;
-  flex-shrink: 0;
-}
-
-.so-select {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--ink);
-  font-size: 13.5px;
-  font-family: inherit;
-  cursor: pointer;
-  padding: 0;
-}
-
-.so-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--ink);
-  font-size: 13.5px;
-  font-family: inherit;
-  padding: 0;
-}
-.so-input::placeholder { color: var(--ink-3); }
-
-.so-footer {
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-  margin-top: 8px;
-}
-
 /* ── Project icon ───────────────────────────────────────────────── */
 .project-icon { font-size: 22px; line-height: 1; flex-shrink: 0; }
 .nav-project-icon { font-size: 13px; line-height: 1; flex-shrink: 0; }
@@ -2136,41 +2008,6 @@ option { background: var(--surface); color: var(--ink); }
   align-self: flex-start;
 }
 .icon-clear:hover { color: var(--ink); border-color: var(--line-2); }
-
-/* ── Slideover project section ──────────────────────────────────── */
-.so-project-section {
-  margin-top: 20px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  overflow: hidden;
-}
-
-.so-project-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: var(--h-lg);
-  padding: 8px 14px;
-  cursor: pointer;
-  user-select: none;
-  transition: background .12s;
-}
-.so-project-header:hover { background: var(--surface-2); }
-
-.so-project-label {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .07em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-}
-
-.so-chevron { color: var(--ink-3); transition: transform .2s; flex-shrink: 0; }
-
-.so-project-body { border-top: 1px solid var(--line); }
-.so-project-body .so-meta { margin: 0; border: none; border-radius: 0; }
-
-.so-empty { font-size: 13px; color: var(--ink-3); padding: 12px 14px; }
 
 /* ── Archived states ────────────────────────────────────────────── */
 .project-card-archived { opacity: .55; }
@@ -2267,7 +2104,6 @@ option { background: var(--surface); color: var(--ink); }
   .kanban-col { width: 100%; }
   .projects-grid { grid-template-columns: 1fr; }
   .form-row { flex-direction: column; }
-  .slideover { width: 100%; border-left: none; }
 
   .mobile-topbar { display: flex; margin: -12px -16px 12px; }
   .tabbar { display: flex; }
@@ -2409,8 +2245,8 @@ option { background: var(--surface); color: var(--ink); }
 
 /* ── Focus visibility (keyboard users) ──────────────────────────────
    This block is last on purpose. The old file put outline:none on the
-   palette input and the four slideover fields *after* the global rule,
-   so those five controls had no visible focus at all. Nothing in this
+   palette input and several form controls *after* the global rule, so
+   those controls had no visible focus at all. Nothing in this
    stylesheet sets outline:none, and the explicit rules below win on
    specificity regardless of where a component rule sits. */
 :focus-visible {
@@ -2419,10 +2255,6 @@ option { background: var(--surface); color: var(--ink); }
   border-radius: var(--r-xs);
 }
 .palette-input:focus-visible,
-.so-title:focus-visible,
-.so-desc:focus-visible,
-.so-select:focus-visible,
-.so-input:focus-visible,
 .form-input:focus-visible,
 .search-input:focus-visible,
 .org-select:focus-visible {
