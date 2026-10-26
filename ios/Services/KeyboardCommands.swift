@@ -139,6 +139,13 @@ final class KeyCommandController: UIViewController {
             if let title { command.discoverabilityTitle = title }
             // Arrows would otherwise scroll the enclosing scroll view instead.
             command.wantsPriorityOverSystemBehavior = priority
+            // These are the characters printed on the keys, not menu shortcuts
+            // to be moved somewhere reachable. Left on, UIKit remaps punctuation
+            // — `[` `]` `/` `=` `-` — to suit the layout (and swaps `[` for `]`
+            // in a right-to-left language), and a key that types `]` can stop
+            // matching the command that asks for it.
+            command.allowsAutomaticLocalization = false
+            command.allowsAutomaticMirroring = false
             commands.append(command)
         }
 
