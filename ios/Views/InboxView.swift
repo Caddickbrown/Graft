@@ -22,6 +22,9 @@ struct InboxView: View {
     @State private var showNewIssue = false
     @State private var showFilters = false
     @State private var undo: UndoAction?
+    /// The row the hardware keyboard is on, by id. See `graftKeyList`.
+    @State private var keySelection: String?
+    @State private var searchFocus = 0
 
     // MARK: - Data
 
@@ -46,13 +49,7 @@ struct InboxView: View {
     /// specific claim and wins; the milestone stays as the fallback, so nothing
     /// that was flagged before this existed quietly stopped being flagged.
     private var needsYou: [GraftIssue] {
-        visible.filter { issue in
-            if issue.priority == "urgent" || issue.priority == "high" { return true }
-            if let days = GraftDate.daysUntil(store.dueDate(for: issue)) {
-                return days <= 2
-            }
-            return false
-        }
+        visible.filter { store.needsYou($0) }
     }
 
     private var moving: [GraftIssue] {
@@ -65,6 +62,18 @@ struct InboxView: View {
     private var backlog: [GraftIssue] {
         let claimed = Set(needsYou.map(\.id)).union(moving.map(\.id))
         return visible.filter { !claimed.contains($0.id) }
+    }
+
+    /// The rows in the order they are drawn, sectioned, for the keyboard and
+    /// the monitor. Empty sections are left out: there is nothing to land on.
+    private var keySections: [(title: String?, ids: [String])] {
+        let sections: [(String, [GraftIssue])]
+        if query.group == .none {
+            sections = [("Needs you", needsYou), ("In progress", moving), ("Backlog", backlog)]
+        } else {
+            sections = store.groups(visible, by: query.group).map { ($0.title, $0.issues) }
+        }
+        return sections.filter { !$0.1.isEmpty }.map { (title: Optional($0.0), ids: $0.1.map(\.id)) }
     }
 
     private var summary: String {
@@ -131,7 +140,8 @@ struct InboxView: View {
                     // filters locally on every keystroke so it still works
                     // with no server.
                     GraftSearchField(placeholder: "Search issues",
-                                     text: searchBinding) {
+                                     text: searchBinding,
+                                     focusRequest: searchFocus) {
                         let snapshot = store.inboxQuery
                         Task { await store.refreshIssues(matching: snapshot) }
                     }
@@ -151,6 +161,26 @@ struct InboxView: View {
             // with it, which is what used to push the + button under the bar.
             .background(Color.gBg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
+            .graftKeyList(
+                ids: keySections.flatMap(\.ids),
+                selection: $keySelection,
+                display: { selected in
+                    .issues(title: "Inbox", items: ExternalListItem.sections(keySections), selected: selected)
+                },
+                onOpen: { id in
+                    guard let issue = store.issues.first(where: { $0.id == id }) else { return }
+                    router.inboxPath.append(GraftRoute.issue(issue))
+                },
+                key: { k, selected in
+                    switch k {
+                    case "n": showNewIssue = true; return true
+                    case "/": searchFocus += 1; return true
+                    default:
+                        guard let selected else { return false }
+                        return store.handleIssueKey(k, issueId: selected) { undo = $0 }
+                    }
+                }
+            )
             .graftRoutes()
             .sheet(isPresented: $showFilters) {
                 FilterSortSheet(query: queryBinding)
@@ -228,6 +258,7 @@ struct InboxView: View {
     }
 
     private var list: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 SyncStrip()
@@ -256,6 +287,11 @@ struct InboxView: View {
             // anywhere on this screen.
             await store.sync()
         }
+        .onChange(of: keySelection) { _, selected in
+            guard let selected else { return }
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(selected, anchor: .center) }
+        }
+        }
     }
 
     // MARK: - One section
@@ -274,8 +310,10 @@ struct InboxView: View {
                     GraftIssueRow(issue: issue,
                                   project: store.project(issue.projectId),
                                   due: store.dueDate(for: issue))
+                        .graftKeySelected(keySelection == issue.id)
                 }
                 .buttonStyle(.plain)
+                .id(issue.id)
                 .padding(.horizontal, GraftMetrics.gutter)
                 .padding(.bottom, GraftMetrics.spaceXS)
                 // A context menu, not .swipeActions: these rows live in a

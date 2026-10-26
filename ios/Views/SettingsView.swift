@@ -21,6 +21,7 @@ struct SettingsView: View {
     @AppStorage(GraftTheme.storageKey) private var themeRaw = GraftTheme.system.rawValue
 
     @FocusState private var urlFieldFocused: Bool
+    @State private var showShortcuts = false
 
     var lastSyncedString: String {
         guard let date = store.lastSynced else { return "Never" }
@@ -44,6 +45,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: GraftMetrics.spaceXL) {
                         pendingSection
                         appearanceSection
+                        keyboardSection
                         serverSection
                         if piEnabled {
                             certificateSection
@@ -134,6 +136,75 @@ struct SettingsView: View {
     /// match on the same desk. The picker writes one string to `UserDefaults`;
     /// `GraftApp` reads it and hands the window a colour scheme, and the whole
     /// palette follows from there.
+    /// The hardware keyboard and the second screen — see `KeyboardCommands`
+    /// and `ExternalDisplay`. Both are always on; these only tune them.
+    private var keyboardSection: some View {
+        let display = ExternalDisplayModel.shared
+        return SettingsSection(title: "Keyboard & monitor") {
+            Button {
+                showShortcuts = true
+            } label: {
+                HStack {
+                    Text("Keyboard shortcuts")
+                        .font(GraftFont.text(GraftType.body))
+                        .foregroundStyle(Color.gInk)
+                    Spacer()
+                    Text("?")
+                        .font(GraftFont.mono(GraftType.secondary, .medium))
+                        .foregroundStyle(Color.gInk2)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.gInk3)
+                }
+                .frame(minHeight: GraftMetrics.tap)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showShortcuts) { KeyboardShortcutsView() }
+
+            GraftRowDivider()
+            HStack(spacing: GraftMetrics.spaceXS) {
+                Image(systemName: "display")
+                    .foregroundStyle(display.isConnected ? Color.gAccentText : Color.gInk3)
+                Text(display.isConnected
+                     ? "Monitor connected — Graft has its own screen there."
+                     : "Plug into a monitor and Graft shows its own screen there, driven from a keyboard.")
+                    .font(GraftFont.text(GraftType.caption))
+                    .foregroundStyle(Color.gInk2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, GraftMetrics.spaceXS)
+
+            GraftRowDivider()
+            GraftChoiceRow(
+                label: "Monitor text",
+                options: ExternalTextSize.allCases,
+                selection: Binding(get: { display.textSize }, set: { display.textSize = $0 }),
+                title: { $0.label }
+            )
+            GraftRowDivider()
+            GraftChoiceRow(
+                label: "Monitor theme",
+                options: ExternalTheme.allCases,
+                selection: Binding(get: { display.theme }, set: { display.theme = $0 }),
+                title: { $0.label }
+            )
+            GraftRowDivider()
+            GraftToggleRow(label: "Key hints on the monitor",
+                           isOn: Binding(get: { display.showsHints }, set: { display.showsHints = $0 }))
+            GraftRowDivider()
+            GraftToggleRow(label: "Dim the phone while connected",
+                           isOn: Binding(get: { display.dimsDevice }, set: { display.dimsDevice = $0 }))
+            if display.dimsDevice {
+                Slider(value: Binding(get: { display.dimLevel }, set: { display.dimLevel = $0 }),
+                       in: ExternalDisplayModel.dimFloor...0.5)
+                    .tint(Color.gAccent)
+                    .frame(minHeight: GraftMetrics.tap)
+                    .accessibilityLabel("Phone brightness while connected")
+            }
+        }
+    }
+
     private var appearanceSection: some View {
         SettingsSection(title: "Appearance") {
             GraftChoiceRow(

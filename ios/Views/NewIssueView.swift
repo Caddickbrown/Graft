@@ -87,6 +87,17 @@ struct NewIssueView: View {
             status = defaultStatus
             let opened = availableProjects.contains(where: { $0.id == projectId })
             selectedProjectId = opened ? projectId : (availableProjects.first?.id ?? "")
+            // Typing straight away is the point of pressing `n` on a keyboard.
+            // Without one, the form opens as it always did, with nothing
+            // popping up over it.
+            if graftHardwareKeyboardAttached {
+                // After the sheet has finished arriving; set during the
+                // presentation, focus does not take.
+                Task {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    focus = .title
+                }
+            }
         }
         .disabled(isSaving)
         // Every create/edit sheet in the app used to lose in-progress text to a

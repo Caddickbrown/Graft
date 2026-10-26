@@ -52,6 +52,10 @@ struct IssueDetailView: View {
     /// for an edit nobody made. The same guard the project, link and milestone
     /// forms use, under the name they use for it.
     @State private var hydrating = false
+    /// Which text field a hardware keyboard has put the cursor in (`t`, `e`).
+    @FocusState private var editing: EditingField?
+
+    enum EditingField: Hashable { case title, description }
 
     enum SaveState: Equatable {
         case idle
@@ -169,6 +173,22 @@ struct IssueDetailView: View {
             }
         }
         .onDisappear { flushPendingSave() }
+        .externalDisplay(.issue(id: issue.id))
+        // The same letters as on a list row, routed through this screen's own
+        // setters so the save indicator and the recurring-issue notice still
+        // follow. Esc is left to the root, which goes back.
+        .graftKeys(GraftKeyHandlers(key: { k in
+            switch k {
+            case "]", "[": setStatus(IssueStatus.step(current.status, by: k == "]" ? 1 : -1))
+            case "x": setStatus(IssueStatus.toggledDone(current.status))
+            case "p": setPriority(IssuePriority.next(after: current.priority))
+            case "a": archive()
+            case "t": editing = .title
+            case "e": editing = .description
+            default: return false
+            }
+            return true
+        }))
         .confirmationDialog("Delete this issue?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Delete permanently", role: .destructive) {
                 Task { try? await store.deleteIssue(id: issue.id); dismiss() }
@@ -300,6 +320,8 @@ struct IssueDetailView: View {
             .font(GraftFont.text(24, .semibold))
             .foregroundStyle(Color.gInk)
             .textFieldStyle(.plain)
+            .focused($editing, equals: .title)
+            .onKeyPress(.escape) { editing = nil; return .handled }
             .onChange(of: title) { _, _ in scheduleSave() }
     }
 
@@ -317,6 +339,8 @@ struct IssueDetailView: View {
                 .foregroundStyle(Color.gInk2)
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 90)
+                .focused($editing, equals: .description)
+                .onKeyPress(.escape) { editing = nil; return .handled }
                 .onChange(of: description) { _, _ in scheduleSave() }
         }
     }

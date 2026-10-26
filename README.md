@@ -41,6 +41,33 @@ cd web && python3 -m http.server 8912
 # iOS — open ios/ in Xcode after running xcodegen
 ```
 
+### iOS: keyboard and external display
+
+Plug the phone (or an iPad) into a monitor and Graft gets a screen of its own
+there instead of a mirror: the list you are arrowing through beside the issue
+under the selection, an open issue laid out for reading across a desk, or — with
+nothing selected — the day's numbers and what needs you. The phone can be dimmed
+and left face down; everything is reachable from a hardware keyboard, with or
+without a monitor. `?` shows every key.
+
+| Keys | Does |
+|------|------|
+| `1` `2` `3` (or `⌘1`–`⌘3`) | Inbox, Projects, Settings |
+| `↑` `↓` / `j` `k`, `↵`, `esc` | Move, open, clear the selection then go back |
+| `n`, `/`, `r` | New issue (project on Projects), search, refresh |
+| `]` `[`, `x`, `p`, `a` | Status forward/back, done, cycle priority, archive |
+| `f` | Favourite a project |
+| `t` `e` | Edit an open issue's title / description |
+| `⌘↵`, `esc` | Save / cancel a sheet |
+| `⌥⌘` `=` `−` `T` `P` `H` | Monitor: text size, theme, pause, key hints |
+
+The monitor scene is declared in `ios/Info.plist`
+(`UIWindowSceneSessionRoleExternalDisplayNonInteractive` →
+`ExternalDisplaySceneDelegate`); the key routing is in
+`ios/Services/KeyboardCommands.swift`, the monitor model in
+`ExternalDisplay.swift`, its views in `ios/Views/ExternalDisplayView.swift`.
+Settings → Keyboard & monitor tunes text size, theme, hints and dimming.
+
 ## Systemd
 
 ```bash

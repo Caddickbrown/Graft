@@ -87,6 +87,15 @@ struct NewProjectView: View {
         .disabled(isSaving)
         // A swipe-down used to throw the draft away silently.
         .interactiveDismissDisabled(hasDraft)
+        .onAppear {
+            // With a hardware keyboard, `n` on the project list should mean
+            // typing a name, not reaching for the screen. See NewIssueView.
+            guard graftHardwareKeyboardAttached else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                focus = .name
+            }
+        }
     }
 
     private func save() async {

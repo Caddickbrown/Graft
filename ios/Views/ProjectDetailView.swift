@@ -10,6 +10,7 @@ fileprivate struct StatusBucket: Identifiable {
 
 struct ProjectDetailView: View {
     @Environment(GraftStore.self) private var store
+    @Environment(GraftRouter.self) private var router
     let project: GraftProject
 
     @State private var showNewIssue = false
@@ -21,6 +22,9 @@ struct ProjectDetailView: View {
     @State private var undo: UndoAction?
     /// The custom header draws its own back control; this is what it calls.
     @Environment(\.dismiss) private var dismiss
+    /// The issue the hardware keyboard is on, by id. See `graftKeyList`.
+    @State private var keySelection: String?
+    @State private var searchFocus = 0
 
     // Note what is *not* here any more: `viewMode`, `selectedMilestoneId` and
     // `showArchived` used to be plain `@State` on a pushed view, so leaving the
@@ -108,6 +112,19 @@ struct ProjectDetailView: View {
 
     // MARK: - Body
 
+    /// The issues in the order the keyboard walks them: by group when grouped,
+    /// otherwise by status — top to bottom in the list, column by column on the
+    /// board.
+    private var keySections: [(title: String?, ids: [String])] {
+        if query.group != .none {
+            return store.groups(projectIssues, by: query.group)
+                .map { (title: Optional($0.title), ids: $0.issues.map(\.id)) }
+        }
+        return issuesByStatus
+            .filter { !$0.issues.isEmpty }
+            .map { (title: Optional(IssueStatus(rawValue: $0.id)?.label ?? $0.id), ids: $0.issues.map(\.id)) }
+    }
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
         VStack(spacing: 0) {
@@ -157,7 +174,8 @@ struct ProjectDetailView: View {
                               })
 
             HStack(spacing: GraftMetrics.spaceXS) {
-                GraftSearchField(placeholder: "Search issues", text: searchBinding) {
+                GraftSearchField(placeholder: "Search issues", text: searchBinding,
+                                 focusRequest: searchFocus) {
                     let snapshot = query
                     Task { await store.refreshIssues(matching: snapshot) }
                 }
@@ -166,6 +184,7 @@ struct ProjectDetailView: View {
             .padding(.horizontal, GraftMetrics.gutter)
             .padding(.bottom, GraftMetrics.spaceS)
 
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     SyncStrip()
@@ -198,6 +217,11 @@ struct ProjectDetailView: View {
             // Project detail had no refresh at all: the only way to pull was to
             // go back to a tab root and pull there.
             .refreshable { await store.sync() }
+            .onChange(of: keySelection) { _, selected in
+                guard let selected else { return }
+                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(selected, anchor: .center) }
+            }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -205,6 +229,29 @@ struct ProjectDetailView: View {
         }
         .background(Color.gBg.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+        .graftKeyList(
+            ids: keySections.flatMap(\.ids),
+            selection: $keySelection,
+            display: { selected in
+                .issues(title: currentProject.name, items: ExternalListItem.sections(keySections), selected: selected)
+            },
+            onOpen: { id in
+                guard let issue = store.issues.first(where: { $0.id == id }) else { return }
+                router.push(.issue(issue))
+            },
+            key: { k, selected in
+                switch k {
+                case "n": showNewIssue = true; return true
+                case "/": searchFocus += 1; return true
+                case "f":
+                    Task { try? await store.favouriteProject(id: project.id) }
+                    return true
+                default:
+                    guard let selected else { return false }
+                    return store.handleIssueKey(k, issueId: selected) { undo = $0 }
+                }
+            }
+        )
         .sheet(isPresented: $showFilters) {
             FilterSortSheet(query: queryBinding, projectId: project.id)
         }
@@ -424,8 +471,10 @@ struct ProjectDetailView: View {
                 due: store.dueDate(for: issue),
                 showProject: false
             )
+            .graftKeySelected(keySelection == issue.id)
         }
         .buttonStyle(.plain)
+        .id(issue.id)
         .padding(.horizontal, GraftMetrics.gutter)
         .padding(.vertical, GraftMetrics.spaceXXS)
         // A context menu, not .swipeActions: these rows live in a LazyVStack,
@@ -477,6 +526,7 @@ struct ProjectDetailView: View {
                         status: bucket.id,
                         issues: bucket.issues,
                         canReorder: canReorder,
+                        keySelection: keySelection,
                         onAddIssue: { showNewIssueInStatus = bucket.id },
                         onMove: { id, target in move(id, to: bucket.id, before: target) }
                     )
@@ -540,6 +590,8 @@ struct KanbanColumn: View {
     /// False when the board is under a sort of its own — see `canReorder`.
     /// The column still accepts drops; it just does not draw a slot for them.
     var canReorder: Bool = true
+    /// The card the hardware keyboard is on, if it is in this column.
+    var keySelection: String? = nil
     let onAddIssue: () -> Void
     /// (id of the card being dropped, id of the card to put it in front of —
     /// `nil` for the end of this column).
@@ -586,7 +638,9 @@ struct KanbanColumn: View {
                             DropSlot()
                         }
                         KanbanCard(issue: issue)
+                            .graftKeySelected(keySelection == issue.id, radius: GraftMetrics.radiusSmall)
                     }
+                    .id(issue.id)
                     .padding(.horizontal, GraftMetrics.spaceXS)
                     // Hold to pick a card up. `.draggable` is a long press on
                     // iOS, which leaves the tap to the NavigationLink inside

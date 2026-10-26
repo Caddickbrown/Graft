@@ -1246,6 +1246,15 @@ final class GraftStore {
         source.filter { GraftDate.daysUntil(dueDate(for: $0)) == 0 }.count
     }
 
+    /// Urgent, high, or inside two days of its deadline — the Inbox's "Needs
+    /// you". Here rather than in the Inbox so the monitor's idle screen counts
+    /// the same issues the Inbox lists.
+    func needsYou(_ issue: GraftIssue) -> Bool {
+        if issue.priority == "urgent" || issue.priority == "high" { return true }
+        if let days = GraftDate.daysUntil(dueDate(for: issue)) { return days <= 2 }
+        return false
+    }
+
     // MARK: - Recurring series
 
     /// Every occurrence of one issue's series, oldest first.

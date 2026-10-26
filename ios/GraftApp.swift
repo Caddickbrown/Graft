@@ -37,6 +37,9 @@ struct GraftApp: App {
                         // us about anything at all.
                         store.flushViewState()
                     }
+                    // Auto-lock is held off only while the app is in front
+                    // driving a monitor. See `ExternalDisplayModel`.
+                    ExternalDisplayModel.shared.updateIdleTimer()
                     if phase == .active {
                         // App foregrounded — flush any queued mutations, then
                         // rebuild the reminder set. Rebuilt here and on `sync`
@@ -165,6 +168,25 @@ final class GraftRouter {
         Binding(get: { self.path(for: tab) }, set: { self.setPath($0, for: tab) })
     }
 
+    /// Push onto the stack of the tab that is showing — for a screen that can be
+    /// reached from more than one tab and so cannot name its own.
+    func push(_ route: GraftRoute) {
+        var path = self.path(for: tab)
+        path.append(route)
+        setPath(path, for: tab)
+    }
+
+    /// One step back on the tab that is showing: esc on a keyboard. Returns
+    /// whether there was anywhere to go.
+    @discardableResult
+    func pop() -> Bool {
+        var path = self.path(for: tab)
+        guard !path.isEmpty else { return false }
+        path.removeLast()
+        setPath(path, for: tab)
+        return true
+    }
+
     /// Back to the top of a tab. Tapping the tab you are already on does this —
     /// the platform convention, and the one thing the app's own tab bar was
     /// missing: it guarded on `!selected` and a second tap did nothing at all,
@@ -242,6 +264,8 @@ func graftDismissKeyboard() {
 struct RootView: View {
     @Environment(GraftStore.self) private var store
     @Environment(GraftRouter.self) private var router
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showShortcuts = false
 
     var body: some View {
         @Bindable var router = router
@@ -286,5 +310,36 @@ struct RootView: View {
                         })
         }
         .background(Color.gBg)
+        // The keyboard's first responder for the whole app, and the keys that
+        // work on every screen. Screens push their own handlers above these
+        // while they are showing; see `KeyboardCommands.swift`.
+        .background(KeyCommandCatcher().frame(width: 0, height: 0).allowsHitTesting(false))
+        .graftKeys(GraftKeyHandlers(
+            escape: {
+                graftDismissKeyboard()
+                return router.pop()
+            },
+            key: { k in
+                switch k {
+                case "1": router.tab = .inbox
+                case "2": router.tab = .projects
+                case "3": router.tab = .settings
+                case "r": Task { await store.sync() }
+                case "?": showShortcuts = true
+                default: return false
+                }
+                return true
+            }
+        ), base: true)
+        .sheet(isPresented: $showShortcuts) { KeyboardShortcutsView() }
+        .onAppear {
+            // The monitor's scene has no environment of its own to read these
+            // from. See `ExternalDisplayModel`.
+            ExternalDisplayModel.shared.store = store
+            ExternalDisplayModel.shared.appColorScheme = colorScheme
+        }
+        .onChange(of: colorScheme) { _, scheme in
+            ExternalDisplayModel.shared.appColorScheme = scheme
+        }
     }
 }

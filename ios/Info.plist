@@ -59,6 +59,19 @@
 					<string>Default Configuration</string>
 				</dict>
 			</array>
+			<!-- A scene for a plugged-in monitor. Declaring it is what stops iOS
+			     mirroring the phone: the monitor gets a window of its own, built
+			     by ExternalDisplaySceneDelegate (Services/ExternalDisplay.swift),
+			     which does exist in this target. -->
+			<key>UIWindowSceneSessionRoleExternalDisplayNonInteractive</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>External Display</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).ExternalDisplaySceneDelegate</string>
+				</dict>
+			</array>
 		</dict>
 	</dict>
 	<key>UILaunchScreen</key>

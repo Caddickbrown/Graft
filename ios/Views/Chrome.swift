@@ -39,6 +39,9 @@ struct GraftSheetHeader: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // Hardware keyboard: esc cancels, ⌘↵ confirms. Return alone would
+            // fire from inside the multi-line description field.
+            .keyboardShortcut(.cancelAction)
 
             Spacer(minLength: 0)
 
@@ -61,11 +64,13 @@ struct GraftSheetHeader: View {
                 .background(confirmDisabled ? Color.gSurface2 : Color.gAccent, in: Capsule())
             }
             .buttonStyle(.plain)
+            .keyboardShortcut(.return, modifiers: .command)
             .disabled(confirmDisabled || isBusy)
         }
         .padding(.horizontal, GraftMetrics.gutter)
         .padding(.bottom, GraftMetrics.spaceXS)
         .background(Color.gBg)
+        .graftSheetKeys()
     }
 }
 
@@ -279,6 +284,10 @@ struct GraftTabBar: View {
 struct GraftSearchField: View {
     let placeholder: String
     @Binding var text: String
+    /// Bumped by the screen when `/` is pressed on a hardware keyboard: each
+    /// change puts the cursor here. Declared before `onSubmit` so callers can
+    /// pass it and still hand `onSubmit` over as a trailing closure.
+    var focusRequest: Int = 0
     /// Called when the keyboard's Search key is pressed — the point at which
     /// the screens that can ask the server do so.
     var onSubmit: () -> Void = {}
@@ -300,6 +309,15 @@ struct GraftSearchField: View {
                 .submitLabel(.search)
                 .focused($focused)
                 .onSubmit(onSubmit)
+                // Esc hands the keys back to the list, so ↑/↓ move again.
+                .onKeyPress(.escape) {
+                    focused = false
+                    return .handled
+                }
+                .onKeyPress(.downArrow) {
+                    focused = false
+                    return .handled
+                }
 
             if !text.isEmpty {
                 Button {
@@ -324,6 +342,7 @@ struct GraftSearchField: View {
                 .stroke(focused ? Color.gAccent : Color.gHairline, lineWidth: GraftMetrics.border)
         )
         .animation(.easeOut(duration: 0.12), value: focused)
+        .onChange(of: focusRequest) { _, _ in focused = true }
     }
 }
 
@@ -359,6 +378,7 @@ struct GraftSheetScaffold<Content: View>: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, GraftMetrics.gutter)
             .padding(.top, GraftMetrics.spaceS)
@@ -367,5 +387,6 @@ struct GraftSheetScaffold<Content: View>: View {
             content
         }
         .background(Color.gBg)
+        .graftSheetKeys()
     }
 }

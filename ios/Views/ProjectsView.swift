@@ -26,6 +26,9 @@ struct ProjectsView: View {
     @State private var pendingDelete: GraftProject?
     @State private var undo: UndoAction?
     @State private var projectSort: ProjectSortOrder = .default
+    /// The row the hardware keyboard is on, by id. See `graftKeyList`.
+    @State private var keySelection: String?
+    @State private var searchFocus = 0
 
     /// Issues that would go with a project, so the confirmation can say so.
     private func issueCount(_ project: GraftProject) -> Int {
@@ -92,6 +95,17 @@ struct ProjectsView: View {
         return result
     }
 
+    /// The projects the keyboard can land on, in drawn order: a collapsed area
+    /// hides its rows from the arrows as well as the eye.
+    private var keySections: [(title: String?, ids: [String])] {
+        sections.compactMap { section -> (title: String?, ids: [String])? in
+            let grouping = !store.areas.isEmpty || section.favourites
+            if grouping && store.isAreaCollapsed(section.id) { return nil }
+            let title: String? = section.favourites ? "Favourites" : (grouping ? (section.area?.name ?? "No area") : nil)
+            return (title: title, ids: section.projects.map(\.id))
+        }
+    }
+
     var body: some View {
         // Path-driven, so the tab bar can unwind this stack when Projects is
         // tapped from inside a project. See `GraftRouter`.
@@ -156,7 +170,8 @@ struct ProjectsView: View {
                 }
 
                 HStack(spacing: GraftMetrics.spaceXS) {
-                    GraftSearchField(placeholder: "Search projects", text: $searchText)
+                    GraftSearchField(placeholder: "Search projects", text: $searchText,
+                                     focusRequest: searchFocus)
                     scopeMenu
                 }
                 .padding(.horizontal, GraftMetrics.gutter)
@@ -171,6 +186,25 @@ struct ProjectsView: View {
             }
             .background(Color.gBg.ignoresSafeArea())
             .toolbar(.hidden, for: .navigationBar)
+            .graftKeyList(
+                ids: keySections.flatMap(\.ids),
+                selection: $keySelection,
+                display: { selected in
+                    .projects(items: ExternalListItem.sections(keySections), selected: selected)
+                },
+                onOpen: { id in router.projectsPath.append(GraftRoute.project(id)) },
+                key: { k, selected in
+                    switch k {
+                    case "n": showNewProject = true; return true
+                    case "/": searchFocus += 1; return true
+                    case "f", "a":
+                        guard let selected, let project = store.project(selected) else { return false }
+                        if k == "f" { favourite(project) } else { archive(project) }
+                        return true
+                    default: return false
+                    }
+                }
+            )
             .graftRoutes()
             .sheet(isPresented: $showNewProject) {
                 NewProjectView()
@@ -310,6 +344,7 @@ struct ProjectsView: View {
     // MARK: - The list
 
     private var projectList: some View {
+        ScrollViewReader { proxy in
         List {
             if filteredProjects.isEmpty {
                 // A search matching nothing used to render a completely blank
@@ -340,7 +375,9 @@ struct ProjectsView: View {
                         ForEach(section.projects) { project in
                             NavigationLink(value: GraftRoute.project(project.id)) {
                                 ProjectCardView(project: project)
+                                    .graftKeySelected(keySelection == project.id)
                             }
+                            .id(project.id)
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                             .listRowSeparator(.hidden)
@@ -395,6 +432,11 @@ struct ProjectsView: View {
         .scrollContentBackground(.hidden)
         .refreshable {
             await store.sync()
+        }
+        .onChange(of: keySelection) { _, selected in
+            guard let selected else { return }
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(selected, anchor: .center) }
+        }
         }
     }
 
