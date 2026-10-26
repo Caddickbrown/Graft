@@ -107,7 +107,8 @@ var graftHardwareKeyboardAttached: Bool { GCKeyboard.coalesced != nil }
 ///
 /// `RootView` carries one, routed through `KeyCommandRouter`. Sheets carry one
 /// too (in `GraftSheetHeader` and `GraftSheetScaffold`) for a different reason:
-/// it routes nothing, but holding first responder *inside* the sheet puts the
+/// it routes nothing but the monitor's ⌥⌘ keys, and holding first responder
+/// *inside* the sheet puts the
 /// sheet's own `.keyboardShortcut`s — esc to cancel, ⌘↵ to confirm — in the
 /// responder chain, and takes the keys away from the list underneath.
 struct KeyCommandCatcher: UIViewControllerRepresentable {
@@ -131,13 +132,6 @@ final class KeyCommandController: UIViewController {
     override var canBecomeFirstResponder: Bool { true }
 
     override var keyCommands: [UIKeyCommand]? {
-        guard routes else { return [] }
-        // A sheet is up over the screen this catcher belongs to: its keys are
-        // the sheet's. Normally the sheet's own catcher has first responder and
-        // this is never asked, but not every presentation carries one (a share
-        // sheet, a confirmation dialog).
-        if view.window?.rootViewController?.presentedViewController != nil { return [] }
-
         var commands: [UIKeyCommand] = []
         func add(_ input: String, _ flags: UIKeyModifierFlags = [], _ action: Selector,
                  title: String? = nil, priority: Bool = false) {
@@ -147,6 +141,26 @@ final class KeyCommandController: UIViewController {
             command.wantsPriorityOverSystemBehavior = priority
             commands.append(command)
         }
+
+        // The monitor's keys act on the monitor, not on any screen, so every
+        // catcher declares them — a sheet's included. Behind the guards below
+        // they went dead whenever a sheet was up, the `?` sheet that lists
+        // them among others.
+        add("=", [.command, .alternate], #selector(displayLarger), title: "Monitor text larger")
+        // ⌥⌘+ arrives as "+" on some layouts and as "=" plus shift on others.
+        add("+", [.command, .alternate], #selector(displayLarger))
+        add("=", [.command, .alternate, .shift], #selector(displayLarger))
+        add("-", [.command, .alternate], #selector(displaySmaller), title: "Monitor text smaller")
+        add("t", [.command, .alternate], #selector(displayTheme), title: "Monitor theme")
+        add("p", [.command, .alternate], #selector(displayPause), title: "Pause monitor")
+        add("h", [.command, .alternate], #selector(displayHints), title: "Monitor key hints")
+
+        guard routes else { return commands }
+        // A sheet is up over the screen this catcher belongs to: its keys are
+        // the sheet's. Normally the sheet's own catcher has first responder and
+        // this is never asked, but not every presentation carries one (a share
+        // sheet, a confirmation dialog).
+        if view.window?.rootViewController?.presentedViewController != nil { return commands }
 
         add(UIKeyCommand.inputUpArrow, [], #selector(moveUp), title: "Previous", priority: true)
         add(UIKeyCommand.inputDownArrow, [], #selector(moveDown), title: "Next", priority: true)
@@ -162,13 +176,6 @@ final class KeyCommandController: UIViewController {
         }
         // Shift-/ arrives as "?" on most layouts, and as "/" plus shift on some.
         add("/", .shift, #selector(help))
-
-        add("=", [.command, .alternate], #selector(displayLarger), title: "Monitor text larger")
-        add("+", [.command, .alternate], #selector(displayLarger))
-        add("-", [.command, .alternate], #selector(displaySmaller), title: "Monitor text smaller")
-        add("t", [.command, .alternate], #selector(displayTheme), title: "Monitor theme")
-        add("p", [.command, .alternate], #selector(displayPause), title: "Pause monitor")
-        add("h", [.command, .alternate], #selector(displayHints), title: "Monitor key hints")
         return commands
     }
 
