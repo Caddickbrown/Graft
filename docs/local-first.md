@@ -13,9 +13,9 @@ who write through the API.
 | Storage | One JSON file (`graft_data.json`) rewritten whole on every edit | SQLite in Application Support, one row per record (**phase 1, done**) |
 | Pending-ops queue | Two JSON files beside it | Tables in the same database (**phase 1, done**) |
 | Ids | Minted on the phone (`newId`, e.g. `iss_3f9a0c1e`); the server keeps a client's id | Unchanged. This part was already local-first |
-| Onboarding | "No server linked", with Settings as the only way forward | "Start using it" first, "Connect a server" second and in Settings later (phase 2) |
-| Writes with no server | Queued forever, to be replayed on whatever server appears | Not queued. The library is the record (phase 2) |
-| Connecting a phone that has its own data | Its rows were replaced by the server's on the first pull | Refused, with the reason, until phase 3 exists (phase 2) |
+| Onboarding | "No server linked", with Settings as the only way forward | "Start using it" first, "Connect a server" second and in Settings later (**phase 2, done**) |
+| Writes with no server | Queued forever, to be replayed on whatever server appears | Not queued. The library is the record (**phase 2, done**) |
+| Connecting a phone that has its own data | Its rows were replaced by the server's on the first pull | Refused, with the reason, until phase 3 exists (**phase 2, done**) |
 | Merge on connect | n/a | Upload with matching, confirmation for lookalikes, nothing deleted (phase 3) |
 | Recurring issues, reminders, digest, series | Computed by the server | Phone-side where it matters (phase 4) |
 
@@ -38,7 +38,7 @@ who write through the API.
 - The pending and dropped ops move into `pending_ops` and `dropped_ops`, with
   the same import rule. Settings and view state stay as small JSON files.
 
-## Phase 2: no server by default
+## Phase 2: no server by default (done)
 
 - A fresh install shows a welcome screen with **Start using it** as the main
   button and **Connect a server** as the second. Settings has a "Connect a
@@ -53,9 +53,13 @@ who write through the API.
   wholesale (`fetchAll`), which would take the phone's own projects off the
   phone. The store refuses the pull too, not just the Settings switch.
 - A phone that was connected, disconnected and never edited can reconnect as
-  before: its rows came from that server.
-- Ops queued by an older build with no server stay in the queue and replay on
-  connect, as they always would have.
+  before: its rows came from that server. Turning the server off over a
+  non-empty library asks first and says this.
+- With no server, the sync strip says nothing. "Local only" on every list
+  was a nag about the normal way to use the app.
+- Ops queued by an older build with no server stay in the queue. They replay
+  on connect, as they always would have, unless writes made since then have
+  turned on the refusal above.
 
 ## Phase 3: merge on connect
 

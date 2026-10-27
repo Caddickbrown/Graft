@@ -719,6 +719,12 @@ struct GraftCachedData: Codable {
 struct GraftSettings: Codable {
     var serverURL: String
     var fallbackURL: String
+    /// "Start using it" was tapped on the welcome screen. Optional, like every
+    /// key added after the first build, so an older settings file still decodes.
+    var startedLocally: Bool?
+    /// Something was written on this phone while no server was configured.
+    /// See `GraftStore.unsyncedLocalWork`.
+    var unsyncedLocalWork: Bool?
 }
 
 // MARK: - Pending Operation (offline queue)

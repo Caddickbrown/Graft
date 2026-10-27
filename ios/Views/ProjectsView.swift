@@ -281,7 +281,7 @@ struct ProjectsView: View {
     @ViewBuilder
     private var content: some View {
         if store.isFirstRun {
-            GraftNoServerState()
+            GraftWelcomeState()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         } else if store.projects.isEmpty && store.isLoading {

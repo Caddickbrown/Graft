@@ -44,6 +44,21 @@ final class GraftStore {
         didSet { saveSettings() }
     }
 
+    /// "Start using it" was chosen on the welcome screen, so an empty library
+    /// with no server is a library, not a first run.
+    private(set) var startedLocally = false
+
+    /// Something has been written on this phone with no server configured.
+    ///
+    /// With no server nothing is queued (see `send`), so these changes exist
+    /// only in the library. The first pull from a server replaces every list
+    /// wholesale, which would take them off the phone, and uploading them into
+    /// a server that has its own projects is a merge this build doesn't do
+    /// yet. So while this is set and the library isn't empty, connecting is
+    /// refused — see `connectWouldReplaceLocalWork` and docs/local-first.md.
+    /// Cleared by the first pull that lands.
+    private(set) var unsyncedLocalWork = false
+
     // MARK: - Persisted view state
     //
     // Filter, sort and grouping used to be `@State` on a pushed view, so
@@ -335,7 +350,12 @@ final class GraftStore {
     }
 
     func saveSettings() {
-        let settings = GraftSettings(serverURL: serverURL, fallbackURL: fallbackURL)
+        let settings = GraftSettings(
+            serverURL: serverURL,
+            fallbackURL: fallbackURL,
+            startedLocally: startedLocally,
+            unsyncedLocalWork: unsyncedLocalWork
+        )
         if let data = try? JSONEncoder().encode(settings) {
             try? data.write(to: settingsFileURL)
         }
@@ -344,8 +364,18 @@ final class GraftStore {
     private func loadSettings() {
         guard let data = try? Data(contentsOf: settingsFileURL),
               let settings = try? JSONDecoder().decode(GraftSettings.self, from: data) else { return }
+        // The two flags first: assigning the URLs below saves the settings
+        // file, and would write the flags' defaults over what was just read.
+        startedLocally = settings.startedLocally ?? false
+        unsyncedLocalWork = settings.unsyncedLocalWork ?? false
         serverURL = settings.serverURL
         fallbackURL = settings.fallbackURL
+    }
+
+    /// The welcome screen's "Start using it".
+    func startLocally() {
+        startedLocally = true
+        saveSettings()
     }
 
     // MARK: - Active base URL (nil = no server configured)
@@ -355,10 +385,55 @@ final class GraftStore {
         return url.isEmpty ? nil : url
     }
 
+    /// Either address is set. With neither, Graft is a tracker on this phone
+    /// and nothing goes anywhere.
+    var isServerConfigured: Bool {
+        activeBase != nil || !fallbackURL.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    var isLibraryEmpty: Bool {
+        projects.isEmpty && issues.isEmpty && milestones.isEmpty
+            && areas.isEmpty && links.isEmpty && savedViews.isEmpty
+    }
+
+    /// Connecting now would pull a server's lists over changes that exist only
+    /// on this phone. Settings refuses to connect while this is true, and the
+    /// store refuses to pull, so the refusal holds whichever way a URL arrives.
+    var connectWouldReplaceLocalWork: Bool {
+        unsyncedLocalWork && !isLibraryEmpty
+    }
+
+    /// Every write's way to the server.
+    ///
+    /// With no server configured nothing is queued. The write is already in
+    /// the library, which is the record; a queue with nowhere to go is a debt
+    /// that lands all at once on whatever server appears, and replaying how
+    /// the library got here is the wrong way to put it on one. Connecting later
+    /// is an upload of what the library *is* — see docs/local-first.md.
+    private func send(method: String, path: String, body: Data? = nil) {
+        guard isServerConfigured else {
+            if !unsyncedLocalWork {
+                unsyncedLocalWork = true
+                saveSettings()
+            }
+            return
+        }
+        syncEngine.enqueue(method: method, path: path, body: body)
+    }
+
+    /// A pull landed, so whatever this phone holds now came from a server.
+    private func notePullLanded() {
+        lastSynced = Date()
+        if unsyncedLocalWork {
+            unsyncedLocalWork = false
+            saveSettings()
+        }
+    }
+
     // MARK: - Flush pending ops to server
 
     func flushPending() async {
-        guard let base = activeBase else { return }
+        guard let base = activeBase, !connectWouldReplaceLocalWork else { return }
         await syncEngine.flush(to: base)
         // After flush, pull latest from server to reconcile — but only once the
         // queue is empty, or the pull would overwrite writes still waiting to
@@ -370,7 +445,7 @@ final class GraftStore {
             // swallow the failure and set it anyway, so Settings reported a
             // successful sync at a moment when the phone and the Pi had not
             // spoken — which is precisely the question that line answers.
-            lastSynced = Date()
+            notePullLanded()
             saveCachedData()
         } catch {
             // Nothing to report here: the caller of a background flush has no
@@ -382,6 +457,9 @@ final class GraftStore {
     // MARK: - Full server sync (pull only — used when coming back online)
 
     func sync() async {
+        // Not even a spinner: Settings has already said why this phone won't
+        // connect, and nothing else here has anything to add.
+        guard !connectWouldReplaceLocalWork else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -414,7 +492,7 @@ final class GraftStore {
         for base in bases {
             do {
                 try await fetchAll(from: base)
-                lastSynced = Date()
+                notePullLanded()
                 saveCachedData()
                 errorMessage = nil
                 // After the pull, not before: the digest line is written from
@@ -606,7 +684,7 @@ final class GraftStore {
             "created_at": ts, "updated_at": ts
         ]
         let body = try JSONSerialization.data(withJSONObject: bodyDict)
-        syncEngine.enqueue(method: "POST", path: "/api/projects", body: body)
+        send(method: "POST", path: "/api/projects", body: body)
         await flushPending()
     }
 
@@ -630,7 +708,7 @@ final class GraftStore {
             "updated_at": ts
         ]
         let body = try JSONSerialization.data(withJSONObject: bodyDict)
-        syncEngine.enqueue(method: "PUT", path: "/api/projects/\(project.id)", body: body)
+        send(method: "PUT", path: "/api/projects/\(project.id)", body: body)
         await flushPending()
     }
 
@@ -639,7 +717,7 @@ final class GraftStore {
             projects[idx].archived.toggle()
         }
         saveCachedData()
-        syncEngine.enqueue(method: "PATCH", path: "/api/projects/\(id)/archive")
+        send(method: "PATCH", path: "/api/projects/\(id)/archive")
         await flushPending()
     }
 
@@ -658,7 +736,7 @@ final class GraftStore {
         let wanted = projects[idx].isFavourite
         saveCachedData()
         let body = try JSONSerialization.data(withJSONObject: ["favourite": wanted ? 1 : 0])
-        syncEngine.enqueue(method: "PATCH", path: "/api/projects/\(id)/favourite", body: body)
+        send(method: "PATCH", path: "/api/projects/\(id)/favourite", body: body)
         await flushPending()
     }
 
@@ -677,7 +755,7 @@ final class GraftStore {
                 || (link.ownerType == "issue" && ownedIssues.contains(link.ownerId))
         }
         saveCachedData()
-        syncEngine.enqueue(method: "DELETE", path: "/api/projects/\(id)")
+        send(method: "DELETE", path: "/api/projects/\(id)")
         await flushPending()
     }
 
@@ -740,7 +818,7 @@ final class GraftStore {
         ]
         if let mid = milestoneId { bodyDict["milestone_id"] = mid }
         let body = try JSONSerialization.data(withJSONObject: bodyDict)
-        syncEngine.enqueue(method: "POST", path: "/api/issues", body: body)
+        send(method: "POST", path: "/api/issues", body: body)
         await flushPending()
     }
 
@@ -766,7 +844,7 @@ final class GraftStore {
         saveCachedData()
 
         let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: ts))
-        syncEngine.enqueue(method: "PUT", path: "/api/issues/\(issue.id)", body: body)
+        send(method: "PUT", path: "/api/issues/\(issue.id)", body: body)
         await flushPending()
     }
 
@@ -779,7 +857,7 @@ final class GraftStore {
         saveCachedData()
 
         let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: updated.updatedAt))
-        syncEngine.enqueue(method: "PUT", path: "/api/issues/\(id)", body: body)
+        send(method: "PUT", path: "/api/issues/\(id)", body: body)
         await flushPending()
     }
 
@@ -842,11 +920,11 @@ final class GraftStore {
 
         if statusChanged, let updated = issues.first(where: { $0.id == id }) {
             let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: ts))
-            syncEngine.enqueue(method: "PUT", path: "/api/issues/\(id)", body: body)
+            send(method: "PUT", path: "/api/issues/\(id)", body: body)
         }
         if !renumbered.isEmpty {
             let body = try JSONSerialization.data(withJSONObject: ["issues": renumbered])
-            syncEngine.enqueue(method: "PATCH", path: "/api/issues/reorder", body: body)
+            send(method: "PATCH", path: "/api/issues/reorder", body: body)
         }
         await flushPending()
     }
@@ -934,7 +1012,7 @@ final class GraftStore {
             issues[idx].archived.toggle()
         }
         saveCachedData()
-        syncEngine.enqueue(method: "PATCH", path: "/api/issues/\(id)/archive")
+        send(method: "PATCH", path: "/api/issues/\(id)/archive")
         await flushPending()
     }
 
@@ -944,7 +1022,7 @@ final class GraftStore {
         // kept showing them until the next pull.
         links.removeAll { $0.ownerType == "issue" && $0.ownerId == id }
         saveCachedData()
-        syncEngine.enqueue(method: "DELETE", path: "/api/issues/\(id)")
+        send(method: "DELETE", path: "/api/issues/\(id)")
         await flushPending()
     }
 
@@ -976,7 +1054,7 @@ final class GraftStore {
         ]
         if let due = dueDate { bodyDict["due_date"] = due }
         let body = try JSONSerialization.data(withJSONObject: bodyDict)
-        syncEngine.enqueue(method: "POST", path: "/api/milestones", body: body)
+        send(method: "POST", path: "/api/milestones", body: body)
         await flushPending()
     }
 
@@ -1003,7 +1081,7 @@ final class GraftStore {
         // due_date leaves the old date in place — see updateIssue's milestone_id.
         bodyDict["due_date"] = milestone.dueDate ?? NSNull()
         let body = try JSONSerialization.data(withJSONObject: bodyDict)
-        syncEngine.enqueue(method: "PUT", path: "/api/milestones/\(milestone.id)", body: body)
+        send(method: "PUT", path: "/api/milestones/\(milestone.id)", body: body)
         await flushPending()
     }
 
@@ -1038,7 +1116,7 @@ final class GraftStore {
             ]
             bodyDict["due_date"] = milestone.dueDate ?? NSNull()
             let body = try JSONSerialization.data(withJSONObject: bodyDict)
-            syncEngine.enqueue(method: "PUT", path: "/api/milestones/\(milestone.id)", body: body)
+            send(method: "PUT", path: "/api/milestones/\(milestone.id)", body: body)
         }
         await flushPending()
     }
@@ -1051,7 +1129,7 @@ final class GraftStore {
             issues[idx].milestoneName = nil
         }
         saveCachedData()
-        syncEngine.enqueue(method: "DELETE", path: "/api/milestones/\(id)")
+        send(method: "DELETE", path: "/api/milestones/\(id)")
         await flushPending()
     }
 
@@ -1073,7 +1151,7 @@ final class GraftStore {
             "sort_order": area.sortOrder,
             "created_at": ts, "updated_at": ts
         ] as [String: Any])
-        syncEngine.enqueue(method: "POST", path: "/api/areas", body: body)
+        send(method: "POST", path: "/api/areas", body: body)
         await flushPending()
     }
 
@@ -1088,7 +1166,7 @@ final class GraftStore {
             "sort_order": area.sortOrder,
             "updated_at": nowISO()
         ] as [String: Any])
-        syncEngine.enqueue(method: "PUT", path: "/api/areas/\(area.id)", body: body)
+        send(method: "PUT", path: "/api/areas/\(area.id)", body: body)
         await flushPending()
     }
 
@@ -1101,7 +1179,7 @@ final class GraftStore {
             projects[idx].areaId = ""
         }
         saveCachedData()
-        syncEngine.enqueue(method: "DELETE", path: "/api/areas/\(id)")
+        send(method: "DELETE", path: "/api/areas/\(id)")
         await flushPending()
     }
 
@@ -1133,7 +1211,7 @@ final class GraftStore {
             "sort_order": link.sortOrder,
             "created_at": ts, "updated_at": ts
         ] as [String: Any])
-        syncEngine.enqueue(method: "POST", path: "/api/links", body: body)
+        send(method: "POST", path: "/api/links", body: body)
         await flushPending()
     }
 
@@ -1148,14 +1226,14 @@ final class GraftStore {
             "sort_order": link.sortOrder,
             "updated_at": nowISO()
         ] as [String: Any])
-        syncEngine.enqueue(method: "PUT", path: "/api/links/\(link.id)", body: body)
+        send(method: "PUT", path: "/api/links/\(link.id)", body: body)
         await flushPending()
     }
 
     func deleteLink(id: String) async throws {
         links.removeAll { $0.id == id }
         saveCachedData()
-        syncEngine.enqueue(method: "DELETE", path: "/api/links/\(id)")
+        send(method: "DELETE", path: "/api/links/\(id)")
         await flushPending()
     }
 
@@ -1179,7 +1257,7 @@ final class GraftStore {
             "sort_order": view.sortOrder,
             "created_at": ts, "updated_at": ts
         ] as [String: Any])
-        syncEngine.enqueue(method: "POST", path: "/api/views", body: body)
+        send(method: "POST", path: "/api/views", body: body)
         await flushPending()
     }
 
@@ -1194,14 +1272,14 @@ final class GraftStore {
             "sort_order": view.sortOrder,
             "updated_at": nowISO()
         ] as [String: Any])
-        syncEngine.enqueue(method: "PUT", path: "/api/views/\(view.id)", body: body)
+        send(method: "PUT", path: "/api/views/\(view.id)", body: body)
         await flushPending()
     }
 
     func deleteSavedView(id: String) async throws {
         savedViews.removeAll { $0.id == id }
         saveCachedData()
-        syncEngine.enqueue(method: "DELETE", path: "/api/views/\(id)")
+        send(method: "DELETE", path: "/api/views/\(id)")
         await flushPending()
     }
 
@@ -1634,9 +1712,7 @@ final class GraftStore {
     }
 
     var connection: ConnectionState {
-        if activeBase == nil && fallbackURL.trimmingCharacters(in: .whitespaces).isEmpty {
-            return .noServer
-        }
+        if !isServerConfigured { return .noServer }
         if isLoading { return .syncing }
         if let dropped = syncEngine.droppedOps.last { return .failed(dropped.reason) }
         if let error = errorMessage { return .unreachable(error) }
@@ -1654,9 +1730,9 @@ final class GraftStore {
         connection == .noServer ? 0 : syncEngine.pendingCount
     }
 
-    /// True on a fresh install with nothing linked and nothing created — the
-    /// one case that must not be dressed up as a healthy empty state.
+    /// True on a fresh install with nothing linked, nothing created and the
+    /// welcome screen not yet answered.
     var isFirstRun: Bool {
-        connection == .noServer && projects.isEmpty && issues.isEmpty
+        connection == .noServer && !startedLocally && projects.isEmpty && issues.isEmpty
     }
 }

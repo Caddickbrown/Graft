@@ -220,9 +220,9 @@ struct InboxView: View {
     @ViewBuilder
     private var content: some View {
         if store.isFirstRun {
-            // Not dressed up as a healthy empty state: a new install has no
-            // idea Settings exists, let alone that a server can be linked.
-            GraftNoServerState()
+            // A new install chooses first: this phone on its own, or a
+            // server. Answered once; after that an empty Inbox is just empty.
+            GraftWelcomeState()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         } else if store.issues.isEmpty && store.isLoading {

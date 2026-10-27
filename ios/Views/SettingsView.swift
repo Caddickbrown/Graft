@@ -22,6 +22,11 @@ struct SettingsView: View {
 
     @FocusState private var urlFieldFocused: Bool
     @State private var showShortcuts = false
+    /// "Connect a server" was turned on over changes that exist only on this
+    /// phone. See `GraftStore.connectWouldReplaceLocalWork`.
+    @State private var showConnectRefused = false
+    /// "Connect a server" was turned off over a library that came from one.
+    @State private var showDisconnectConfirm = false
 
     var lastSyncedString: String {
         guard let date = store.lastSynced else { return "Never" }
@@ -93,7 +98,42 @@ struct SettingsView: View {
             .onChange(of: serverURL) { _, _ in applySettings() }
             .onChange(of: fallbackURL) { _, _ in applySettings() }
             .onChange(of: piEnabled) { _, _ in applySettings() }
+            .alert("This phone's work isn't on a server yet", isPresented: $showConnectRefused) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(connectRefusedMessage)
+            }
+            .confirmationDialog("Disconnect from the server?", isPresented: $showDisconnectConfirm,
+                                titleVisibility: .visible) {
+                Button("Disconnect", role: .destructive) { piEnabled = false }
+                Button("Stay connected", role: .cancel) {}
+            } message: {
+                Text("Everything stays on this phone. Changes you make while disconnected stay here too. Sending them to a server comes in a later version, so you won't be able to reconnect after making them.")
+            }
         }
+    }
+
+    /// Said when connecting is refused. Plain about the reason, and about the
+    /// fact that nothing has been lost.
+    private var connectRefusedMessage: String {
+        "Everything here was made without a server. Connecting now would put the server's projects in its place, and uploading into a server that has projects of its own isn't built yet. So Graft won't connect until it can upload, and nothing is lost. Export as Markdown, below, keeps a copy in the meantime."
+    }
+
+    /// The switch, with the two cases where flipping it straight away would be
+    /// wrong caught on the way.
+    private var connectBinding: Binding<Bool> {
+        Binding(
+            get: { piEnabled },
+            set: { wanted in
+                if wanted && store.connectWouldReplaceLocalWork {
+                    showConnectRefused = true
+                } else if !wanted && store.isServerConfigured && !store.isLibraryEmpty {
+                    showDisconnectConfirm = true
+                } else {
+                    piEnabled = wanted
+                }
+            }
+        )
     }
 
     // MARK: - Pending
@@ -220,22 +260,30 @@ struct SettingsView: View {
     }
 
     private var serverSection: some View {
-        SettingsSection(title: "Pi Server") {
+        SettingsSection(title: "Server") {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
                     Image(systemName: "server.rack")
                         .font(.system(size: 13))
                         .foregroundStyle(Color.gInk2)
                         .frame(width: 18)
-                    Text("Link to Pi server")
+                    Text("Connect a server")
                         .font(GraftFont.text(GraftType.secondary))
                         .foregroundStyle(Color.gInk)
                     Spacer()
-                    Toggle("", isOn: $piEnabled)
+                    Toggle("", isOn: connectBinding)
                         .tint(Color.gAccent)
                         .labelsHidden()
                 }
                 .frame(minHeight: GraftMetrics.tap)
+
+                if !piEnabled {
+                    Text("Graft is keeping everything on this phone. Connect your Pi to share projects and issues with the web client and everyone else who uses it.")
+                        .font(GraftFont.text(GraftType.caption))
+                        .foregroundStyle(Color.gInk2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 6)
+                }
 
                 if piEnabled {
                     Divider().background(Color.gHairline)
@@ -477,7 +525,7 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !piEnabled {
-                    Text("No server linked, so there is nothing to schedule from yet.")
+                    Text("Reminders are worked out by a server, so with none connected there is nothing to schedule yet.")
                         .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk3)
                         .fixedSize(horizontal: false, vertical: true)
