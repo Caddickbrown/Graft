@@ -17,7 +17,7 @@ who write through the API.
 | Writes with no server | Queued forever, to be replayed on whatever server appears | Not queued. The library is the record (**phase 2, done**) |
 | Connecting a phone that has its own data | Its rows were replaced by the server's on the first pull | Nothing pulls or queues until the library is merged in (**phase 2, done**) |
 | Merge on connect | n/a | Upload with matching, confirmation for lookalikes, nothing deleted (**phase 3, done**) |
-| Recurring issues, reminders, digest, series | Computed by the server | Phone-side where it matters (phase 4) |
+| Recurring issues, reminders, digest, series | Computed by the server | Phone-side where it can be (**phase 4, done**) |
 
 ## Phase 1: the database (done)
 
@@ -106,10 +106,17 @@ Why:
   issues titled "Renew passport" in the same project are probably the same
   issue. The same title in two unrelated projects isn't.
 - **Same-id rows that differ:** the newer `updated_at` wins, across the
-  whole row, and the merge writes it. The older version isn't kept. Edits made on two sides while apart can't be told apart any better
-  than this without per-field history.
-- `proj_none` ("No project") is created by every server. A phone-only library
-  never has it, so it can't collide.
+  whole row, and the merge writes it. The older version isn't kept. Without
+  per-field history, edits made on two sides while apart can't be told apart
+  any better than this.
+- **Merging a lookalike keeps the server's row.** The phone's project, issue
+  or view is not written. Its children are filed under the server's row: a
+  merged project's milestones, issues and links move across. Its own fields,
+  such as a different colour or description, are not folded in. Choosing Keep
+  both is the way to keep them.
+- `proj_none` ("No project") is created by every server. A phone that has
+  it got it from a server, so it always maps to the server's and is never
+  updated.
 
 ### The server side (done)
 
@@ -215,6 +222,21 @@ Left, because they need a server by nature:
   edited in that window. But a pull that fails afterwards leaves those ids in
   place until the next one, and an edit to a row whose id was merged away
   would be sent to an id the server doesn't have.
+- **Large libraries:** the merge sends the whole library in one request, with
+  a 60-second timeout. That is fine for thousands of rows. Well beyond that
+  it would want paging, which the endpoint doesn't do.
+- **Tests:** `server/tests/test_merge.py` has 11 cases, run in CI. They cover:
+  - the dry run writing nothing;
+  - a plain upload;
+  - same-id merges with the newer copy winning;
+  - areas merging by name;
+  - collision re-keying, references included;
+  - a project lookalike held at `409` until answered, then merged or kept;
+  - issue lookalikes defaulting to keep;
+  - nothing being deleted;
+  - an apply replayed writing nothing.
+
+  Nothing in the iOS flow has been run.
 - **Backups:** the database is in Application Support, which is in the device
   backup. For a phone with no server, that backup and the Markdown export are
   the only other copies.
