@@ -131,7 +131,11 @@ struct SettingsView: View {
             mergePlan = try await store.planMerge()
         } catch {
             mergeFailed = true
-            mergeMessage = "Couldn't reach the server: \(error.localizedDescription). Nothing has changed."
+            if error is APIService.MergeError {
+                mergeMessage = "\(error.localizedDescription). Nothing has changed."
+            } else {
+                mergeMessage = "Couldn't reach the server: \(error.localizedDescription). Nothing has changed."
+            }
         }
     }
 

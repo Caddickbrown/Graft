@@ -75,16 +75,30 @@ are shown for confirmation, nothing is ever deleted.**
 |---|---|---|
 | Project, milestone, issue | Same id **and** same `created_at`: the same row, seen from two sides | — |
 | Any of those | Same id, different `created_at` is an id collision, never a match (see below) | — |
-| Area | Same id and name, or same name, ignoring case and outer spaces | — |
+| Area | Same id (the server's name wins), or same name, ignoring case and outer spaces | — |
 | Project | — | Same name, ignoring case and outer spaces. **Must be answered**; the phone pre-selects Merge |
 | Milestone | Same name inside a project both sides now share (matched or confirmed) | — |
 | Issue | — | Same title in the project it maps to. Defaults to keep both |
-| Link | Same id and URL, or the same URL on the same owner (after remapping) | — |
-| Saved view | Same id and name, or same name and same query | Same name, different query. Defaults to keep both |
+| Link | Same id (the server's URL wins), or the same URL on the same owner (after remapping) | — |
+| Saved view | Same id (the server's name wins), or same name and same query | Same name, different query. Defaults to keep both |
+| Recurring occurrence | Same id, same series root, and the id is the one both sides derive from the root and dates | — |
 | Anything | Its id is in `id_aliases` from an earlier merge | — |
 
-Areas, links and saved views carry no timestamps on the phone, so for them a
-same id with a different name (or URL) is the collision.
+Areas, links and saved views carry no timestamps on the phone, so a same id
+with a different name (or URL) can't be told apart from a rename, and the
+server's copy wins rather than both being kept. A collision there is 1 in
+billions per pair and not worth a duplicate on every rename.
+
+An unanswered same-named project is matched as merged (the phone's
+pre-selected answer) for everything below it, so the dry run already lists the
+issue lookalikes inside it. The apply is refused until it is answered.
+
+Rows the phone has under an id the server doesn't, created before the phone's
+last pull from that server (`last_pulled_at`), are listed as `resurrected`:
+most likely deleted on the server since. They are still uploaded, because a
+create that never left an old queue looks exactly the same; the review sheet
+says how many and why. Dangling project or milestone references are repaired
+(filed under "No project", or cleared) and listed, instead of failing the merge.
 
 Why:
 - **Ids are the only real identity Graft has.** Unlike a book's ISBN, a

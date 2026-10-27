@@ -386,22 +386,30 @@ matching rules are in `docs/local-first.md`.
 
 ```json
 {"library": {"areas": [], "projects": [], "milestones": [], "issues": [], "links": [], "views": []},
- "decisions": {"proj_3f9a0c1e": "merge", "iss_77aa01bc": "keep"}}
+ "decisions": {"proj_3f9a0c1e": "merge", "iss_77aa01bc": "keep"},
+ "last_pulled_at": "2026-10-20T08:00:00.000000"}
 ```
 
 Each row in `library` takes the shape `GET` answers with, which is how the phone
-caches it.
+caches it. `last_pulled_at` is optional: when the phone last pulled from this
+same server.
 
 - **Without `apply`, it's a dry run.** It writes nothing and answers with the
   plan:
   - `exact`: rows that merge on their own, with a `reason` of `same_id`,
-    `same_name`, `same_url`, `same_query`, `alias` or `lookalike`.
+    `same_name`, `same_url`, `same_query`, `same_occurrence`, `alias` or
+    `lookalike`.
   - `lookalikes`: rows that look like a server row and want a decision, each
     with a `default`.
   - `creates`: rows to insert.
   - `collisions`: phone ids already taken, with the new id each would get.
   - `updates`: same-id rows where the phone's copy is newer.
   - `undecided`: phone ids of lookalikes with no decision and no default.
+  - `resurrected`: rows under an id the server doesn't have, created before
+    `last_pulled_at`, so most likely deleted here since. They are still
+    uploaded; the list is so the phone can say so.
+  - `repairs`: references to a project or milestone that exists neither here
+    nor in the upload, filed under "No project" or cleared instead of failing.
   - `remap`: `{phone_id: server_id}` for every row.
 - **With `?apply=1`, it does it.** Everything happens in one transaction and
   the answer is the same plan with `"applied": true`.
@@ -411,10 +419,19 @@ caches it.
   updated when the phone's copy has the same id and `created_at` and a newer
   `updated_at`.
 - **A project with a server project's name** (ignoring case and spaces) is
-  `undecided` until the phone answers `merge` or `keep`.
+  `undecided` until the phone answers `merge` or `keep`. Until then it is
+  matched as merged, so the issue lookalikes inside it already show in the dry
+  run.
+- **An area, link or saved view with the same id** is the same row, and the
+  server's copy wins: the phone keeps no timestamps on them, so a rename or an
+  edited url can't be ordered.
+- **A recurring occurrence both sides spawned** (same series, same derived id)
+  is the same row, whatever its `created_at`.
 - **Issues and saved views that only look alike** default to `keep`.
 - **A colliding phone id is re-keyed** to `<prefix><8 hex>`, derived from the
   phone id and its `created_at`, so the dry run names the id the apply uses.
   Every reference to it is rewritten.
 - **Every re-key and every merge by name** is recorded in `id_aliases`.
   Replaying the same apply resolves through it, and writes nothing.
+- **A merge that still breaks a constraint** answers `422` with an `error` and
+  writes nothing, rather than a `500`.

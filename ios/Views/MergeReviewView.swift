@@ -57,10 +57,15 @@ struct MergeReviewView: View {
             onConfirm: { Task { await apply() } }
         ) {
             GraftSection(title: "What happens",
-                         footnote: "Nothing on the server or on this phone is deleted.") {
+                         footnote: whatHappensFootnote) {
                 summaryRow(count: plan.creates.count, text: "uploaded as new")
                 GraftRowDivider()
                 summaryRow(count: plan.exact.count, text: "already on the server, merged")
+                if let resurrected = plan.resurrected, !resurrected.isEmpty {
+                    GraftRowDivider()
+                    summaryRow(count: resurrected.count,
+                               text: "deleted on the server since this phone last synced, and uploaded again")
+                }
                 if !plan.collisions.isEmpty {
                     GraftRowDivider()
                     summaryRow(count: plan.collisions.count,
@@ -98,6 +103,13 @@ struct MergeReviewView: View {
         }
         .disabled(isApplying)
         .interactiveDismissDisabled(isApplying)
+    }
+
+    private var whatHappensFootnote: String {
+        if let resurrected = plan.resurrected, !resurrected.isEmpty {
+            return "Nothing on the server or on this phone is deleted. Rows this phone had before its last sync that the server no longer has were most likely deleted there. They come back with this upload; delete them again afterwards if they should stay gone."
+        }
+        return "Nothing on the server or on this phone is deleted."
     }
 
     private func summaryRow(count: Int, text: String) -> some View {

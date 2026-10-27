@@ -747,6 +747,14 @@ struct GraftMergeRequest: Encodable {
     var library: Library
     /// Phone id to `"merge"` or `"keep"`, for the lookalikes.
     var decisions: [String: String]
+    /// When this phone last pulled from this same server, if it ever did.
+    /// Lets the dry run list rows the server has deleted since.
+    var lastPulledAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case library, decisions
+        case lastPulledAt = "last_pulled_at"
+    }
 }
 
 /// What the server says a merge does, or did.
@@ -774,6 +782,10 @@ struct GraftMergePlan: Decodable {
     let lookalikes: [Entry]
     let creates: [Entry]
     let collisions: [Entry]
+    /// Rows the server no longer has but this phone had before its last pull
+    /// from it: most likely deleted there since, and uploaded again by this
+    /// merge. Optional: only listed when the request said when that pull was.
+    let resurrected: [Entry]?
     let undecided: [String]
     let remap: [String: String]
     /// False on a dry run, and on an apply the server held back (409).
@@ -794,6 +806,9 @@ struct GraftSettings: Codable {
     /// A merge was applied and the pull that brings the server's ids back
     /// hasn't landed yet. See `GraftStore.awaitingFirstPull`.
     var awaitingFirstPull: Bool?
+    /// Where and when the last pull landed. See `GraftStore.lastPullServer`.
+    var lastPullServer: String?
+    var lastPullAt: String?
 }
 
 // MARK: - Pending Operation (offline queue)

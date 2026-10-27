@@ -67,6 +67,12 @@ final class GraftStore {
     /// again, and sending it twice is safe.
     private(set) var awaitingFirstPull = false
 
+    /// The server address the last pull landed from, and when it started
+    /// (server-format UTC). Sent with a merge to that same server, so its dry
+    /// run can list the rows the phone has that were deleted there since.
+    private var lastPullServer: String?
+    private var lastPullAt: String?
+
     // MARK: - Persisted view state
     //
     // Filter, sort and grouping used to be `@State` on a pushed view, so
@@ -364,7 +370,9 @@ final class GraftStore {
             fallbackURL: fallbackURL,
             startedLocally: startedLocally,
             unsyncedLocalWork: unsyncedLocalWork,
-            awaitingFirstPull: awaitingFirstPull
+            awaitingFirstPull: awaitingFirstPull,
+            lastPullServer: lastPullServer,
+            lastPullAt: lastPullAt
         )
         if let data = try? JSONEncoder().encode(settings) {
             try? data.write(to: settingsFileURL)
@@ -393,6 +401,8 @@ final class GraftStore {
         startedLocally = settings.startedLocally ?? false
         unsyncedLocalWork = settings.unsyncedLocalWork ?? false
         awaitingFirstPull = settings.awaitingFirstPull ?? false
+        lastPullServer = settings.lastPullServer
+        lastPullAt = settings.lastPullAt
         // A build before this flag existed, used with no server: its writes went
         // to a queue rather than the flag, so the flag says nothing about them.
         // Checked once the library has loaded (`markUpgradedLocalWork`).
@@ -478,13 +488,33 @@ final class GraftStore {
     }
 
     /// A pull landed, so whatever this phone holds now came from a server.
-    private func notePullLanded() {
+    /// `startedAt` is when it was asked for: anything the server held then is
+    /// in the lists the phone has now.
+    private func notePullLanded(from base: String, startedAt: String) {
         lastSynced = Date()
-        if unsyncedLocalWork || awaitingFirstPull {
-            unsyncedLocalWork = false
-            awaitingFirstPull = false
-            saveSettings()
-        }
+        unsyncedLocalWork = false
+        awaitingFirstPull = false
+        lastPullServer = Self.serverKey(base)
+        lastPullAt = startedAt
+        saveSettings()
+    }
+
+    /// An address as two of them are compared: spaces and a trailing slash aside.
+    private static func serverKey(_ base: String) -> String {
+        var key = base.trimmingCharacters(in: .whitespaces).lowercased()
+        while key.hasSuffix("/") { key.removeLast() }
+        return key
+    }
+
+    /// When this phone last pulled from the server it's about to merge into,
+    /// if it ever did. Either configured address counts: the fallback is the
+    /// same server reached another way.
+    private var lastPulledFromThisServer: String? {
+        guard let server = lastPullServer, let at = lastPullAt else { return nil }
+        let here = [activeBase, fallbackURL].compactMap { $0 }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map(Self.serverKey)
+        return here.contains(server) ? at : nil
     }
 
     // MARK: - Joining a server
@@ -505,7 +535,8 @@ final class GraftStore {
     /// nothing changes on either side.
     func planMerge() async throws -> GraftMergePlan {
         guard let base = activeBase else { throw URLError(.badURL) }
-        let body = GraftMergeRequest(library: mergeLibrary, decisions: [:])
+        let body = GraftMergeRequest(library: mergeLibrary, decisions: [:],
+                                     lastPulledAt: lastPulledFromThisServer)
         return try await api.merge(base: base, body: body, apply: false)
     }
 
@@ -523,7 +554,8 @@ final class GraftStore {
     /// tries again.
     func applyMerge(decisions: [String: String]) async throws -> GraftMergePlan {
         guard let base = activeBase else { throw URLError(.badURL) }
-        let body = GraftMergeRequest(library: mergeLibrary, decisions: decisions)
+        let body = GraftMergeRequest(library: mergeLibrary, decisions: decisions,
+                                     lastPulledAt: lastPulledFromThisServer)
         let plan = try await api.merge(base: base, body: body, apply: true)
         guard plan.applied else { return plan }
         unsyncedLocalWork = false
@@ -546,12 +578,13 @@ final class GraftStore {
         // go out.
         guard syncEngine.pendingCount == 0 else { return }
         do {
+            let startedAt = nowISO()
             try await fetchAll(from: base)
             // Stamped only on the pull that actually landed. `try?` used to
             // swallow the failure and set it anyway, so Settings reported a
             // successful sync at a moment when the phone and the Pi had not
             // spoken — which is precisely the question that line answers.
-            notePullLanded()
+            notePullLanded(from: base, startedAt: startedAt)
             saveCachedData()
         } catch {
             // Nothing to report here: the caller of a background flush has no
@@ -597,8 +630,9 @@ final class GraftStore {
         let bases: [String] = [activeBase, fallbackURL.isEmpty ? nil : fallbackURL].compactMap { $0 }
         for base in bases {
             do {
+                let startedAt = nowISO()
                 try await fetchAll(from: base)
-                notePullLanded()
+                notePullLanded(from: base, startedAt: startedAt)
                 saveCachedData()
                 errorMessage = nil
                 // After the pull, not before: the digest line is written from

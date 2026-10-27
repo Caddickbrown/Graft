@@ -162,10 +162,32 @@ struct APIService: Sendable {
         // than the ten seconds a single row is given.
         request.timeoutInterval = 60
         let (data, response) = try await session.data(for: request)
-        if (response as? HTTPURLResponse)?.statusCode != 409 {
+        let status = (response as? HTTPURLResponse)?.statusCode
+        // A server from before /api/merge answers 404: reachable, but too old.
+        if status == 404 { throw MergeError.serverTooOld }
+        if status == 422 {
+            let reason = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
+            throw MergeError.refused(reason ?? "the server refused the library")
+        }
+        if status != 409 {
             try validateResponse(response)
         }
         return try JSONDecoder().decode(GraftMergePlan.self, from: data)
+    }
+
+    /// Why a merge didn't happen, when it isn't the network.
+    enum MergeError: LocalizedError {
+        case serverTooOld
+        case refused(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .serverTooOld:
+                return "This server needs updating before it can take a phone's library"
+            case .refused(let reason):
+                return reason.prefix(1).uppercased() + reason.dropFirst()
+            }
+        }
     }
 
     // MARK: - Private

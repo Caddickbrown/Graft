@@ -304,6 +304,145 @@ class MergeTests(unittest.TestCase):
     def test_rejects_a_body_without_a_library(self):
         self.assertEqual(self.post("/api/merge", {"projects": []}).status_code, 400)
 
+    # -- review fixes ----------------------------------------------------------
+
+    def test_dry_run_shows_issue_lookalikes_inside_an_unanswered_project(self):
+        self.seed_project("proj_srv00001", "Home", created="2025-01-01T00:00:00")
+        self.seed_issue("iss_srv00001", "proj_srv00001", "Renew passport")
+        library = {"projects": [_project("proj_ph000001", "Home")],
+                   "issues": [_issue("iss_ph000001", "proj_ph000001", "Renew passport ")]}
+
+        dry = self.merge(library).get_json()
+        self.assertEqual(sorted((e["kind"], e["phone_id"]) for e in dry["lookalikes"]),
+                         [("issues", "iss_ph000001"), ("projects", "proj_ph000001")])
+        self.assertEqual(dry["undecided"], ["proj_ph000001"])
+
+        # Still held until the project is answered.
+        self.assertEqual(self.merge(library, apply=True).status_code, 409)
+        self.assertNotIn("iss_ph000001", _snapshot()["issues"])
+
+        # The apply asks the same questions the dry run did, and honours them.
+        r = self.merge(library, decisions={"proj_ph000001": "merge", "iss_ph000001": "merge"},
+                       apply=True)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(sorted(e["phone_id"] for e in r.get_json()["lookalikes"]),
+                         sorted(e["phone_id"] for e in dry["lookalikes"]))
+        titles = [i["title"] for i in _snapshot()["issues"].values()]
+        self.assertEqual(titles.count("Renew passport"), 1)
+
+    def test_keeping_a_project_drops_its_issue_lookalikes(self):
+        self.seed_project("proj_srv00002", "Home", created="2025-01-01T00:00:00")
+        self.seed_issue("iss_srv00002", "proj_srv00002", "Renew passport")
+        library = {"projects": [_project("proj_ph000002", "Home")],
+                   "issues": [_issue("iss_ph000002", "proj_ph000002", "Renew passport")]}
+        r = self.merge(library, decisions={"proj_ph000002": "keep"}, apply=True)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual([e["kind"] for e in r.get_json()["lookalikes"]], ["projects"])
+        self.assertEqual(_snapshot()["issues"]["iss_ph000002"]["project_id"], "proj_ph000002")
+
+    def test_an_occurrence_spawned_on_both_sides_is_one_row(self):
+        import hashlib
+        self.seed_project("proj_rec00001", "Chores")
+        root = "iss_root0001"
+        nid = "iss_" + hashlib.sha1(f"{root}||2026-02-08".encode()).hexdigest()[:12]
+        server_copy = _issue(nid, "proj_rec00001", "Bins", created="2026-02-01T10:00:00.123456",
+                             updated="2026-02-01T10:00:00.123456", recurrence="FREQ=WEEKLY",
+                             recurrence_parent=root, due_at="2026-02-08")
+        self.assertEqual(self.post("/api/issues", server_copy).status_code, 201)
+        phone_copy = dict(server_copy, created_at="2026-02-01T09:00:00.000000",
+                          updated_at="2026-02-01T11:00:00.000000", status="todo")
+        r = self.merge({"issues": [phone_copy]}, apply=True)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(r.get_json()["collisions"], [])
+        bins = [i for i in _snapshot()["issues"].values() if i["title"] == "Bins"]
+        self.assertEqual([i["id"] for i in bins], [nid])
+        self.assertEqual(bins[0]["status"], "todo")  # the phone's copy was newer
+
+    def test_same_id_without_the_derived_id_is_still_a_collision(self):
+        self.seed_project("proj_rec00002", "Chores")
+        server_copy = _issue("iss_cafe0001", "proj_rec00002", "Bins", created="2026-02-01T10:00:00",
+                             recurrence_parent="iss_root0002", due_at="2026-02-08")
+        self.post("/api/issues", server_copy)
+        phone_copy = dict(server_copy, created_at="2026-02-01T09:00:00")
+        r = self.merge({"issues": [phone_copy]}, apply=True)
+        self.assertEqual(len(r.get_json()["collisions"]), 1)
+
+    def test_renamed_area_view_and_link_on_a_shared_id_keep_the_servers_copy(self):
+        self.seed_project("proj_ren00001", "Garden")
+        self.post("/api/areas", {"id": "area_ren00001", "name": "Work", "colour": "", "sort_order": 0})
+        self.post("/api/views", {"id": "view_ren00001", "name": "Today", "query": '{"q":"a"}',
+                                 "sort_order": 0})
+        self.post("/api/links", {"id": "link_ren00001", "owner_type": "project",
+                                 "owner_id": "proj_ren00001", "project_id": "proj_ren00001",
+                                 "label": "Docs", "url": "https://example.com/old", "sort_order": 0})
+        before = _snapshot()
+        library = {
+            "areas": [{"id": "area_ren00001", "name": "Job", "colour": "", "sort_order": 0}],
+            "views": [{"id": "view_ren00001", "name": "Focus", "query": '{"q":"b"}', "sort_order": 0}],
+            "links": [{"id": "link_ren00001", "owner_type": "project", "owner_id": "proj_ren00001",
+                       "project_id": "proj_ren00001", "label": "Docs",
+                       "url": "https://example.com/new", "kind": "link", "sort_order": 0}],
+        }
+        r = self.merge(library, apply=True)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        plan = r.get_json()
+        self.assertEqual(plan["creates"], [])
+        self.assertEqual(plan["collisions"], [])
+        after = _snapshot()
+        for table in ("areas", "views", "links"):
+            self.assertEqual(after[table], before[table], table)
+
+    def test_dry_run_lists_rows_the_server_deleted_since_the_last_pull(self):
+        self.seed_project("proj_res00001", "Garden", created="2026-01-01T00:00:00")
+        self.seed_issue("iss_res00001", "proj_res00001", "Deleted on the web",
+                        created="2026-01-02T00:00:00")
+        self.client.delete("/api/issues/iss_res00001")
+        library = {
+            "projects": [_project("proj_res00001", "Garden", created="2026-01-01T00:00:00")],
+            "issues": [
+                _issue("iss_res00001", "proj_res00001", "Deleted on the web",
+                       created="2026-01-02T00:00:00"),
+                _issue("iss_res00002", "proj_res00001", "Made on the phone since",
+                       created="2026-03-01T00:00:00Z"),
+            ],
+        }
+        plan = self.merge(dict(library), apply=False).get_json()
+        self.assertEqual(plan["resurrected"], [])  # no pull time: nothing to say
+
+        body = {"library": library, "last_pulled_at": "2026-02-01T00:00:00.000000"}
+        plan = self.post("/api/merge", body).get_json()
+        self.assertEqual([(e["kind"], e["phone_id"], e["name"]) for e in plan["resurrected"]],
+                         [("issues", "iss_res00001", "Deleted on the web")])
+
+        # Listed, not skipped: still uploaded, since a create that never left
+        # the phone's queue looks the same.
+        r = self.post("/api/merge?apply=1", body)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertIn("iss_res00001", _snapshot()["issues"])
+
+    def test_dangling_references_are_repaired_not_a_500(self):
+        library = {
+            "milestones": [{"id": "ms_orph0001", "project_id": "proj_gone0001", "name": "Lost",
+                            "description": "", "due_date": None, "sort_order": 0,
+                            "created_at": "2026-01-01T00:00:00", "updated_at": "2026-01-01T00:00:00"}],
+            "issues": [_issue("iss_orph0001", "proj_gone0001", "Orphan", milestone_id="ms_gone0001"),
+                       _issue("iss_orph0002", "proj_gone0001", "Kept milestone",
+                              milestone_id="ms_orph0001")],
+        }
+        r = self.merge(library, apply=True)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        repairs = {(e["kind"], e["phone_id"], e["field"]) for e in r.get_json()["repairs"]}
+        self.assertEqual(repairs, {
+            ("milestones", "ms_orph0001", "project_id"),
+            ("issues", "iss_orph0001", "project_id"),
+            ("issues", "iss_orph0001", "milestone_id"),
+            ("issues", "iss_orph0002", "project_id"),
+        })
+        after = _snapshot()
+        self.assertEqual(after["issues"]["iss_orph0001"]["project_id"], graft.NO_PROJECT_ID)
+        self.assertIsNone(after["issues"]["iss_orph0001"]["milestone_id"])
+        self.assertEqual(after["issues"]["iss_orph0002"]["milestone_id"], "ms_orph0001")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -2903,15 +2903,36 @@ def overview():
 #                row it was merged into, so replaying an apply writes nothing
 #   project,     same id and same created_at: the same row seen from two sides;
 #   milestone,   the newer updated_at wins, whole row. Same id and a different
-#   issue        created_at is a collision, and the phone's row is re-keyed
-#   area         same id and same name, or same name: an area is its name
-#   link         same id and same url, or the same url on the same owner
-#   view         same id and same name, or same name and same query
+#   issue        created_at is a collision, and the phone's row is re-keyed —
+#                except a recurring occurrence whose id is the one both sides
+#                derive from its series and dates (_spawn_next_occurrence): the
+#                phone and the server each spawned the same occurrence, so it is
+#                the same row whatever its created_at
+#   area, link,  same id: the same row. These carry no timestamps on the phone,
+#   view         so a rename (or an edited url) on either side can't be ordered
+#                and the server's copy wins, rather than both being kept
+#   area         otherwise the same name: an area is its name
+#   link         otherwise the same url on the same owner
+#   view         otherwise the same name and the same query
 #
 #   lookalikes   a project with a server project's name (the decision is
 #                required; the phone pre-selects "merge"), an issue with the
 #                title of one in the project it maps to, and a view with a
-#                server view's name but another query (both default to "keep")
+#                server view's name but another query (both default to "keep").
+#                An unanswered project lookalike is matched below it as if
+#                merged, the phone's pre-selected answer, so the dry run already
+#                lists the issue lookalikes inside it; the apply is refused
+#                (409) until it is answered, so nothing is written on that guess
+#
+#   resurrected  rows the phone has under an id the server doesn't, created
+#                before the phone last pulled from this server
+#                ("last_pulled_at" in the body): most likely deleted here since.
+#                Listed so the phone can say so. They are still uploaded — a
+#                create that never left the phone's queue looks the same, and
+#                nothing is ever deleted is the safer side of that guess
+#   repairs      a reference to a project or milestone that exists neither here
+#                nor in the upload (a phone-side orphan) is filed under "No
+#                project" or cleared, and listed, rather than failing the merge
 #
 # Inserts never replace — unlike POST /api/<kind>, whose INSERT OR REPLACE is
 # what lets the offline queue replay a create — and nothing is deleted. A row is
@@ -2937,6 +2958,44 @@ def _merge_key(text):
     return (text or "").strip().casefold()
 
 
+def _merge_time(text):
+    """A timestamp as either side writes it, for ordering; None if it isn't one.
+
+    The server writes naive UTC with microseconds; a phone may add a trailing
+    Z or an offset. Everything is compared as naive UTC.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _same_occurrence(phone, row):
+    """Both sides spawned the same occurrence of a recurring issue.
+
+    `_spawn_next_occurrence` (and the phone's port of it) derives the id from
+    the series root and the dates, so the same id under the same root is the
+    same occurrence even though each side stamped its own created_at.
+    """
+    root = (phone.get("recurrence_parent") or "").strip()
+    if not root or root != (row["recurrence_parent"] or "").strip():
+        return False
+    for start, due in ((phone.get("start_at") or "", phone.get("due_at") or ""),
+                       (row["start_at"] or "", row["due_at"] or "")):
+        derived = "iss_" + hashlib.sha1(f"{root}|{start}|{due}".encode()).hexdigest()[:12]
+        if derived == phone["id"]:
+            return True
+    return False
+
+
 def _merge_new_id(db, kind, phone_id, salt, taken):
     """The id a colliding phone row is given.
 
@@ -2954,17 +3013,24 @@ def _merge_new_id(db, kind, phone_id, salt, taken):
         n += 1
 
 
-def _merge_plan(db, library, decisions):
+def _merge_plan(db, library, decisions, last_pulled_at=None):
     """Work out what merging `library` into this database would do.
 
     Returns (plan, writes): `plan` is what the endpoint answers with, `writes`
     the (sql, params) statements that carry it out. Nothing here writes.
+
+    `last_pulled_at` is when the phone last pulled from this server, if it
+    ever did; it only feeds the "resurrected" list.
     """
     plan = {"exact": [], "lookalikes": [], "creates": [], "collisions": [], "updates": [],
-            "undecided": [], "remap": {}}
+            "undecided": [], "resurrected": [], "repairs": [], "remap": {}}
     writes = []
     remap = plan["remap"]
     taken = set()
+    # Ids each kind will hold once the writes land: what is here plus what the
+    # merge inserts. A reference outside them is a phone-side orphan.
+    inserted = {kind: set() for kind in _MERGE_KINDS}
+    pulled = _merge_time(last_pulled_at)
     ts = now()
 
     def rows(kind):
@@ -2999,7 +3065,7 @@ def _merge_plan(db, library, decisions):
             plan["undecided"].append(phone["id"])
         return answer
 
-    def place(kind, phone, server_rows, created_key=True):
+    def place(kind, phone, server_rows):
         """Ids for a row that matched nothing: its own, or a new one if taken."""
         pid = phone["id"]
         if pid in server_rows or pid in taken:
@@ -3010,6 +3076,16 @@ def _merge_plan(db, library, decisions):
         else:
             taken.add(pid)
             remap[pid] = pid
+            # Under its own id, which this server doesn't have. If the phone
+            # had it before its last pull from here, it most likely came from
+            # here and was deleted since. Only the timestamped kinds can say.
+            created = _merge_time(phone.get("created_at"))
+            if pulled is not None and created is not None and created <= pulled:
+                plan["resurrected"].append({
+                    "kind": kind, "phone_id": pid, "server_id": pid,
+                    "name": phone.get("name") or phone.get("title"),
+                })
+        inserted[kind].add(remap[pid])
         plan["creates"].append({"kind": kind, "phone_id": pid, "server_id": remap[pid]})
         return remap[pid]
 
@@ -3017,7 +3093,7 @@ def _merge_plan(db, library, decisions):
         remap[phone["id"]] = server_id
         plan["exact"].append({"kind": kind, "phone_id": phone["id"], "server_id": server_id,
                               "reason": reason})
-        if reason != "same_id":
+        if reason not in ("same_id", "same_occurrence"):
             record_alias(kind, phone["id"], server_id)
 
     def same_row(phone, row):
@@ -3027,13 +3103,16 @@ def _merge_plan(db, library, decisions):
         return (phone.get("updated_at") or "") > (row["updated_at"] or "")
 
     # -- areas ------------------------------------------------------------
+    # Same id first, whatever the name: the phone keeps no timestamp on an
+    # area, so a rename on either side can't be ordered, and the server's copy
+    # wins rather than both being kept.
     server_areas = server("areas")
     area_by_name = {_merge_key(r["name"]): r["id"] for r in server_areas.values()}
     for a in rows("areas"):
         target = alias("areas", a["id"], server_areas)
         if target:
             matched("areas", a, target, "alias")
-        elif a["id"] in server_areas and _merge_key(server_areas[a["id"]]["name"]) == _merge_key(a.get("name")):
+        elif a["id"] in server_areas:
             matched("areas", a, a["id"], "same_id")
         elif _merge_key(a.get("name")) in area_by_name:
             matched("areas", a, area_by_name[_merge_key(a.get("name"))], "same_name")
@@ -3044,10 +3123,6 @@ def _merge_plan(db, library, decisions):
                 (aid, a.get("name") or "Untitled", a.get("colour") or "", a.get("sort_order") or 0,
                  a.get("created_at") or ts, a.get("updated_at") or ts),
             ))
-
-    def area_ref(value):
-        value = value or ""
-        return remap.get(value, value)
 
     # -- projects ---------------------------------------------------------
     server_projects = server("projects")
@@ -3069,9 +3144,13 @@ def _merge_plan(db, library, decisions):
         elif _merge_key(p.get("name")) in project_by_name:
             other = project_by_name[_merge_key(p.get("name"))]
             answer = decide("projects", p, other, p.get("name"), None)
-            if answer == "merge":
+            # Unanswered, it is matched as merged — what the phone pre-selects —
+            # so that the issue lookalikes inside it are found now, and the
+            # dry run shows the questions the apply will ask. The apply refuses
+            # while it is unanswered, so nothing is written on this guess.
+            if answer in ("merge", None):
                 matched("projects", p, other, "lookalike")
-            elif answer == "keep":
+            else:
                 place("projects", p, server_projects)
                 writes.append(("PROJECT_INSERT", p))
         else:
@@ -3097,7 +3176,7 @@ def _merge_plan(db, library, decisions):
         # project was matched or confirmed already, which is the question that
         # mattered.
         same_name = db.execute(
-            "SELECT id FROM milestones WHERE project_id=? AND name=? COLLATE NOCASE",
+            "SELECT id FROM milestones WHERE project_id=? AND TRIM(name)=? COLLATE NOCASE",
             (project, (m.get("name") or "").strip()),
         ).fetchone()
         if same_name:
@@ -3118,8 +3197,8 @@ def _merge_plan(db, library, decisions):
         if target:
             matched("issues", i, target, "alias")
             continue
-        if row is not None and same_row(i, row):
-            matched("issues", i, i["id"], "same_id")
+        if row is not None and (same_row(i, row) or _same_occurrence(i, row)):
+            matched("issues", i, i["id"], "same_id" if same_row(i, row) else "same_occurrence")
             if newer(i, row):
                 plan["updates"].append({"kind": "issues", "server_id": i["id"]})
                 pending_issues.append(("ISSUE_UPDATE", i))
@@ -3145,11 +3224,12 @@ def _merge_plan(db, library, decisions):
         owner = remap.get(owner, owner)
         url = (link.get("url") or "").strip()
         target = alias("links", link["id"], server_links)
-        row = server_links.get(link["id"])
         if target:
             matched("links", link, target, "alias")
             continue
-        if row is not None and (row["url"] or "").strip() == url:
+        if link["id"] in server_links:
+            # Same id, whatever the url: an edit on either side, and with no
+            # timestamp on the phone the server's copy wins.
             matched("links", link, link["id"], "same_id")
             continue
         same_url = db.execute(
@@ -3173,12 +3253,12 @@ def _merge_plan(db, library, decisions):
     view_by_name = {_merge_key(r["name"]): r for r in server_views.values()}
     for v in rows("views"):
         target = alias("views", v["id"], server_views)
-        row = server_views.get(v["id"])
         query = _view_query_text(v.get("query"))
         if target:
             matched("views", v, target, "alias")
             continue
-        if row is not None and _merge_key(row["name"]) == _merge_key(v.get("name")):
+        if v["id"] in server_views:
+            # Same id, whatever the name: see links above.
             matched("views", v, v["id"], "same_id")
             continue
         other = view_by_name.get(_merge_key(v.get("name")))
@@ -3197,7 +3277,11 @@ def _merge_plan(db, library, decisions):
 
     # The record-shaped writes need the finished remap, so they are expanded
     # only now that every id is known.
-    return plan, [_merge_statement(w, remap, ts) for w in writes]
+    known = {
+        "projects": set(server_projects) | inserted["projects"],
+        "milestones": set(server_milestones) | inserted["milestones"],
+    }
+    return plan, [_merge_statement(w, remap, ts, known, plan["repairs"]) for w in writes]
 
 
 def _same_query(a, b):
@@ -3207,8 +3291,14 @@ def _same_query(a, b):
         return (a or "") == (b or "")
 
 
-def _merge_statement(write, remap, ts):
-    """Turn a deferred record write into (sql, params), with every id remapped."""
+def _merge_statement(write, remap, ts, known, repairs):
+    """Turn a deferred record write into (sql, params), with every id remapped.
+
+    `known` holds the project and milestone ids that will exist once the merge
+    lands. A reference outside them would fail the foreign key and with it the
+    whole merge, so it is filed under "No project" or cleared, and noted in
+    `repairs`.
+    """
     tag, data = write
     if tag not in _MERGE_RECORD_WRITES:
         return write
@@ -3217,7 +3307,12 @@ def _merge_statement(write, remap, ts):
         value = value or ""
         return remap.get(value, value)
 
+    def repair(field, was, now_value):
+        repairs.append({"kind": table, "phone_id": data["id"], "field": field,
+                        "was": was, "now": now_value})
+
     if tag.startswith("PROJECT"):
+        table = "projects"
         tags = data.get("tags")
         values = {
             "name": _text_value(data.get("name") or "Untitled"),
@@ -3231,23 +3326,34 @@ def _merge_statement(write, remap, ts):
             "favourite": 1 if _truthy(data.get("favourite")) else 0,
             "updated_at": data.get("updated_at") or ts,
         }
-        table = "projects"
     elif tag.startswith("MILESTONE"):
+        table = "milestones"
+        project = ref(data.get("project_id"))
+        if project not in known["projects"]:
+            repair("project_id", project, NO_PROJECT_ID)
+            project = NO_PROJECT_ID
         values = {
-            "project_id": ref(data.get("project_id")),
+            "project_id": project,
             "name": _text_value(data.get("name") or "Untitled"),
             "description": _text_value(data.get("description")),
             "due_date": data.get("due_date"),
             "sort_order": data.get("sort_order") or 0,
             "updated_at": data.get("updated_at") or ts,
         }
-        table = "milestones"
     else:
-        milestone = data.get("milestone_id")
+        table = "issues"
+        project = ref(data.get("project_id")) or NO_PROJECT_ID
+        if project not in known["projects"]:
+            repair("project_id", project, NO_PROJECT_ID)
+            project = NO_PROJECT_ID
+        milestone = ref(data.get("milestone_id")) or None
+        if milestone is not None and milestone not in known["milestones"]:
+            repair("milestone_id", milestone, None)
+            milestone = None
         labels = data.get("labels")
         values = {
-            "project_id": ref(data.get("project_id")) or NO_PROJECT_ID,
-            "milestone_id": ref(milestone) if milestone else None,
+            "project_id": project,
+            "milestone_id": milestone,
             "title": _text_value(data.get("title") or "Untitled"),
             "description": _text_value(data.get("description")),
             "status": _text_value(data.get("status") or "backlog"),
@@ -3263,7 +3369,6 @@ def _merge_statement(write, remap, ts):
             "archived": 1 if _truthy(data.get("archived")) else 0,
             "updated_at": data.get("updated_at") or ts,
         }
-        table = "issues"
 
     if tag.endswith("UPDATE"):
         sets = ",".join(f"{k}=?" for k in values)
@@ -3285,18 +3390,21 @@ def merge_library():
     decisions = data.get("decisions") or {}
     if not isinstance(decisions, dict):
         return jsonify({"error": "decisions must be an object"}), 400
+    last_pulled_at = data.get("last_pulled_at")
+    if not isinstance(last_pulled_at, str):
+        last_pulled_at = None
     apply = _truthy(request.args.get("apply"))
 
     db = get_db()
     if not apply:
-        plan, _writes = _merge_plan(db, library, decisions)
+        plan, _writes = _merge_plan(db, library, decisions, last_pulled_at)
         return jsonify({**plan, "applied": False})
 
     # One write lock for the read and the write, so nothing can land between
     # the plan being drawn up and carried out.
     db.execute("BEGIN IMMEDIATE")
     try:
-        plan, writes = _merge_plan(db, library, decisions)
+        plan, writes = _merge_plan(db, library, decisions, last_pulled_at)
         if plan["undecided"]:
             db.rollback()
             return jsonify({**plan, "applied": False,
@@ -3304,6 +3412,11 @@ def merge_library():
         for sql, params in writes:
             db.execute(sql, params)
         db.commit()
+    except sqlite3.IntegrityError as exc:
+        # Whatever the repairs above didn't foresee: refused whole, with a
+        # reason, rather than a bare 500. Nothing was written.
+        db.rollback()
+        return jsonify({"error": f"the library could not be merged: {exc}"}), 422
     except Exception:
         db.rollback()
         raise
