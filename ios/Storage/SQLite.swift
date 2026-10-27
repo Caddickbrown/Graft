@@ -167,10 +167,16 @@ final class SQLite: @unchecked Sendable {
     /// `unsafe*` variants below - the queue is already held.
     func transaction(_ body: () throws -> Void) throws {
         try queue.sync {
-            sqlite3_exec(handle, "BEGIN IMMEDIATE", nil, nil, nil)
+            guard sqlite3_exec(handle, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else {
+                throw SQLError.step(lastMessage, sql: "BEGIN IMMEDIATE")
+            }
             do {
                 try body()
-                sqlite3_exec(handle, "COMMIT", nil, nil, nil)
+                // A COMMIT that fails must not read as success: the caller
+                // would record rows as written that never reached the file.
+                guard sqlite3_exec(handle, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+                    throw SQLError.step(lastMessage, sql: "COMMIT")
+                }
             } catch {
                 sqlite3_exec(handle, "ROLLBACK", nil, nil, nil)
                 throw error
