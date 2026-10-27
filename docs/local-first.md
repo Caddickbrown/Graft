@@ -10,8 +10,8 @@ who write through the API.
 
 | Area | Before | Target |
 |---|---|---|
-| Storage | One JSON file (`graft_data.json`) rewritten whole on every edit | SQLite in Application Support, one row per record (phase 1) |
-| Pending-ops queue | Two JSON files beside it | Tables in the same database (phase 1) |
+| Storage | One JSON file (`graft_data.json`) rewritten whole on every edit | SQLite in Application Support, one row per record (**phase 1, done**) |
+| Pending-ops queue | Two JSON files beside it | Tables in the same database (**phase 1, done**) |
 | Ids | Minted on the phone (`newId`, e.g. `iss_3f9a0c1e`); the server keeps a client's id | Unchanged. This part was already local-first |
 | Onboarding | "No server linked", with Settings as the only way forward | "Start using it" first, "Connect a server" second and in Settings later (phase 2) |
 | Writes with no server | Queued forever, to be replayed on whatever server appears | Not queued. The library is the record (phase 2) |
@@ -19,7 +19,7 @@ who write through the API.
 | Merge on connect | n/a | Upload with matching, confirmation for lookalikes, nothing deleted (phase 3) |
 | Recurring issues, reminders, digest, series | Computed by the server | Phone-side where it matters (phase 4) |
 
-## Phase 1: the database
+## Phase 1: the database (done)
 
 - `ios/Storage/SQLite.swift` is acorn's thin `sqlite3` wrapper. No packages;
   `libsqlite3.tbd` is an SDK dependency in `project.yml`.

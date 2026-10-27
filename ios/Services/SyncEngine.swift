@@ -63,11 +63,16 @@ final class SyncEngine {
     // MARK: - Init
 
     private let session: URLSession
+    /// Where the queue lives. Nil when the database could not be opened, or
+    /// when moving an old queue file into it did not verify — the files below
+    /// are then the queue, exactly as they were before the database existed.
+    @ObservationIgnored private var database: GraftDatabase?
     private let opsFileURL: URL
     private let droppedFileURL: URL
 
-    init(session: URLSession) {
+    init(session: URLSession, database: GraftDatabase?) {
         self.session = session
+        self.database = database
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         opsFileURL = docs.appendingPathComponent("graft_pending_ops.json")
         droppedFileURL = docs.appendingPathComponent("graft_dropped_ops.json")
@@ -378,7 +383,9 @@ final class SyncEngine {
     private func saveOps() {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(pendingOps) {
+        if let database {
+            database.saveQueue(pendingOps, to: .pending, encoder: encoder)
+        } else if let data = try? encoder.encode(pendingOps) {
             try? data.write(to: opsFileURL, options: .atomic)
         }
     }
@@ -386,7 +393,9 @@ final class SyncEngine {
     private func saveDropped() {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(droppedOps) {
+        if let database {
+            database.saveQueue(droppedOps, to: .dropped, encoder: encoder)
+        } else if let data = try? encoder.encode(droppedOps) {
             try? data.write(to: droppedFileURL, options: .atomic)
         }
     }
@@ -394,6 +403,18 @@ final class SyncEngine {
     private func loadOps() {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        if let database,
+           importQueueFile(opsFileURL, into: .pending, as: PendingOperation.self, database: database, decoder: decoder) {
+            // The dropped list is only ever shown, never sent, so a file of it
+            // that won't move in is left where it is rather than holding the
+            // queue itself back on the files.
+            importQueueFile(droppedFileURL, into: .dropped, as: DroppedOperation.self, database: database, decoder: decoder)
+            pendingOps = database.loadQueue(PendingOperation.self, from: .pending, decoder: decoder)
+            droppedOps = database.loadQueue(DroppedOperation.self, from: .dropped, decoder: decoder)
+            return
+        }
+        // No database, or a queue file that would not move into it.
+        database = nil
         if let data = try? Data(contentsOf: opsFileURL),
            let ops = try? decoder.decode([PendingOperation].self, from: data) {
             pendingOps = ops
@@ -402,6 +423,38 @@ final class SyncEngine {
            let dropped = try? decoder.decode([DroppedOperation].self, from: data) {
             droppedOps = dropped
         }
+    }
+
+    /// Moves one of the old queue files into its table, once, and says whether
+    /// the database can be the queue from now on.
+    ///
+    /// Only into an empty table, and the file is removed only once every op in
+    /// it reads back in the same order — a queue that loses an op on the way
+    /// in is an edit that never reaches the server. If it doesn't verify, the
+    /// table is emptied again and the caller stays on the files, so the next
+    /// launch can try again with nothing lost. A file that won't decode is left
+    /// exactly where it is.
+    @discardableResult
+    private func importQueueFile<T: Codable & Identifiable>(
+        _ url: URL,
+        into queue: GraftDatabase.Queue,
+        as type: T.Type,
+        database: GraftDatabase,
+        decoder: JSONDecoder
+    ) -> Bool where T.ID == String {
+        guard FileManager.default.fileExists(atPath: url.path),
+              database.queueIds(queue).isEmpty,
+              let data = try? Data(contentsOf: url),
+              let ops = try? decoder.decode([T].self, from: data) else { return true }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard database.saveQueue(ops, to: queue, encoder: encoder),
+              database.queueIds(queue) == ops.map(\.id) else {
+            database.saveQueue([T](), to: queue, encoder: encoder)
+            return false
+        }
+        try? FileManager.default.removeItem(at: url)
+        return true
     }
 
     var pendingCount: Int { pendingOps.count }

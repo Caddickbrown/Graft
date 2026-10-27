@@ -108,6 +108,11 @@ final class GraftStore {
     /// because the digest line it schedules is written from this cache.
     private(set) var notifications = NotificationScheduler()
 
+    /// The library. Nil when the database can't be opened, or when moving the
+    /// old `graft_data.json` into it didn't verify; that file is then the
+    /// library, exactly as it was before the database existed.
+    @ObservationIgnored private var database: GraftDatabase?
+
     private var documentsURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
@@ -126,7 +131,9 @@ final class GraftStore {
         let sess = URLSession(configuration: config)
         self.session = sess
         self.api = APIService(session: sess)
-        self.syncEngine = SyncEngine(session: sess)
+        let database = GraftDatabase.open()
+        self.database = database
+        self.syncEngine = SyncEngine(session: sess, database: database)
         loadSettings()
         loadCachedData()
         loadViewState()
@@ -176,14 +183,63 @@ final class GraftStore {
             links: links,
             savedViews: savedViews
         )
-        if let data = try? JSONEncoder().encode(cached) {
+        // The database writes only the rows that changed since it last wrote.
+        if let database {
+            database.saveLibrary(cached)
+        } else if let data = try? JSONEncoder().encode(cached) {
             try? data.write(to: dataFileURL, options: .atomic)
         }
     }
 
     private func loadCachedData() {
-        guard let data = try? Data(contentsOf: dataFileURL),
-              let cached = try? JSONDecoder().decode(GraftCachedData.self, from: data) else { return }
+        if let database, importCacheFile(into: database) {
+            apply(database.loadLibrary())
+            return
+        }
+        // No database, or an import that didn't verify: the file it was going
+        // to replace is still the library.
+        database = nil
+        if let cached = readCacheFile() { apply(cached) }
+    }
+
+    private func readCacheFile() -> GraftCachedData? {
+        guard let data = try? Data(contentsOf: dataFileURL) else { return nil }
+        return try? JSONDecoder().decode(GraftCachedData.self, from: data)
+    }
+
+    /// Moves `graft_data.json` into the database, once, and says whether the
+    /// database is the library from now on.
+    ///
+    /// Only into empty tables: a database that already holds rows is the newer
+    /// copy, and the file beside it is left alone. The file is removed only
+    /// once every id in it reads back. If any doesn't, the rows just written
+    /// are cleared again, so the next launch retries from the same file, and
+    /// this launch runs from the file. A file this build can't decode is
+    /// neither imported nor removed — it used to be overwritten by the first
+    /// save after a failed load, which was the whole library gone.
+    private func importCacheFile(into database: GraftDatabase) -> Bool {
+        guard FileManager.default.fileExists(atPath: dataFileURL.path),
+              database.isLibraryEmpty,
+              let cached = readCacheFile() else { return true }
+        database.saveLibrary(cached)
+
+        var expected = Set<String>()
+        expected.formUnion(cached.projects.map(\.id))
+        expected.formUnion(cached.issues.map(\.id))
+        expected.formUnion(cached.milestones.map(\.id))
+        expected.formUnion((cached.areas ?? []).map(\.id))
+        expected.formUnion((cached.links ?? []).map(\.id))
+        expected.formUnion((cached.savedViews ?? []).map(\.id))
+        guard database.libraryIds().isSuperset(of: expected) else {
+            print("[graft] import from graft_data.json did not verify; staying on the file")
+            database.clearLibrary()
+            return false
+        }
+        try? FileManager.default.removeItem(at: dataFileURL)
+        return true
+    }
+
+    private func apply(_ cached: GraftCachedData) {
         projects = cached.projects
         issues = cached.issues
         milestones = cached.milestones
