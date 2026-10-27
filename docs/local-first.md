@@ -71,13 +71,18 @@ are shown for confirmation, nothing is ever deleted.**
 
 | Record | Exact match (merges with no question) | Lookalike (asked about) |
 |---|---|---|
-| Any record | Same id **and** same `created_at`: it is the same row, seen from two sides | Same id, different `created_at`: an id collision, never a match (see below) |
-| Area | Same name, ignoring case and outer spaces | — |
-| Project | Same id only | Same name, ignoring case and outer spaces |
-| Milestone | Same name inside projects that matched | Same name inside a project matched by confirmation |
-| Issue | Same id only | Same title in the same (matched) project |
-| Link | Same owner (after remapping) and same URL | — |
-| Saved view | Same name and same query | Same name, different query |
+| Project, milestone, issue | Same id **and** same `created_at`: the same row, seen from two sides | — |
+| Any of those | Same id, different `created_at` is an id collision, never a match (see below) | — |
+| Area | Same id and name, or same name, ignoring case and outer spaces | — |
+| Project | — | Same name, ignoring case and outer spaces. **Must be answered**; the phone pre-selects Merge |
+| Milestone | Same name inside a project both sides now share (matched or confirmed) | — |
+| Issue | — | Same title in the project it maps to. Defaults to keep both |
+| Link | Same id and URL, or the same URL on the same owner (after remapping) | — |
+| Saved view | Same id and name, or same name and same query | Same name, different query. Defaults to keep both |
+| Anything | Its id is in `id_aliases` from an earlier merge | — |
+
+Areas, links and saved views carry no timestamps on the phone, so for them a
+same id with a different name (or URL) is the collision.
 
 Why:
 - **Ids are the only real identity Graft has.** Unlike a book's ISBN, a
@@ -98,34 +103,41 @@ Why:
 - **Issues are only asked about inside projects that already matched.** Two
   issues titled "Renew passport" in the same project are probably the same
   issue. The same title in two unrelated projects isn't.
-- **Same-id rows that differ:** the newer `updated_at` wins, field for field
-  across the whole row, sent as an ordinary `PUT`. The older version isn't
-  kept. Edits made on two sides while apart can't be told apart any better
+- **Same-id rows that differ:** the newer `updated_at` wins, across the
+  whole row, and the merge writes it. The older version isn't kept. Edits made on two sides while apart can't be told apart any better
   than this without per-field history.
 - `proj_none` ("No project") is created by every server. A phone-only library
   never has it, so it can't collide.
 
-### What the server needs
+### The server side (done)
 
-1. **`POST /api/merge?dry_run=1`**, given the phone's whole library. It
-   returns the plan: exact matches, lookalikes, uploads and id collisions, with
-   the ids the server would assign. Matching runs on the server, against every
-   row there, inside one read. It shouldn't run on a phone holding a pull that
-   may be out of date.
-2. **`POST /api/merge`** with the same library plus the phone's answer for each
-   lookalike (`merge` or `keep both`). It runs in **one transaction**. It's
-   idempotent under `X-Graft-Op-Id`, like the toggles, so a lost reply can be
-   retried. It returns the id remap (`{phone_id: server_id}`).
-3. **Never replace on merge.** `POST /api/<kind>` is `INSERT OR REPLACE` today
-   because the queue replays creates, so an upload through it would overwrite
-   a colliding server row. The merge endpoint inserts only, and remaps when an
-   id is taken.
-4. **An `id_aliases` table** (`old_id`, `new_id`, `kind`) written by the merge.
-   An op still in a queue, or a deep link, naming a phone id that was merged
-   away then resolves instead of answering 404. Old ids are never reused.
-5. **No deletes.** A merge doesn't touch any row it didn't match, and a
-   matched row is only updated.
-6. Docs for both endpoints in the README's API table, in the same change.
+`POST /api/merge` in `server/app.py`, documented in the README, with tests in
+`server/tests/test_merge.py`:
+
+1. **A dry run by default.** Given the phone's whole library, it answers with
+   the plan and writes nothing. The plan lists exact matches, lookalikes,
+   creates, collisions with the ids they would get, updates, undecided
+   lookalikes, and the remap. Matching runs on the server, against every row
+   there. It shouldn't run on a phone holding a pull that may be out of date.
+2. **`?apply=1`** with the same library plus the phone's answers (`merge` or
+   `keep`). It runs in **one transaction**, under `BEGIN IMMEDIATE`, so the
+   plan it carries out is the one it just drew up. It answers `409` and writes
+   nothing while a project lookalike is undecided.
+3. **Never replace.** `POST /api/<kind>` is `INSERT OR REPLACE` because the
+   queue replays creates, so an upload through it would overwrite a colliding
+   server row. The merge only inserts, or updates a same-row match whose phone
+   copy is newer. It never deletes.
+4. **Collision ids are derived** from the phone id and its `created_at`, so the
+   dry run shows the id the apply will use.
+5. **`id_aliases`** (`old_id`, `new_id`, `kind`) records every re-key and every
+   merge by name. A replayed apply resolves through it first, which makes
+   applying the same library twice write nothing the second time. No
+   `X-Graft-Op-Id` is needed for that. The other routes don't resolve aliases
+   yet. Nothing needs them to: a phone-only library has no queue naming its old
+   ids, and the phone replaces its rows with a full pull straight after.
+6. Not remapped: ids inside a saved view's query blob, such as a project
+   filter. A view whose project was re-keyed or merged opens with a filter that
+   matches nothing until it is edited.
 
 On the phone: Settings' Connect becomes *fetch the plan, show the lookalikes,
 apply, take the remap, pull*. `unsyncedLocalWork` clears only after the apply

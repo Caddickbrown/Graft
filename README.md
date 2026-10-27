@@ -99,6 +99,7 @@ sudo systemctl enable graft
 | POST/PUT/DELETE | /api/links/:id | Link CRUD |
 | GET | /api/notifications?since=&before=&undelivered=true&kind= | What a client should be telling the user |
 | POST | /api/notifications/:id/ack | Mark one delivered (`{"dismissed":true}` also dismisses) |
+| POST | /api/merge[?apply=1] | Fold a phone-only library into this server: plan by default, do it with `apply=1` |
 | GET | /api/digest?date=&assignee= | What a daily summary would say |
 | GET | /api/health | Health check |
 
@@ -376,3 +377,44 @@ returns `due_today`, `starting_today`, `overdue`, `in_review`, `waiting_on_you`
 and a `counts` object. `waiting_on_you` needs `assignee=` (`none` for the
 unassigned pile) and lists that person's `todo`/`in-progress` issues that the
 other buckets have not already named; without it, it comes back empty.
+
+### Merging a phone-only library
+
+The iOS app runs with no server, and queues nothing while it does. When it
+connects, its library is folded in with `POST /api/merge`. The design and the
+matching rules are in `docs/local-first.md`.
+
+```json
+{"library": {"areas": [], "projects": [], "milestones": [], "issues": [], "links": [], "views": []},
+ "decisions": {"proj_3f9a0c1e": "merge", "iss_77aa01bc": "keep"}}
+```
+
+Each row in `library` takes the shape `GET` answers with, which is how the phone
+caches it.
+
+- **Without `apply`, it's a dry run.** It writes nothing and answers with the
+  plan:
+  - `exact`: rows that merge on their own, with a `reason` of `same_id`,
+    `same_name`, `same_url`, `same_query`, `alias` or `lookalike`.
+  - `lookalikes`: rows that look like a server row and want a decision, each
+    with a `default`.
+  - `creates`: rows to insert.
+  - `collisions`: phone ids already taken, with the new id each would get.
+  - `updates`: same-id rows where the phone's copy is newer.
+  - `undecided`: phone ids of lookalikes with no decision and no default.
+  - `remap`: `{phone_id: server_id}` for every row.
+- **With `?apply=1`, it does it.** Everything happens in one transaction and
+  the answer is the same plan with `"applied": true`.
+  - If anything is still `undecided`, the answer is `409` with the plan, and
+    nothing is written.
+- **Inserts never replace and nothing is deleted.** A row is only inserted, or
+  updated when the phone's copy has the same id and `created_at` and a newer
+  `updated_at`.
+- **A project with a server project's name** (ignoring case and spaces) is
+  `undecided` until the phone answers `merge` or `keep`.
+- **Issues and saved views that only look alike** default to `keep`.
+- **A colliding phone id is re-keyed** to `<prefix><8 hex>`, derived from the
+  phone id and its `created_at`, so the dry run names the id the apply uses.
+  Every reference to it is rewritten.
+- **Every re-key and every merge by name** is recorded in `id_aliases`.
+  Replaying the same apply resolves through it, and writes nothing.

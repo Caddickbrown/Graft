@@ -24,7 +24,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Byte-compiling catches syntax errors without installing Flask. There are
-      # no server tests yet; this is the floor, not the ceiling.
       - name: Compile
-        run: python -m py_compile server/app.py
+        run: python -m py_compile server/app.py server/tests/*.py
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # The tests point GRAFT_DB at a temporary file before importing app.py and
+      # refuse to run if it lands anywhere else.
+      - name: Tests
+        run: python -m unittest discover -s server/tests -v
