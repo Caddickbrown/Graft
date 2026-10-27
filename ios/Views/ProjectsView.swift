@@ -516,7 +516,13 @@ struct ProjectsView: View {
 // MARK: - Project Card
 
 struct ProjectCardView: View {
-    let project: GraftProject
+    /// Read from the store on every render; see `GraftIssueRow`. A project's
+    /// `==` is its id, so an edited or re-synced one would keep its old card.
+    @Environment(GraftStore.self) private var store: GraftStore?
+    private let passed: GraftProject
+    private var project: GraftProject { store?.project(passed.id) ?? passed }
+
+    init(project: GraftProject) { passed = project }
 
     var projectStatusColor: Color {
         switch project.status {

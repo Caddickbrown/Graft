@@ -851,7 +851,14 @@ extension View {
 // priority as a left edge, the status ring beside the title, metadata beneath.
 
 struct GraftIssueRow: View {
-    let issue: GraftIssue
+    /// Read again from the store on every render. `GraftIssue`'s `==` compares
+    /// only the id (it is a navigation route too), so a row handed an issue
+    /// edited since compares equal and SwiftUI keeps its old body: a `]` or `p`
+    /// that left the row in its section left its ring and badge as they were.
+    /// Optional, so the row still draws where no store is in the environment.
+    @Environment(GraftStore.self) private var store: GraftStore?
+    private let passed: GraftIssue
+    private var issue: GraftIssue { store?.issues.first { $0.id == passed.id } ?? passed }
     var project: GraftProject? = nil
     /// The deadline to show, as `yyyy-MM-dd`. The caller resolves it, because
     /// only the store knows whether to fall back to the milestone's date — see
@@ -864,6 +871,15 @@ struct GraftIssueRow: View {
     var showProject: Bool = true
     /// Labels beyond this are summarised as "+n" rather than wrapping the row.
     var maxLabels: Int = 3
+
+    init(issue: GraftIssue, project: GraftProject? = nil, due: String? = nil,
+         showProject: Bool = true, maxLabels: Int = 3) {
+        passed = issue
+        self.project = project
+        self.due = due
+        self.showProject = showProject
+        self.maxLabels = maxLabels
+    }
 
     var body: some View {
         let status = IssueStatus(rawValue: issue.status) ?? .backlog

@@ -756,7 +756,12 @@ private struct KanbanDragPreview: View {
 
 struct KanbanCard: View {
     @Environment(GraftStore.self) private var store
-    let issue: GraftIssue
+    /// Read from the store on every render; see `GraftIssueRow`. A `p` or a
+    /// title edit leaves the card in its column, so nothing else redraws it.
+    private let passed: GraftIssue
+    private var issue: GraftIssue { store.issues.first { $0.id == passed.id } ?? passed }
+
+    init(issue: GraftIssue) { passed = issue }
 
     @State private var showStatusPicker = false
 
