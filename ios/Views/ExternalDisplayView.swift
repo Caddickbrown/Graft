@@ -59,6 +59,10 @@ struct ExternalDisplayRoot: View {
             return [.init("[ ]", "Status"), .init("x", "Done"), .init("p", "Priority"),
                     .init("t", "Title"), .init("e", "Description"), .init("a", "Archive"),
                     .init("esc", "Back")]
+        case .newIssue:
+            return [.init("↵", "Add"), .init("tab", "Next field"), .init("⌘[ ⌘]", "Status"),
+                    .init("⌘P", "Priority"), .init("⌘O", "Project"), .init("⌘D", "Due"),
+                    .init("esc", "Cancel")]
         }
     }
 }
@@ -127,6 +131,11 @@ private struct ExternalContentView: View {
                 }
                 .frame(maxWidth: .infinity)
             }
+
+        case .newIssue(let draft):
+            ExternalNewIssue(draft: draft, store: store, metrics: metrics)
+                .frame(maxWidth: metrics.body * 34)
+                .frame(maxWidth: .infinity)
 
         case .issue(let id):
             if let issue = store.issues.first(where: { $0.id == id }) {
@@ -418,6 +427,86 @@ private struct ExternalProjectList: View {
                     .strokeBorder(Color.gAccent, lineWidth: 2)
             }
         }
+    }
+}
+
+// MARK: New issue
+
+/// The new-issue form, drawn from across a desk as it is typed: the title big,
+/// the field being typed in underlined, and a caret at the end of it.
+private struct ExternalNewIssue: View {
+    let draft: ExternalDraft
+    let store: GraftStore
+    let metrics: ExternalMetrics
+
+    var body: some View {
+        let status = IssueStatus(rawValue: draft.status) ?? .backlog
+        let priority = IssuePriority(rawValue: draft.priority) ?? .normal
+
+        VStack(alignment: .leading, spacing: metrics.gap) {
+            Text("NEW ISSUE")
+                .font(GraftFont.text(metrics.caption, .semibold))
+                .kerning(1)
+                .foregroundStyle(Color.gInk2)
+
+            field("title", draft.title, placeholder: "What needs doing?",
+                  font: GraftFont.display(metrics.title * 1.2, .bold))
+
+            FlowRow(spacing: metrics.gap * 0.5) {
+                if let project = store.project(draft.projectId) {
+                    chip(project.name, tint: .gInk2) {
+                        ProjectColourDot(hex: project.colour, size: metrics.caption * 0.6)
+                    }
+                }
+                chip(status.label, tint: status.color) {
+                    StatusRing(status: status, size: metrics.caption)
+                }
+                chip("\(priority.label) priority", tint: priority.color) {
+                    PriorityDot(priority: draft.priority, size: metrics.caption)
+                }
+                chip(GraftDate.mediumDate(draft.dueAt).map { "Due \($0)" } ?? "No due date", tint: .gInk2) {
+                    Image(systemName: "calendar")
+                }
+            }
+
+            Rectangle().fill(Color.gHairline).frame(height: 1)
+
+            field("description", draft.description, placeholder: "Description",
+                  font: GraftFont.text(metrics.body))
+            if draft.field == "assignee" || !draft.assignee.isEmpty {
+                field("assignee", draft.assignee, placeholder: "Assignee", font: GraftFont.text(metrics.body))
+            }
+            if draft.field == "labels" || !draft.labels.isEmpty {
+                field("labels", draft.labels, placeholder: "Labels", font: GraftFont.text(metrics.body))
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func field(_ name: String, _ text: String, placeholder: String, font: Font) -> some View {
+        let active = draft.field == name
+        return VStack(alignment: .leading, spacing: metrics.gap * 0.3) {
+            (Text(text.isEmpty && !active ? placeholder : text)
+                .foregroundStyle(text.isEmpty ? Color.gInk3 : Color.gInk)
+             + Text(active ? "▏" : "").foregroundStyle(Color.gAccent))
+                .font(font)
+                .fixedSize(horizontal: false, vertical: true)
+            Rectangle()
+                .fill(active ? Color.gAccent : Color.clear)
+                .frame(height: 2)
+        }
+    }
+
+    private func chip<Glyph: View>(_ text: String, tint: Color, @ViewBuilder glyph: () -> Glyph) -> some View {
+        HStack(spacing: metrics.gap * 0.3) {
+            glyph()
+            Text(text)
+        }
+        .font(GraftFont.text(metrics.caption, .medium))
+        .foregroundStyle(tint)
+        .padding(.horizontal, metrics.gap * 0.5)
+        .padding(.vertical, metrics.gap * 0.25)
+        .background(tint.opacity(0.12), in: Capsule())
     }
 }
 

@@ -58,6 +58,20 @@ struct NewIssueView: View {
         store.milestones(for: selectedProjectId)
     }
 
+    /// The form as the monitor draws it.
+    private var draft: ExternalDraft {
+        let field: String? = switch focus {
+        case .title: "title"
+        case .description: "description"
+        case .name: "assignee"
+        case .label: "labels"
+        default: nil
+        }
+        return ExternalDraft(title: title, description: description, projectId: selectedProjectId,
+                             status: status, priority: priority, dueAt: dueAt, assignee: assignee,
+                             labels: labelsText, field: field)
+    }
+
     private var canSave: Bool {
         !title.trimmingCharacters(in: .whitespaces).isEmpty && !selectedProjectId.isEmpty
     }
@@ -100,6 +114,13 @@ struct NewIssueView: View {
             }
         }
         .disabled(isSaving)
+        // With a monitor, the form is drawn there as it is typed, and the
+        // choices below have keys, so an issue can be made without looking at
+        // the phone. Return in the title adds it; ⌘↵ and esc are the header's.
+        .onAppear { ExternalDisplayModel.shared.presentSheet(.newIssue(draft)) }
+        .onChange(of: draft) { _, new in ExternalDisplayModel.shared.presentSheet(.newIssue(new)) }
+        .onDisappear { ExternalDisplayModel.shared.dismissSheet() }
+        .background { keyChoices }
         // Every create/edit sheet in the app used to lose in-progress text to a
         // swipe-down, with no warning and no way back.
         .interactiveDismissDisabled(hasDraft)
@@ -117,6 +138,7 @@ struct NewIssueView: View {
             GraftSection(title: "Details") {
                 GraftTextField(label: "Title", placeholder: "What needs doing?",
                                text: $title, focused: $focus, field: .title)
+                    .onSubmit { if canSave { Task { await save() } } }
                 GraftRowDivider()
                 GraftTextField(label: "Description", placeholder: "Optional",
                                text: $description, axis: .vertical, lineLimit: 3...8,
@@ -194,6 +216,45 @@ struct NewIssueView: View {
                                       vocabulary: store.issueLabelVocabulary)
             }
         }
+    }
+
+    /// Keys for the choices that are not text, so they can be made while
+    /// typing: ⌘[ ⌘] status, ⌘P priority, ⌘O project, ⌘D due. Buttons with
+    /// shortcuts rather than key commands, because a focused text field is
+    /// first responder, and only shortcuts inside the sheet reach past it.
+    private var keyChoices: some View {
+        Group {
+            Button("") { status = IssueStatus.step(status, by: -1) }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("") { status = IssueStatus.step(status, by: 1) }
+                .keyboardShortcut("]", modifiers: .command)
+            Button("") { priority = IssuePriority.next(after: priority) }
+                .keyboardShortcut("p", modifiers: .command)
+            Button("") {
+                let ids = availableProjects.map(\.id)
+                guard !ids.isEmpty else { return }
+                let i = ids.firstIndex(of: selectedProjectId) ?? -1
+                selectedProjectId = ids[(i + 1) % ids.count]
+            }
+            .keyboardShortcut("o", modifiers: .command)
+            Button("") { dueAt = Self.nextDue(after: dueAt) }
+                .keyboardShortcut("d", modifiers: .command)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// None → today → tomorrow → a week today → none, the quick date row's
+    /// three presets. A date set some other way goes back to none.
+    static func nextDue(after current: String) -> String {
+        let today = Calendar.current.startOfDay(for: Date())
+        let presets = [0, 1, 7].compactMap { Calendar.current.date(byAdding: .day, value: $0, to: today) }
+            .map { GraftDate.dayString(from: $0) }
+        if current.isEmpty { return presets[0] }
+        guard let i = presets.firstIndex(of: current), i + 1 < presets.count else { return "" }
+        return presets[i + 1]
     }
 
     private func save() async {

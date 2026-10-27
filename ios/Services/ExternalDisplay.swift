@@ -30,6 +30,24 @@ enum ExternalDisplayContent: Equatable {
     case projects(items: [ExternalListItem], selected: String?)
     /// One issue, open.
     case issue(id: String)
+    /// A new issue being written, mirrored as it is typed, so it can be made
+    /// with the phone face down. Shown over whatever list it was started from.
+    case newIssue(ExternalDraft)
+}
+
+/// The new-issue form as it stands. Plain values: it crosses to the other scene
+/// on every keystroke and only needs to be drawn.
+struct ExternalDraft: Equatable {
+    var title = ""
+    var description = ""
+    var projectId = ""
+    var status = "backlog"
+    var priority = "normal"
+    var dueAt = ""
+    var assignee = ""
+    var labels = ""
+    /// The field being typed in: "title", "description", "assignee", "labels".
+    var field: String?
 }
 
 /// One row of a mirrored list: an id, and the section header to draw above it
@@ -125,16 +143,43 @@ final class ExternalDisplayModel {
 
     // MARK: Publishing
 
+    /// What a sheet drawn on the monitor (the new-issue form) covers: the list
+    /// it was opened over. Lists keep publishing underneath it, into here, and
+    /// it comes back when the sheet goes.
+    private var underlay: ExternalDisplayContent?
+
     func present(_ new: ExternalDisplayContent) {
+        if underlay != nil { underlay = new; return }
+        show(new)
+    }
+
+    private func show(_ new: ExternalDisplayContent) {
         latest = new
         guard isConnected, !isPaused else { return }
         content = new
+    }
+
+    /// Put a sheet on the monitor over whatever is there.
+    func presentSheet(_ new: ExternalDisplayContent) {
+        if underlay == nil { underlay = latest }
+        show(new)
+    }
+
+    /// The sheet went: back to what it covered, as it now stands.
+    func dismissSheet() {
+        guard let under = underlay else { return }
+        underlay = nil
+        show(under)
     }
 
     /// Back to idle, but only if `shown` is still what is up. On a push, the
     /// outgoing screen's `onDisappear` can land *after* the incoming one has
     /// claimed the monitor; this keeps it from blanking what just arrived.
     func clear(ifShowing shown: ExternalDisplayContent) {
+        if underlay != nil {
+            if underlay == shown { underlay = .idle }
+            return
+        }
         guard latest == shown else { return }
         present(.idle)
     }
