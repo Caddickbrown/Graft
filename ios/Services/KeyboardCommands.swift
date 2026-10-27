@@ -14,7 +14,11 @@ import GameController
 // `onKeyPress` needs the view focused, and on iOS a non-text view only ever
 // receives focus with Accessibility ▸ Keyboards ▸ Full Keyboard Access switched
 // on. So the keys are `UIKeyCommand`s declared by a zero-size view controller
-// (`KeyCommandCatcher`) that makes itself first responder. That placement is
+// (`KeyCommandCatcher`) that makes itself first responder. The root carries one,
+// and so does every screen and list that takes keys, as Quire's do: each push,
+// tab switch or sheet closing brings a catcher on screen that takes the keys
+// straight back, rather than leaving the root's timer to notice they went
+// missing (which it never does while a text-taking view holds them). That placement is
 // also what keeps typing safe: tapping a text field makes *it* first responder,
 // the catcher drops out of the responder chain, and every letter goes into the
 // field.
@@ -331,6 +335,8 @@ private struct GraftKeyScreen: ViewModifier {
     func body(content: Content) -> some View {
         box.handlers = handlers
         return content
+            // The root already carries one, behind every screen.
+            .background { if !isBase { KeyCommandCatcher().frame(width: 0, height: 0).allowsHitTesting(false) } }
             .onAppear {
                 if isBase {
                     KeyCommandRouter.shared.setBase(box.forwarding)
@@ -369,6 +375,7 @@ private struct GraftKeyList: ViewModifier {
     func body(content: Content) -> some View {
         box.handlers = handlers
         return content
+            .background(KeyCommandCatcher().frame(width: 0, height: 0).allowsHitTesting(false))
             .onAppear {
                 visible = true
                 KeyCommandRouter.shared.register(routerID, box.forwarding)
