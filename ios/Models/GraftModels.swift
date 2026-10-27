@@ -791,6 +791,9 @@ struct GraftSettings: Codable {
     /// Something was written on this phone while no server was configured.
     /// See `GraftStore.unsyncedLocalWork`.
     var unsyncedLocalWork: Bool?
+    /// A merge was applied and the pull that brings the server's ids back
+    /// hasn't landed yet. See `GraftStore.awaitingFirstPull`.
+    var awaitingFirstPull: Bool?
 }
 
 // MARK: - Pending Operation (offline queue)

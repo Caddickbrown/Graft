@@ -59,6 +59,14 @@ final class GraftStore {
     /// cleared by any pull that lands. See docs/local-first.md.
     private(set) var unsyncedLocalWork = false
 
+    /// A merge was applied, but the pull that swaps the phone's ids for the
+    /// server's hasn't landed yet. Until it does, a write queued against an
+    /// old id could miss (merged into a lookalike) or, after a rare collision,
+    /// land on a different server row, so writes stay in the library instead,
+    /// and the first one marks it as unsynced work again: the merge is offered
+    /// again, and sending it twice is safe.
+    private(set) var awaitingFirstPull = false
+
     // MARK: - Persisted view state
     //
     // Filter, sort and grouping used to be `@State` on a pushed view, so
@@ -151,6 +159,7 @@ final class GraftStore {
         self.syncEngine = SyncEngine(session: sess, database: database)
         loadSettings()
         loadCachedData()
+        markUpgradedLocalWork()
         loadViewState()
         // The queue now hands back what the server said. The only answer this
         // app reads is the one a completed recurring issue carries; see
@@ -354,10 +363,25 @@ final class GraftStore {
             serverURL: serverURL,
             fallbackURL: fallbackURL,
             startedLocally: startedLocally,
-            unsyncedLocalWork: unsyncedLocalWork
+            unsyncedLocalWork: unsyncedLocalWork,
+            awaitingFirstPull: awaitingFirstPull
         )
         if let data = try? JSONEncoder().encode(settings) {
             try? data.write(to: settingsFileURL)
+        }
+    }
+
+    @ObservationIgnored private var upgradedWithoutFlag = false
+
+    /// A phone-only library from an older build is work this phone has and no
+    /// server does: connecting must merge it, not replay an old queue and then
+    /// pull lists over whatever the queue never held.
+    private func markUpgradedLocalWork() {
+        guard upgradedWithoutFlag else { return }
+        upgradedWithoutFlag = false
+        if !isLibraryEmpty, !unsyncedLocalWork {
+            unsyncedLocalWork = true
+            saveSettings()
         }
     }
 
@@ -368,6 +392,11 @@ final class GraftStore {
         // file, and would write the flags' defaults over what was just read.
         startedLocally = settings.startedLocally ?? false
         unsyncedLocalWork = settings.unsyncedLocalWork ?? false
+        awaitingFirstPull = settings.awaitingFirstPull ?? false
+        // A build before this flag existed, used with no server: its writes went
+        // to a queue rather than the flag, so the flag says nothing about them.
+        // Checked once the library has loaded (`markUpgradedLocalWork`).
+        upgradedWithoutFlag = settings.unsyncedLocalWork == nil && settings.serverURL.isEmpty
         serverURL = settings.serverURL
         fallbackURL = settings.fallbackURL
     }
@@ -431,7 +460,7 @@ final class GraftStore {
     /// would have done in answer to it — the next occurrence of a recurring
     /// issue, the reminders — is done here instead.
     private var writesStayLocal: Bool {
-        !isServerConfigured || connectWouldReplaceLocalWork
+        !isServerConfigured || connectWouldReplaceLocalWork || awaitingFirstPull
     }
 
     /// A rebuild of the local reminders, a moment after the last write rather
@@ -451,8 +480,9 @@ final class GraftStore {
     /// A pull landed, so whatever this phone holds now came from a server.
     private func notePullLanded() {
         lastSynced = Date()
-        if unsyncedLocalWork {
+        if unsyncedLocalWork || awaitingFirstPull {
             unsyncedLocalWork = false
+            awaitingFirstPull = false
             saveSettings()
         }
     }
@@ -497,6 +527,7 @@ final class GraftStore {
         let plan = try await api.merge(base: base, body: body, apply: true)
         guard plan.applied else { return plan }
         unsyncedLocalWork = false
+        awaitingFirstPull = true
         saveSettings()
         // Anything an older build queued is already in what was just merged,
         // and older than it. See `SyncEngine.clearPending`.
@@ -704,7 +735,9 @@ final class GraftStore {
     /// upserts rather than replaces: a narrowed response must not delete the
     /// rest of the cache.
     func refreshIssues(matching query: IssueQuery) async {
-        guard let base = activeBase else { return }
+        // Not over work this phone hasn't merged yet: the server's copy would
+        // replace the edit, and the merge would then find nothing to upload.
+        guard let base = activeBase, !connectWouldReplaceLocalWork, !awaitingFirstPull else { return }
         guard let found = try? await api.issues(base: base, matching: query) else { return }
         var merged = issues
         // `uniquingKeysWith`, not `uniqueKeysWithValues`: the latter traps on a
@@ -794,6 +827,9 @@ final class GraftStore {
     func archiveProject(id: String) async throws {
         if let idx = projects.firstIndex(where: { $0.id == id }) {
             projects[idx].archived.toggle()
+            // Every change moves `updatedAt`: a merge keeps the phone's copy of
+            // a shared row only when it's newer.
+            projects[idx].updatedAt = nowISO()
         }
         saveCachedData()
         send(method: "PATCH", path: "/api/projects/\(id)/archive")
@@ -812,6 +848,7 @@ final class GraftStore {
     func favouriteProject(id: String) async throws {
         guard let idx = projects.firstIndex(where: { $0.id == id }) else { return }
         projects[idx].isFavourite.toggle()
+        projects[idx].updatedAt = nowISO()
         let wanted = projects[idx].isFavourite
         saveCachedData()
         let body = try JSONSerialization.data(withJSONObject: ["favourite": wanted ? 1 : 0])
@@ -991,6 +1028,7 @@ final class GraftStore {
             guard let idx = issues.firstIndex(where: { $0.id == issueId }) else { continue }
             if issues[idx].sortOrder != position {
                 issues[idx].sortOrder = position
+                issues[idx].updatedAt = ts
                 renumbered.append(["id": issueId, "sort_order": position])
             }
         }
@@ -1151,6 +1189,7 @@ final class GraftStore {
     func archiveIssue(id: String) async throws {
         if let idx = issues.firstIndex(where: { $0.id == id }) {
             issues[idx].archived.toggle()
+            issues[idx].updatedAt = nowISO()
         }
         saveCachedData()
         send(method: "PATCH", path: "/api/issues/\(id)/archive")
@@ -1243,6 +1282,7 @@ final class GraftStore {
             guard let position = rank[milestones[idx].id],
                   milestones[idx].sortOrder != position else { continue }
             milestones[idx].sortOrder = position
+            milestones[idx].updatedAt = nowISO()
             moved.append(milestones[idx])
         }
         guard !moved.isEmpty else { return }
