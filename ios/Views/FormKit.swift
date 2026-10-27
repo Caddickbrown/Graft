@@ -152,7 +152,7 @@ struct GraftTextField: View {
 /// Which field owns the keyboard. One enum per app rather than a `Bool` each,
 /// so a sheet can move focus between fields.
 enum GraftFormField: Hashable {
-    case name, description, icon, title, label, url, note
+    case name, description, icon, title, label, url, note, tags
 }
 
 // MARK: Choice

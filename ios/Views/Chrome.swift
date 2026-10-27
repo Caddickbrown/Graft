@@ -343,6 +343,10 @@ struct GraftSearchField: View {
         )
         .animation(.easeOut(duration: 0.12), value: focused)
         .onChange(of: focusRequest) { _, _ in focused = true }
+        // The monitor's hint bar swaps the list's letters for the typing keys
+        // while this has the keyboard; they are going into the field.
+        .onChange(of: focused) { _, now in ExternalDisplayModel.shared.searching = now }
+        .onDisappear { if focused { ExternalDisplayModel.shared.searching = false } }
     }
 }
 

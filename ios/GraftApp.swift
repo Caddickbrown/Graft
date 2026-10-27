@@ -326,6 +326,11 @@ struct RootView: View {
                 case "3": router.tab = .settings
                 case "r": Task { await store.sync() }
                 case "?": showShortcuts = true
+                // Whichever screen's banner is up; `undoBanner` keeps it.
+                case "u":
+                    guard let undo = ExternalDisplayModel.shared.undo else { return false }
+                    ExternalDisplayModel.shared.undo = nil
+                    undo.run()
                 default: return false
                 }
                 return true

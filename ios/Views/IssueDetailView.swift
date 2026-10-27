@@ -17,6 +17,7 @@ import SwiftUI
 struct IssueDetailView: View {
     @Environment(GraftStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(GraftRouter.self) private var router
 
     let issue: GraftIssue
 
@@ -70,6 +71,16 @@ struct IssueDetailView: View {
         case synced
         /// The queue gave up. This one is never going to be sent.
         case failed(String)
+    }
+
+    /// The field `t`/`e` put the cursor in, as typed, for the monitor — which
+    /// would otherwise only see it after the save delay.
+    private var typing: ExternalEdit? {
+        switch editing {
+        case .title: ExternalEdit(field: "title", text: title)
+        case .description: ExternalEdit(field: "description", text: description)
+        case nil: nil
+        }
     }
 
     /// Where this issue's write lands in the queue.
@@ -173,7 +184,7 @@ struct IssueDetailView: View {
             }
         }
         .onDisappear { flushPendingSave() }
-        .externalDisplay(.issue(id: issue.id))
+        .externalDisplay(.issue(id: issue.id, editing: typing, nextTitle: spawned?.title))
         // The same letters as on a list row, routed through this screen's own
         // setters so the save indicator and the recurring-issue notice still
         // follow. Esc is left to the root, which goes back.
@@ -185,6 +196,9 @@ struct IssueDetailView: View {
             case "a": archive()
             case "t": editing = .title
             case "e": editing = .description
+            case "o":
+                guard let spawned else { return false }
+                router.push(.issue(spawned))
             default: return false
             }
             return true

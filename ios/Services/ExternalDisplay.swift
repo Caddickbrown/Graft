@@ -24,15 +24,54 @@ import UIKit
 enum ExternalDisplayContent: Equatable {
     /// Nothing selected anywhere — the monitor shows the day's numbers.
     case idle
-    /// A list of issues being arrowed through: the Inbox, or a project.
-    case issues(title: String, items: [ExternalListItem], selected: String?)
+    /// A list of issues being arrowed through: the Inbox, or a project
+    /// (`projectId`, which also says whether esc goes back and `f` applies).
+    /// `query` is the search typed over it, so a narrowed list says so.
+    case issues(title: String, items: [ExternalListItem], selected: String?,
+                query: String = "", projectId: String? = nil)
     /// The project list.
-    case projects(items: [ExternalListItem], selected: String?)
-    /// One issue, open.
-    case issue(id: String)
+    case projects(items: [ExternalListItem], selected: String?, query: String = "")
+    /// One issue, open. `editing` is a title or description being typed with
+    /// `t`/`e`, shown as it is typed rather than after the save delay;
+    /// `nextTitle` is the next occurrence a completed repeating issue spawned.
+    case issue(id: String, editing: ExternalEdit? = nil, nextTitle: String? = nil)
     /// A new issue being written, mirrored as it is typed, so it can be made
     /// with the phone face down. Shown over whatever list it was started from.
     case newIssue(ExternalDraft)
+    /// The same for a new project.
+    case newProject(ExternalProjectDraft)
+    /// The `?` sheet: every key, readable from the desk.
+    case shortcuts
+}
+
+/// A field of an open issue being typed into.
+struct ExternalEdit: Equatable {
+    /// "title" or "description".
+    var field: String
+    var text: String
+}
+
+/// The new-project form as it stands.
+struct ExternalProjectDraft: Equatable {
+    var name = ""
+    var description = ""
+    var colour = ""
+    var status = "active"
+    var areaName = ""
+    var tags = ""
+    /// "name", "description", "tags".
+    var field: String?
+}
+
+/// The undo on offer after an archive, as the phone's banner says it. `u` or
+/// ⌘Z runs it, so a keyboard can take back an `a` without reaching for the
+/// banner's button.
+struct ExternalUndo: Equatable {
+    let id: UUID
+    let message: String
+    let run: () -> Void
+
+    static func == (a: ExternalUndo, b: ExternalUndo) -> Bool { a.id == b.id }
 }
 
 /// The new-issue form as it stands. Plain values: it crosses to the other scene
@@ -48,6 +87,8 @@ struct ExternalDraft: Equatable {
     var labels = ""
     /// The field being typed in: "title", "description", "assignee", "labels".
     var field: String?
+    /// No project to put it in: the phone shows "make one first" instead.
+    var noProjects = false
 }
 
 /// One row of a mirrored list: an id, and the section header to draw above it
@@ -136,6 +177,11 @@ final class ExternalDisplayModel {
     /// Bumped whenever a preference the monitor draws from changes, so views
     /// reading `UserDefaults` directly still repaint.
     private(set) var preferencesVersion = 0
+    /// Set by `undoBanner` while its banner is up; see `ExternalUndo`.
+    var undo: ExternalUndo?
+    /// A search field has the keyboard: the hint bar offers the keys for
+    /// typing rather than the list's letters, which are going into the field.
+    var searching = false
 
     private var latest: ExternalDisplayContent = .idle
 

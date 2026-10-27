@@ -50,7 +50,7 @@ struct NewProjectView: View {
         GraftFormScaffold(
             title: "New project",
             confirmLabel: "Create",
-            confirmDisabled: name.trimmingCharacters(in: .whitespaces).isEmpty,
+            confirmDisabled: !canCreate,
             isBusy: isSaving,
             onCancel: { dismiss() },
             onConfirm: { Task { await save() } }
@@ -58,6 +58,7 @@ struct NewProjectView: View {
             GraftSection(title: "Project details") {
                 GraftTextField(label: "Name", placeholder: "What is it called?",
                                text: $name, focused: $focus, field: .name)
+                    .onSubmit { if canCreate { Task { await save() } } }
                 GraftRowDivider()
                 GraftTextField(label: "Description", placeholder: "Optional",
                                text: $description, axis: .vertical, lineLimit: 3...6,
@@ -70,7 +71,7 @@ struct NewProjectView: View {
 
             GraftSection(title: "Tags", footnote: "Comma-separated, e.g. client, ios, mvp") {
                 GraftTextField(label: "Tags", placeholder: "e.g. client, ios, mvp",
-                               text: $tagsText, focused: $focus, field: .description)
+                               text: $tagsText, focused: $focus, field: .tags)
                 GraftTokenSuggestions(text: $tagsText,
                                       vocabulary: store.projectTagVocabulary)
             }
@@ -87,6 +88,12 @@ struct NewProjectView: View {
         .disabled(isSaving)
         // A swipe-down used to throw the draft away silently.
         .interactiveDismissDisabled(hasDraft)
+        // Drawn on the monitor as it is typed, with keys for the choices that
+        // are not text, as the new-issue sheet does. ⌘↵ and esc are the header's.
+        .onAppear { ExternalDisplayModel.shared.presentSheet(.newProject(draft)) }
+        .onChange(of: draft) { _, new in ExternalDisplayModel.shared.presentSheet(.newProject(new)) }
+        .onDisappear { ExternalDisplayModel.shared.dismissSheet() }
+        .background { keyChoices }
         .onAppear {
             // With a hardware keyboard, `n` on the project list should mean
             // typing a name, not reaching for the screen. See NewIssueView.
@@ -96,6 +103,46 @@ struct NewProjectView: View {
                 focus = .name
             }
         }
+    }
+
+    private var canCreate: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    private var draft: ExternalProjectDraft {
+        let field: String? = switch focus {
+        case .name: "name"
+        case .description: "description"
+        case .tags: "tags"
+        default: nil
+        }
+        return ExternalProjectDraft(name: name, description: description, colour: colourHex, status: status,
+                                    areaName: store.sortedAreas.first { $0.id == areaId }?.name ?? "",
+                                    tags: tagsText, field: field)
+    }
+
+    /// ⌘[ ⌘] status, ⌘K colour, ⌘O area. Shortcuts rather than key commands:
+    /// a focused field is first responder; see NewIssueView.
+    private var keyChoices: some View {
+        Group {
+            Button("") { status = step(projectStatuses, from: status, by: -1) }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("") { status = step(projectStatuses, from: status, by: 1) }
+                .keyboardShortcut("]", modifiers: .command)
+            Button("") { colourHex = step(GraftPalette.swatches.map(\.hex), from: colourHex, by: 1) }
+                .keyboardShortcut("k", modifiers: .command)
+            Button("") { areaId = step([""] + store.sortedAreas.map(\.id), from: areaId, by: 1) }
+                .keyboardShortcut("o", modifiers: .command)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// The next of `options` after `current`, round the end.
+    private func step(_ options: [String], from current: String, by delta: Int) -> String {
+        guard !options.isEmpty else { return current }
+        let i = options.firstIndex(of: current) ?? 0
+        return options[(i + delta + options.count) % options.count]
     }
 
     private func save() async {
@@ -173,7 +220,7 @@ struct EditProjectView: View {
 
             GraftSection(title: "Tags", footnote: "Comma-separated, e.g. client, ios, mvp") {
                 GraftTextField(label: "Tags", placeholder: "e.g. client, ios, mvp",
-                               text: $tagsText, focused: $focus, field: .description)
+                               text: $tagsText, focused: $focus, field: .tags)
                 GraftTokenSuggestions(text: $tagsText,
                                       vocabulary: store.projectTagVocabulary)
             }

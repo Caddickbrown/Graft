@@ -190,7 +190,7 @@ struct ProjectsView: View {
                 ids: keySections.flatMap(\.ids),
                 selection: $keySelection,
                 display: { selected in
-                    .projects(items: ExternalListItem.sections(keySections), selected: selected)
+                    .projects(items: ExternalListItem.sections(keySections), selected: selected, query: searchText)
                 },
                 onOpen: { id in router.projectsPath.append(GraftRoute.project(id)) },
                 key: { k, selected in

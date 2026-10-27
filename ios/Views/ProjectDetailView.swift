@@ -233,7 +233,8 @@ struct ProjectDetailView: View {
             ids: keySections.flatMap(\.ids),
             selection: $keySelection,
             display: { selected in
-                .issues(title: currentProject.name, items: ExternalListItem.sections(keySections), selected: selected)
+                .issues(title: currentProject.name, items: ExternalListItem.sections(keySections), selected: selected,
+                        query: query.q, projectId: project.id)
             },
             onOpen: { id in
                 guard let issue = store.issues.first(where: { $0.id == id }) else { return }

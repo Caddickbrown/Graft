@@ -43,6 +43,8 @@ import GameController
 //   a                  archive
 //   f                  favourite a project
 //   t e                edit the title / description (issue screen)
+//   o                  open the next one, after finishing a repeating issue
+//   u / ⌘Z             undo an archive, while its banner is up
 //   ?                  keyboard shortcuts
 //   ⌥⌘ = − T P H       monitor: text size, theme, pause, hints
 
@@ -182,9 +184,10 @@ final class KeyCommandController: UIViewController {
             add(digit, [], #selector(letter(_:)))
             add(digit, .command, #selector(letter(_:)), title: title)
         }
-        for character in ["j", "k", "n", "/", "r", "]", "[", "x", "p", "a", "f", "t", "e", "?"] {
+        for character in ["j", "k", "n", "/", "r", "]", "[", "x", "p", "a", "f", "t", "e", "o", "u", "?"] {
             add(character, [], #selector(letter(_:)))
         }
+        add("z", .command, #selector(undo), title: "Undo")
         // Shift-/ arrives as "?" on most layouts, and as "/" plus shift on some.
         add("/", .shift, #selector(help))
         return commands
@@ -195,6 +198,7 @@ final class KeyCommandController: UIViewController {
     @objc private func openSelection() { KeyCommandRouter.shared.open() }
     @objc private func escape() { KeyCommandRouter.shared.escape() }
     @objc private func help() { KeyCommandRouter.shared.key("?") }
+    @objc private func undo() { KeyCommandRouter.shared.key("u") }
     @objc private func letter(_ command: UIKeyCommand) {
         guard let input = command.input else { return }
         KeyCommandRouter.shared.key(input)
@@ -395,6 +399,11 @@ private struct GraftKeyList: ViewModifier {
                 }
                 adopt(); publish()
             }
+            // What the monitor would show, not just the ids: a `]` that moves
+            // a row into the next section without changing the order leaves
+            // the ids alone, and the monitor kept drawing it under the old
+            // heading. Likewise a search query or a title change.
+            .onChange(of: display(selection)) { _, _ in publish() }
             .onDisappear {
                 visible = false
                 KeyCommandRouter.shared.unregister(routerID)

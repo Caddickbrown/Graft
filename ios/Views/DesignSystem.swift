@@ -839,6 +839,27 @@ extension View {
             }
         }
         .animation(.snappy(duration: 0.22), value: action.wrappedValue)
+        // Offered to the keyboard (`u`, ⌘Z) and the monitor while it is up:
+        // the button is the only other way back, and it is on the phone.
+        .onChange(of: action.wrappedValue?.id) { _, id in
+            let model = ExternalDisplayModel.shared
+            if let current = action.wrappedValue, current.id == id {
+                model.undo = ExternalUndo(id: current.id, message: current.message) {
+                    Task {
+                        await current.undo()
+                        if action.wrappedValue?.id == current.id { action.wrappedValue = nil }
+                    }
+                }
+            } else if id == nil {
+                model.undo = nil
+            }
+        }
+        // Leaving the screen takes its banner with it; so does the key.
+        .onDisappear {
+            if let id = action.wrappedValue?.id, ExternalDisplayModel.shared.undo?.id == id {
+                ExternalDisplayModel.shared.undo = nil
+            }
+        }
     }
 }
 

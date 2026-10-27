@@ -28,6 +28,13 @@ struct ExternalDisplayRoot: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // The phone's undo banner, said where it can be read, with the
+                // key that takes it up.
+                .overlay(alignment: .bottom) {
+                    if let undo = model.undo, !model.isPaused {
+                        ExternalUndoBanner(message: undo.message, metrics: metrics)
+                    }
+                }
 
                 if model.showsHints {
                     ExternalHintBar(hints: hints, paused: model.isPaused, metrics: metrics)
@@ -42,27 +49,47 @@ struct ExternalDisplayRoot: View {
         .animation(.easeOut(duration: 0.15), value: model.content)
     }
 
+    /// The keys that work on what is showing — and only those. Built from the
+    /// same content the screen published, so a key a screen does not handle
+    /// is not offered.
     private var hints: [ExternalHint] {
         if model.isPaused { return [ExternalHint("⌥⌘P", "Resume")] }
+        // A search field has the keyboard: letters type, they do not act.
+        if model.searching {
+            return [.init("type", "Search"), .init("↓ esc", "Back to the list")]
+        }
+        let undo: [ExternalHint] = model.undo == nil ? [] : [.init("u", "Undo")]
         switch model.content {
         case .idle:
-            return [.init("1", "Inbox"), .init("2", "Projects"), .init("n", "New issue"),
+            return [.init("1", "Inbox"), .init("2", "Projects"), .init("3", "Settings"),
                     .init("r", "Refresh"), .init("?", "Keys")]
-        case .issues:
+        case .issues(_, _, _, _, let projectId):
+            let inProject = projectId != nil
             return [.init("↑↓", "Move"), .init("↵", "Open"), .init("[ ]", "Status"),
-                    .init("x", "Done"), .init("p", "Priority"), .init("a", "Archive"),
-                    .init("n", "New"), .init("/", "Search"), .init("esc", "Back")]
+                    .init("x", "Done"), .init("p", "Priority"), .init("a", "Archive")] + undo
+                + [.init("n", "New"), .init("/", "Search")]
+                + (inProject ? [.init("f", "Favourite"), .init("esc", "Back")] : [.init("2", "Projects")])
+                + [.init("?", "Keys")]
         case .projects:
             return [.init("↑↓", "Move"), .init("↵", "Open"), .init("f", "Favourite"),
-                    .init("n", "New project"), .init("/", "Search"), .init("1", "Inbox")]
-        case .issue:
+                    .init("a", "Archive")] + undo
+                + [.init("n", "New project"), .init("/", "Search"), .init("1", "Inbox"), .init("?", "Keys")]
+        case .issue(_, let editing, let nextTitle):
+            if editing != nil { return [.init("type", "Edit"), .init("esc", "Done editing")] }
             return [.init("[ ]", "Status"), .init("x", "Done"), .init("p", "Priority"),
-                    .init("t", "Title"), .init("e", "Description"), .init("a", "Archive"),
-                    .init("esc", "Back")]
-        case .newIssue:
+                    .init("t", "Title"), .init("e", "Description"), .init("a", "Archive")] + undo
+                + (nextTitle == nil ? [] : [.init("o", "Open next")])
+                + [.init("esc", "Back")]
+        case .newIssue(let draft):
+            if draft.noProjects { return [.init("esc", "Close")] }
             return [.init("↵", "Add"), .init("tab", "Next field"), .init("⌘[ ⌘]", "Status"),
                     .init("⌘P", "Priority"), .init("⌘O", "Project"), .init("⌘D", "Due"),
                     .init("esc", "Cancel")]
+        case .newProject:
+            return [.init("↵", "Create"), .init("tab", "Next field"), .init("⌘[ ⌘]", "Status"),
+                    .init("⌘K", "Colour"), .init("⌘O", "Area"), .init("esc", "Cancel")]
+        case .shortcuts:
+            return [.init("esc", "Close")]
         }
     }
 }
@@ -103,9 +130,10 @@ private struct ExternalContentView: View {
         case .idle:
             ExternalIdleView(store: store, metrics: metrics)
 
-        case .issues(let title, let items, let selected):
+        case .issues(let title, let items, let selected, let query, let projectId):
             HStack(alignment: .top, spacing: metrics.gap * 2) {
-                ExternalIssueList(title: title, items: items, selected: selected,
+                ExternalIssueList(title: title, items: items, selected: selected, query: query,
+                                  favourite: projectId.flatMap { store.project($0)?.isFavourite } ?? false,
                                   store: store, metrics: metrics)
                     .frame(maxWidth: .infinity)
                 Group {
@@ -118,9 +146,9 @@ private struct ExternalContentView: View {
                 .frame(maxWidth: .infinity)
             }
 
-        case .projects(let items, let selected):
+        case .projects(let items, let selected, let query):
             HStack(alignment: .top, spacing: metrics.gap * 2) {
-                ExternalProjectList(items: items, selected: selected, store: store, metrics: metrics)
+                ExternalProjectList(items: items, selected: selected, query: query, store: store, metrics: metrics)
                     .frame(maxWidth: .infinity)
                 Group {
                     if let selected, let project = store.project(selected) {
@@ -133,13 +161,27 @@ private struct ExternalContentView: View {
             }
 
         case .newIssue(let draft):
-            ExternalNewIssue(draft: draft, store: store, metrics: metrics)
+            if draft.noProjects {
+                ExternalQuiet(text: "No projects yet. Every issue lives in a project — make one on the Projects tab first.",
+                              metrics: metrics)
+            } else {
+                ExternalNewIssue(draft: draft, store: store, metrics: metrics)
+                    .frame(maxWidth: metrics.body * 34)
+                    .frame(maxWidth: .infinity)
+            }
+
+        case .newProject(let draft):
+            ExternalNewProject(draft: draft, metrics: metrics)
                 .frame(maxWidth: metrics.body * 34)
                 .frame(maxWidth: .infinity)
 
-        case .issue(let id):
+        case .shortcuts:
+            ExternalShortcuts(metrics: metrics)
+
+        case .issue(let id, let editing, let nextTitle):
             if let issue = store.issues.first(where: { $0.id == id }) {
-                ExternalIssuePanel(issue: issue, store: store, metrics: metrics, compact: false)
+                ExternalIssuePanel(issue: issue, store: store, metrics: metrics, compact: false,
+                                   editing: editing, nextTitle: nextTitle)
                     .frame(maxWidth: metrics.body * 34)
                     .frame(maxWidth: .infinity)
             } else {
@@ -233,6 +275,8 @@ private struct ExternalIssueList: View {
     let title: String
     let items: [ExternalListItem]
     let selected: String?
+    let query: String
+    let favourite: Bool
     let store: GraftStore
     let metrics: ExternalMetrics
 
@@ -243,6 +287,11 @@ private struct ExternalIssueList: View {
                     .font(GraftFont.display(metrics.title, .bold))
                     .foregroundStyle(Color.gInk)
                     .lineLimit(1)
+                if favourite {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: metrics.body * 0.8))
+                        .foregroundStyle(Color.gAmber)
+                }
                 Spacer()
                 if let selected, let i = items.firstIndex(where: { $0.id == selected }) {
                     Text("\(i + 1) of \(items.count)")
@@ -250,6 +299,8 @@ private struct ExternalIssueList: View {
                         .foregroundStyle(Color.gInk3)
                 }
             }
+
+            ExternalSearchLine(query: query, metrics: metrics)
 
             if items.isEmpty {
                 ExternalQuiet(text: "Nothing here", metrics: metrics)
@@ -360,6 +411,7 @@ private struct ExternalIssueRow: View {
 private struct ExternalProjectList: View {
     let items: [ExternalListItem]
     let selected: String?
+    let query: String
     let store: GraftStore
     let metrics: ExternalMetrics
 
@@ -368,6 +420,7 @@ private struct ExternalProjectList: View {
             Text("Projects")
                 .font(GraftFont.display(metrics.title, .bold))
                 .foregroundStyle(Color.gInk)
+            ExternalSearchLine(query: query, metrics: metrics)
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: metrics.gap * 0.5) {
@@ -510,6 +563,180 @@ private struct ExternalNewIssue: View {
     }
 }
 
+// MARK: New project
+
+/// The new-project form as it is typed; see `ExternalNewIssue`.
+private struct ExternalNewProject: View {
+    let draft: ExternalProjectDraft
+    let metrics: ExternalMetrics
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: metrics.gap) {
+            Text("NEW PROJECT")
+                .font(GraftFont.text(metrics.caption, .semibold))
+                .kerning(1)
+                .foregroundStyle(Color.gInk2)
+            ExternalTypedField(text: draft.name, placeholder: "What is it called?",
+                               active: draft.field == "name",
+                               font: GraftFont.display(metrics.title * 1.2, .bold), metrics: metrics)
+            FlowRow(spacing: metrics.gap * 0.5) {
+                ExternalChip(text: GraftPalette.swatches.first { $0.hex == draft.colour }?.name ?? "Colour",
+                             tint: Color(hex: draft.colour), metrics: metrics) {
+                    Circle().fill(Color(hex: draft.colour)).frame(width: metrics.caption * 0.7)
+                }
+                ExternalChip(text: draft.status.capitalized, tint: .gInk2, metrics: metrics) {
+                    Image(systemName: "circle.dashed")
+                }
+                ExternalChip(text: draft.areaName.isEmpty ? "No area" : draft.areaName,
+                             tint: .gInk2, metrics: metrics) {
+                    Image(systemName: "square.stack")
+                }
+            }
+            Rectangle().fill(Color.gHairline).frame(height: 1)
+            ExternalTypedField(text: draft.description, placeholder: "Description",
+                               active: draft.field == "description",
+                               font: GraftFont.text(metrics.body), metrics: metrics)
+            ExternalTypedField(text: draft.tags, placeholder: "Tags",
+                               active: draft.field == "tags",
+                               font: GraftFont.text(metrics.body), metrics: metrics)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// A form field on the monitor: the text, or its placeholder, with a caret
+/// and an underline while it has the keyboard.
+private struct ExternalTypedField: View {
+    let text: String
+    let placeholder: String
+    let active: Bool
+    let font: Font
+    let metrics: ExternalMetrics
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: metrics.gap * 0.3) {
+            (Text(text.isEmpty && !active ? placeholder : text)
+                .foregroundStyle(text.isEmpty ? Color.gInk3 : Color.gInk)
+             + Text(active ? "▏" : "").foregroundStyle(Color.gAccent))
+                .font(font)
+                .fixedSize(horizontal: false, vertical: true)
+            Rectangle()
+                .fill(active ? Color.gAccent : Color.clear)
+                .frame(height: 2)
+        }
+    }
+}
+
+private struct ExternalChip<Glyph: View>: View {
+    let text: String
+    let tint: Color
+    let metrics: ExternalMetrics
+    @ViewBuilder let glyph: () -> Glyph
+
+    var body: some View {
+        HStack(spacing: metrics.gap * 0.3) {
+            glyph()
+            Text(text)
+        }
+        .font(GraftFont.text(metrics.caption, .medium))
+        .foregroundStyle(tint)
+        .padding(.horizontal, metrics.gap * 0.5)
+        .padding(.vertical, metrics.gap * 0.25)
+        .background(tint.opacity(0.12), in: Capsule())
+    }
+}
+
+// MARK: Keys, search, undo
+
+/// The `?` sheet, from the same table the phone draws.
+private struct ExternalShortcuts: View {
+    let metrics: ExternalMetrics
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: metrics.gap) {
+            Text("Keyboard")
+                .font(GraftFont.display(metrics.title, .bold))
+                .foregroundStyle(Color.gInk)
+            // Two columns: the table is taller than a monitor is at Large.
+            let groups = KeyboardShortcutsView.groups
+            let half = (groups.count + 1) / 2
+            HStack(alignment: .top, spacing: metrics.gap * 2) {
+                column(Array(groups.prefix(half)))
+                column(Array(groups.dropFirst(half)))
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func column(_ groups: [KeyboardShortcutsView.ShortcutGroup]) -> some View {
+        VStack(alignment: .leading, spacing: metrics.gap) {
+            ForEach(groups, id: \.title) { group in
+                VStack(alignment: .leading, spacing: metrics.gap * 0.35) {
+                    Text(group.title.uppercased())
+                        .font(GraftFont.text(metrics.caption, .semibold))
+                        .kerning(1)
+                        .foregroundStyle(Color.gInk2)
+                    ForEach(group.shortcuts) { shortcut in
+                        HStack(alignment: .firstTextBaseline, spacing: metrics.gap * 0.6) {
+                            Text(shortcut.keys)
+                                .font(GraftFont.mono(metrics.caption, .medium))
+                                .foregroundStyle(Color.gInk)
+                                .frame(width: metrics.caption * 7, alignment: .leading)
+                            Text(shortcut.action)
+                                .font(GraftFont.text(metrics.caption))
+                                .foregroundStyle(Color.gInk2)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// "Searching: foo" over a list a search has narrowed, so a filter left in
+/// place after esc is not a list that has quietly lost rows.
+private struct ExternalSearchLine: View {
+    let query: String
+    let metrics: ExternalMetrics
+
+    var body: some View {
+        if !query.trimmingCharacters(in: .whitespaces).isEmpty || ExternalDisplayModel.shared.searching {
+            HStack(spacing: metrics.gap * 0.4) {
+                Image(systemName: "magnifyingglass")
+                (Text(query) + Text(ExternalDisplayModel.shared.searching ? "▏" : "").foregroundStyle(Color.gAccent))
+                    .foregroundStyle(Color.gInk)
+                if !ExternalDisplayModel.shared.searching {
+                    Text("· / to change").foregroundStyle(Color.gInk3)
+                }
+            }
+            .font(GraftFont.text(metrics.caption, .medium))
+            .foregroundStyle(Color.gInk2)
+        }
+    }
+}
+
+private struct ExternalUndoBanner: View {
+    let message: String
+    let metrics: ExternalMetrics
+
+    var body: some View {
+        HStack(spacing: metrics.gap * 0.6) {
+            Image(systemName: "arrow.uturn.backward")
+            Text(message).foregroundStyle(Color.gInk)
+            Text("u to undo").foregroundStyle(Color.gAccentText)
+        }
+        .font(GraftFont.text(metrics.body, .medium))
+        .foregroundStyle(Color.gInk2)
+        .padding(.horizontal, metrics.gap)
+        .padding(.vertical, metrics.gap * 0.6)
+        .background(Color.gSurface2, in: RoundedRectangle(cornerRadius: GraftMetrics.radius))
+        .overlay(RoundedRectangle(cornerRadius: GraftMetrics.radius)
+            .strokeBorder(Color.gLine2, lineWidth: GraftMetrics.border))
+        .padding(.bottom, metrics.gap)
+    }
+}
+
 // MARK: Panels
 
 /// One issue, read from across a desk. `compact` is the preview beside a list;
@@ -521,9 +748,19 @@ private struct ExternalIssuePanel: View {
     let store: GraftStore
     let metrics: ExternalMetrics
     let compact: Bool
+    var editing: ExternalEdit? = nil
+    var nextTitle: String? = nil
 
-    init(issue: GraftIssue, store: GraftStore, metrics: ExternalMetrics, compact: Bool) {
+    init(issue: GraftIssue, store: GraftStore, metrics: ExternalMetrics, compact: Bool,
+         editing: ExternalEdit? = nil, nextTitle: String? = nil) {
         passed = issue; self.store = store; self.metrics = metrics; self.compact = compact
+        self.editing = editing; self.nextTitle = nextTitle
+    }
+
+    /// A field being typed into, as typed, with a caret; otherwise as stored.
+    private func typed(_ field: String, stored: String) -> (text: String, active: Bool) {
+        guard let editing, editing.field == field else { return (stored, false) }
+        return (editing.text, true)
     }
 
     var body: some View {
@@ -544,12 +781,16 @@ private struct ExternalIssuePanel: View {
                 .foregroundStyle(Color.gInk2)
             }
 
-            Text(issue.title)
+            let title = typed("title", stored: issue.title)
+            (Text(title.text) + Text(title.active ? "▏" : "").foregroundStyle(Color.gAccent))
                 .font(GraftFont.display(compact ? metrics.title : metrics.title * 1.2, .bold))
                 .foregroundStyle(Color.gInk)
                 .fixedSize(horizontal: false, vertical: true)
 
             FlowRow(spacing: metrics.gap * 0.5) {
+                if issue.archived {
+                    chip("Archived", tint: .gInk2) { Image(systemName: "archivebox") }
+                }
                 chip(status.label, tint: status.color) {
                     StatusRing(status: status, size: metrics.caption)
                 }
@@ -575,11 +816,21 @@ private struct ExternalIssuePanel: View {
                 }
             }
 
+            if let nextTitle {
+                Label("Done — the next one is \(nextTitle). o opens it.", systemImage: "repeat")
+                    .font(GraftFont.text(metrics.caption, .medium))
+                    .foregroundStyle(Color.gAccentText)
+            }
+
             Rectangle().fill(Color.gHairline).frame(height: 1)
 
             ScrollView(showsIndicators: false) {
                 Group {
-                    if issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let description = typed("description", stored: issue.description)
+                    if description.active {
+                        (Text(description.text) + Text("▏").foregroundStyle(Color.gAccent))
+                            .foregroundStyle(Color.gInk)
+                    } else if issue.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text("No description.")
                             .foregroundStyle(Color.gInk3)
                     } else {

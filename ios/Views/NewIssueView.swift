@@ -69,7 +69,7 @@ struct NewIssueView: View {
         }
         return ExternalDraft(title: title, description: description, projectId: selectedProjectId,
                              status: status, priority: priority, dueAt: dueAt, assignee: assignee,
-                             labels: labelsText, field: field)
+                             labels: labelsText, field: field, noProjects: availableProjects.isEmpty)
     }
 
     private var canSave: Bool {
