@@ -390,6 +390,18 @@ struct GraftNotification: Decodable, Identifiable, Hashable {
         case issueProjectId = "issue_project_id"
     }
 
+    /// A row worked out on the phone, for a library with no server to ask.
+    /// See `NotificationScheduler.desiredLocally`.
+    init(id: String, issueId: String, kind: String, fireAt: String,
+         issueTitle: String? = nil, issueStatus: String? = nil) {
+        self.id = id
+        self.issueId = issueId
+        self.kind = kind
+        self.fireAt = fireAt
+        self.issueTitle = issueTitle
+        self.issueStatus = issueStatus
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         func text(_ key: CodingKeys) -> String? {

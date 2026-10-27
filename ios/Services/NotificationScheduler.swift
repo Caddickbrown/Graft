@@ -4,7 +4,8 @@ import UserNotifications
 
 // MARK: - NotificationScheduler
 //
-// Turns the server's `notifications` rows into iOS local notifications.
+// Turns the server's `notifications` rows into iOS local notifications — or,
+// with no server, the same rows worked out on the phone (`rescheduleLocally`).
 //
 // Local, not push. There is no APNs here and no push entitlement: the Pi has no
 // certificate, no token store and no reason to hold either, and everything the
@@ -280,6 +281,75 @@ final class NotificationScheduler {
             return
         }
 
+        await rebuild(current: current, undelivered: undelivered, now: now,
+                      digestBody: digestBody, ack: (api: api, base: base))
+    }
+
+    /// The same rebuild for a library with no server: the rows the server's
+    /// `_desired_notifications` would hold, worked out from this phone's own
+    /// issues. Every one is undelivered as far as anybody knows, and the
+    /// ledger is what stops one that has already fired from firing again, as
+    /// it is with a server. There is nobody to ack to.
+    func rescheduleLocally(issues: [GraftIssue], digestBody: String) async {
+        guard isEnabled else { return }
+        await refreshAuthorization()
+        guard authorization == .granted || authorization == .grantedQuietly else { return }
+
+        let now = Date()
+        let horizonSince = Self.stamp(now.addingTimeInterval(-Self.staleAfter))
+        // The server's `since`, compared as text the same way.
+        let rows = Self.desiredLocally(issues: issues, today: .todayUTC)
+            .filter { $0.fireAt >= horizonSince }
+        lastError = nil
+        await rebuild(current: rows, undelivered: rows, now: now, digestBody: digestBody, ack: nil)
+    }
+
+    /// `_desired_notifications` in `server/app.py`, with the same ids
+    /// (`_note_id`), so a phone that later connects finds its ledger already
+    /// agrees with the server about what has been shown.
+    static func desiredLocally(issues: [GraftIssue], today: GraftDay) -> [GraftNotification] {
+        let noteHour = "09:00:00"     // _NOTE_HOUR
+        let digestHour = "08:00:00"   // _DIGEST_HOUR
+        let todayISO = today.iso
+
+        func note(_ kind: String, _ issue: GraftIssue?, _ fireAt: String) -> GraftNotification {
+            let issueId = issue?.id ?? ""
+            return GraftNotification(
+                id: "note_" + String(GraftHash.sha1Hex("\(kind)|\(issueId)|\(fireAt)").prefix(12)),
+                issueId: issueId, kind: kind, fireAt: fireAt,
+                issueTitle: issue?.title, issueStatus: issue?.status)
+        }
+
+        var wanted: [GraftNotification] = []
+        for issue in issues {
+            if issue.archived || issue.status == "done" { continue }
+            let start = issue.startAt.trimmingCharacters(in: .whitespaces)
+            let due = issue.dueAt.trimmingCharacters(in: .whitespaces)
+            if !start.isEmpty {
+                wanted.append(note("starting", issue, "\(start)T\(noteHour)"))
+            }
+            if !due.isEmpty {
+                wanted.append(note("due", issue, "\(due)T\(noteHour)"))
+                // From the morning after the due date, so the row stops moving
+                // once it exists.
+                if due < todayISO, let day = GraftDay(iso: due) {
+                    wanted.append(note("overdue", issue, "\(day.adding(days: 1).iso)T\(noteHour)"))
+                }
+            }
+        }
+        wanted.append(note("digest", nil, "\(todayISO)T\(digestHour)"))
+        return wanted
+    }
+
+    /// Reap, fold in, rank, schedule and — with a server — ack. Shared by both
+    /// sources; see `reschedule` for the rules.
+    private func rebuild(
+        current: [GraftNotification],
+        undelivered: [GraftNotification],
+        now: Date,
+        digestBody: String,
+        ack: (api: APIService, base: String)?
+    ) async {
         guard !current.isEmpty || !ledger.isEmpty else {
             await clearPending()
             scheduledCount = 0
@@ -354,8 +424,9 @@ final class NotificationScheduler {
             .map(\.id)
         saveLedger()
 
+        guard let ack else { return }
         for id in delivered + ownAcks {
-            if (try? await api.ackNotification(base: base, id: id)) != nil {
+            if (try? await ack.api.ackNotification(base: ack.base, id: id)) != nil {
                 ledger[id]?.acked = true
             }
         }

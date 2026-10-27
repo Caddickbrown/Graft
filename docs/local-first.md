@@ -162,18 +162,46 @@ Why:
 - An empty phone connecting is a plain download, with no merge. An empty
   server is a plain upload through the same sheet.
 
-## Phase 4: what the server still computes
+## Phase 4: what the server computes, on the phone (done)
 
-These things work today only because the server does them. A phone-only Graft
-lacks them until they move:
-- **Completing a recurring issue** spawns the next occurrence on the server
-  (`spawned` in the `PUT` reply). With no server, the series stops at the one
-  completed. `Recurrence.swift` already parses the rule, and computing the next
-  due date is the missing half.
-- **Reminders** are built from `/api/notifications`. With no server there are
-  none, and Settings says so.
-- **The series view and the digest** read server endpoints. Both already fall
-  back to the local cache, which says less.
+A phone whose writes stay local (no server, or one it hasn't been merged into
+yet) now does these for itself, by the server's own rules:
+
+- **Completing a recurring issue** spawns the next occurrence.
+  - `ios/Models/RecurrenceSchedule.swift` ports the server's date rules:
+    `_parse_recurrence` (strict, so a rule the server would refuse spawns
+    nothing), `_next_occurrence` and `_recurrence_next_dates`. Dates are day
+    numbers with no time zone, like Python's `date`. "Today" is UTC, as the
+    server's `utcnow().date()` is.
+  - `GraftStore.spawnLocally` ports `_spawn_next_occurrence` and the
+    completion rule in `update_issue`:
+    - "done now and not done before";
+    - COUNT spends one per row in the series;
+    - the id is `iss_` + sha1(`root|start|due`)[:12], so repeats collapse;
+    - the completed issue is archived once there is a next one;
+    - `lastSpawned` is set, as the server's `spawned` reply sets it.
+  - The port was checked against the server's own functions: the date
+    arithmetic was transliterated, Swift integer division included, and
+    compared on 20,000 random rules and dates.
+- **Reminders** come from the phone's own issues.
+  - `NotificationScheduler.desiredLocally` ports `_desired_notifications`
+    (starting, due, overdue the morning after, and the daily digest), with
+    `_note_id`'s ids.
+  - The rows go through the same rebuild as the server's: the 64 cap, the
+    ledger, catch-up, and no re-firing. Nothing is acked.
+  - Because the ids match, a phone that later connects finds its ledger
+    already agrees with the server about what has been shown.
+  - The rebuild runs two seconds after the last write, and on foreground.
+
+Left, because they need a server by nature:
+- **`assigned` notifications.** They tell you someone *else* gave you
+  something. On a phone of one, nobody else can.
+- **The digest endpoint and the series endpoint.** The digest's notification
+  line is already written on the phone (`digestLine`). The series view falls
+  back to the local cache, which for a phone-only library is the whole series,
+  and says so.
+- **Search through the server's `q`** (`refreshIssues`). Filtering is already
+  local and complete.
 
 ## Risks
 

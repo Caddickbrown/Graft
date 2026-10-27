@@ -415,14 +415,37 @@ final class GraftStore {
     /// not been merged into it yet: those writes are in the library the merge
     /// will send, and queuing them as well would replay them on top of it.
     private func send(method: String, path: String, body: Data? = nil) {
-        guard isServerConfigured, !connectWouldReplaceLocalWork else {
+        guard !writesStayLocal else {
             if !unsyncedLocalWork {
                 unsyncedLocalWork = true
                 saveSettings()
             }
+            scheduleLocalReminders()
             return
         }
         syncEngine.enqueue(method: method, path: path, body: body)
+    }
+
+    /// No server to send to, or one this phone's library hasn't been merged
+    /// into yet. Either way a write ends in the library, and whatever a server
+    /// would have done in answer to it — the next occurrence of a recurring
+    /// issue, the reminders — is done here instead.
+    private var writesStayLocal: Bool {
+        !isServerConfigured || connectWouldReplaceLocalWork
+    }
+
+    /// A rebuild of the local reminders, a moment after the last write rather
+    /// than on every one: the issue form writes on a debounce, and a due date
+    /// typed in costs one rebuild, not three.
+    @ObservationIgnored private var reminderRebuild: Task<Void, Never>?
+
+    private func scheduleLocalReminders() {
+        reminderRebuild?.cancel()
+        reminderRebuild = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await self?.rescheduleNotifications()
+        }
     }
 
     /// A pull landed, so whatever this phone holds now came from a server.
@@ -565,6 +588,10 @@ final class GraftStore {
     /// Rebuilds the pending notification set. Rebuild, not append: a due date
     /// that moved has to take its notification with it.
     func rescheduleNotifications(base: String? = nil) async {
+        if base == nil && writesStayLocal {
+            await notifications.rescheduleLocally(issues: issues, digestBody: digestLine)
+            return
+        }
         guard let target = base ?? activeBase else { return }
         await notifications.reschedule(base: target, api: api, digestBody: digestLine)
     }
@@ -891,7 +918,9 @@ final class GraftStore {
             if issues[idx].assignee != updated.assignee {
                 notifications.noteOwnAssignment(issueId: issue.id)
             }
+            let previousStatus = issues[idx].status
             issues[idx] = updated
+            spawnLocally(previousStatus: previousStatus, completed: updated)
         }
         saveCachedData()
 
@@ -903,9 +932,11 @@ final class GraftStore {
     func updateIssueStatus(id: String, status: String) async throws {
         guard let idx = issues.firstIndex(where: { $0.id == id }) else { return }
         var updated = issues[idx]
+        let previousStatus = updated.status
         updated.status = status
         updated.updatedAt = nowISO()
         issues[idx] = updated
+        spawnLocally(previousStatus: previousStatus, completed: updated)
         saveCachedData()
 
         let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: updated.updatedAt))
@@ -967,6 +998,7 @@ final class GraftStore {
         if statusChanged, let idx = issues.firstIndex(where: { $0.id == id }) {
             issues[idx].status = status
             issues[idx].updatedAt = ts
+            spawnLocally(previousStatus: moving.status, completed: issues[idx])
         }
         saveCachedData()
 
@@ -1057,6 +1089,63 @@ final class GraftStore {
         saveCachedData()
         lastSpawned = spawned
         return spawned
+    }
+
+    /// The server's answer to completing a recurring issue, given here when
+    /// there is no server to give it: `update_issue`'s completion rule and
+    /// `_spawn_next_occurrence` in `server/app.py`, step for step. See
+    /// `RecurrenceSchedule` for the date half.
+    ///
+    /// Completed means "done now and not done before", so renaming a finished
+    /// issue spawns nothing. The new id is derived from the series root and the
+    /// dates, as the server's is, so doing it twice makes one occurrence. If
+    /// there is a next one, the completed issue is archived, and `lastSpawned`
+    /// tells the screen, exactly as `applySpawn` does with the server's reply.
+    private func spawnLocally(previousStatus: String, completed issue: GraftIssue) {
+        guard writesStayLocal, previousStatus != "done", issue.status == "done",
+              let rule = RecurrenceSchedule.Rule(issue.recurrence) else { return }
+
+        let parent = issue.recurrenceParent.trimmingCharacters(in: .whitespaces)
+        let root = parent.isEmpty ? issue.id : parent
+
+        // COUNT spends one per issue the series has made, skipped dates aside.
+        if let count = rule.count {
+            let made = issues.filter { $0.id == root || $0.recurrenceParent == root }.count
+            if made >= count { return }
+        }
+
+        guard let next = RecurrenceSchedule.nextDates(for: issue, completedOn: .todayUTC) else { return }
+        let newId = "iss_" + String(GraftHash.sha1Hex("\(root)|\(next.start)|\(next.due)").prefix(12))
+        let ts = issue.updatedAt
+
+        if !issues.contains(where: { $0.id == newId }) {
+            issues.append(GraftIssue(
+                id: newId,
+                projectId: issue.projectId,
+                milestoneId: issue.milestoneId,
+                milestoneName: issue.milestoneName,
+                title: issue.title,
+                description: issue.description,
+                status: "backlog",
+                priority: issue.priority,
+                labels: issue.labels,
+                assignee: issue.assignee,
+                startAt: next.start,
+                dueAt: next.due,
+                recurrence: issue.recurrence,
+                recurrenceAnchor: issue.recurrenceAnchor,
+                recurrenceParent: root,
+                sortOrder: issue.sortOrder,
+                archived: false,
+                createdAt: ts,
+                updatedAt: ts
+            ))
+        }
+        if let idx = issues.firstIndex(where: { $0.id == issue.id }) {
+            issues[idx].archived = true
+            issues[idx].updatedAt = ts
+        }
+        lastSpawned = issues.first(where: { $0.id == newId })
     }
 
     func archiveIssue(id: String) async throws {

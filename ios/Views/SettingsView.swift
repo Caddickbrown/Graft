@@ -590,7 +590,7 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !piEnabled {
-                    Text("Reminders are worked out by a server, so with none connected there is nothing to schedule yet.")
+                    Text("No server connected, so reminders are worked out on this phone, from its own issues.")
                         .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk3)
                         .fixedSize(horizontal: false, vertical: true)
