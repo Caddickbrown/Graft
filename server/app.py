@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from flask import Flask, g, jsonify, request, send_from_directory
 
-DB_PATH = os.environ.get("GRAFT_DB", "/home/dcb/graft/graft.db")
+DB_PATH = os.environ.get("GRAFT_DB", str(Path(__file__).resolve().parent.parent / "graft.db"))
 WEB_DIR = Path(__file__).parent.parent / "web"
 
 app = Flask(__name__, static_folder=None)
