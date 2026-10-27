@@ -25,6 +25,9 @@ struct InboxView: View {
     /// The row the hardware keyboard is on, by id. See `graftKeyList`.
     @State private var keySelection: String?
     @State private var searchFocus = 0
+    /// Done issues are left out unless this is on. Remembered, like the
+    /// Inbox's filters.
+    @AppStorage("graft.inbox.showDone") private var showDone = false
 
     // MARK: - Data
 
@@ -33,7 +36,7 @@ struct InboxView: View {
     /// apart — the difference between "Tap + to plant your first issue" and a
     /// filter that is quietly hiding 41 of them.
     private var candidates: [GraftIssue] {
-        store.inbox()
+        store.inbox(includeDone: showDone)
     }
 
     private var query: IssueQuery { store.inboxQuery }
@@ -49,19 +52,30 @@ struct InboxView: View {
     /// specific claim and wins; the milestone stays as the fallback, so nothing
     /// that was flagged before this existed quietly stopped being flagged.
     private var needsYou: [GraftIssue] {
-        visible.filter { store.needsYou($0) }
+        open.filter { store.needsYou($0) }
+    }
+
+    /// What the sections and the counts are about: everything but Done.
+    private var open: [GraftIssue] {
+        visible.filter { $0.status != "done" }
+    }
+
+    /// With the toggle on, finished issues, most recently touched first.
+    private var done: [GraftIssue] {
+        guard showDone else { return [] }
+        return visible.filter { $0.status == "done" }.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     private var moving: [GraftIssue] {
         let flagged = Set(needsYou.map(\.id))
-        return visible.filter { $0.status == "in-progress" && !flagged.contains($0.id) }
+        return open.filter { $0.status == "in-progress" && !flagged.contains($0.id) }
     }
 
     /// The catch-all. Anything the two sections above did not claim lands here,
     /// which is what stops the screen ever being blank while issues exist.
     private var backlog: [GraftIssue] {
         let claimed = Set(needsYou.map(\.id)).union(moving.map(\.id))
-        return visible.filter { !claimed.contains($0.id) }
+        return open.filter { !claimed.contains($0.id) }
     }
 
     /// The rows in the order they are drawn, sectioned, for the keyboard and
@@ -69,7 +83,7 @@ struct InboxView: View {
     private var keySections: [(title: String?, ids: [String])] {
         let sections: [(String, [GraftIssue])]
         if query.group == .none {
-            sections = [("Needs you", needsYou), ("In progress", moving), ("Backlog", backlog)]
+            sections = [("Needs you", needsYou), ("In progress", moving), ("Backlog", backlog), ("Done", done)]
         } else {
             sections = store.groups(visible, by: query.group).map { ($0.title, $0.issues) }
         }
@@ -77,18 +91,17 @@ struct InboxView: View {
     }
 
     private var summary: String {
-        let open = visible.count
-        let projects = Set(visible.map(\.projectId)).count
+        let projects = Set(open.map(\.projectId)).count
         // Overdue and due-today earn a place in the one line this screen always
         // shows — but only when there are any. A permanent "0 overdue" is how a
         // number stops being read. Same rule as the web client's Today page.
         var bits: [String] = []
-        let overdue = store.overdueCount(in: visible)
-        let dueToday = store.dueTodayCount(in: visible)
+        let overdue = store.overdueCount(in: open)
+        let dueToday = store.dueTodayCount(in: open)
         if overdue > 0 { bits.append("\(overdue) overdue") }
         if dueToday > 0 { bits.append("\(dueToday) due today") }
         bits.append("\(needsYou.count) need\(needsYou.count == 1 ? "s" : "") you")
-        bits.append("\(open) open across \(projects) project\(projects == 1 ? "" : "s")")
+        bits.append("\(open.count) open across \(projects) project\(projects == 1 ? "" : "s")")
         if query.isNarrowing { bits.append("filtered from \(candidates.count)") }
         return bits.joined(separator: " · ")
     }
@@ -146,6 +159,11 @@ struct InboxView: View {
                         Task { await store.refreshIssues(matching: snapshot) }
                     }
                     FilterButton(query: query) { showFilters = true }
+                    GraftIconButton(systemImage: showDone ? "checkmark.circle.fill" : "checkmark.circle",
+                                    tint: showDone ? .gAccentText : .gInk2,
+                                    accessibilityTitle: showDone ? "Hide done" : "Show done") {
+                        showDone.toggle()
+                    }
                 }
                 .padding(.horizontal, GraftMetrics.gutter)
                 .padding(.bottom, GraftMetrics.spaceS)
@@ -271,6 +289,7 @@ struct InboxView: View {
                             empty: "Nothing started yet. Move an issue to In progress when you pick it up.")
                     section("Backlog", backlog,
                             empty: "Everything open is already urgent or under way.")
+                    section("Done", done, empty: nil)
                 } else {
                     ForEach(store.groups(visible, by: query.group)) { group in
                         section(group.title, group.issues, empty: nil)

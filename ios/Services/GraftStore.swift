@@ -1156,9 +1156,11 @@ final class GraftStore {
     /// Archiving a project used to leave its issues in the Inbox forever: the
     /// project vanished from the Projects tab and its work carried on nagging
     /// from a screen with no way to act on it.
-    func inbox(assignee: String? = nil) -> [GraftIssue] {
+    /// `includeDone` is the Inbox's Done toggle: finished work stays out of the
+    /// way unless asked for.
+    func inbox(assignee: String? = nil, includeDone: Bool = false) -> [GraftIssue] {
         issues
-            .filter { !$0.archived && $0.status != "done" }
+            .filter { !$0.archived && (includeDone || $0.status != "done") }
             .filter { !isProjectArchived($0.projectId) }
             .filter { assignee == nil || $0.assignee == assignee }
             .sorted { a, b in
