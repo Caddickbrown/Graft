@@ -15,8 +15,8 @@ who write through the API.
 | Ids | Minted on the phone (`newId`, e.g. `iss_3f9a0c1e`); the server keeps a client's id | Unchanged. This part was already local-first |
 | Onboarding | "No server linked", with Settings as the only way forward | "Start using it" first, "Connect a server" second and in Settings later (**phase 2, done**) |
 | Writes with no server | Queued forever, to be replayed on whatever server appears | Not queued. The library is the record (**phase 2, done**) |
-| Connecting a phone that has its own data | Its rows were replaced by the server's on the first pull | Refused, with the reason, until phase 3 exists (**phase 2, done**) |
-| Merge on connect | n/a | Upload with matching, confirmation for lookalikes, nothing deleted (phase 3) |
+| Connecting a phone that has its own data | Its rows were replaced by the server's on the first pull | Nothing pulls or queues until the library is merged in (**phase 2, done**) |
+| Merge on connect | n/a | Upload with matching, confirmation for lookalikes, nothing deleted (**phase 3, done**) |
 | Recurring issues, reminders, digest, series | Computed by the server | Phone-side where it matters (phase 4) |
 
 ## Phase 1: the database (done)
@@ -48,20 +48,22 @@ who write through the API.
   all at once on connect, and the wrong shape for it: connecting should upload
   what the library *is*, not replay how it got there.
 - A write made with no server sets `GraftSettings.unsyncedLocalWork`. While
-  that is set and the library isn't empty, **Connect a server is refused**,
-  and the app says why. The first pull from a server replaces every list
-  wholesale (`fetchAll`), which would take the phone's own projects off the
-  phone. The store refuses the pull too, not just the Settings switch.
+  that is set and the library isn't empty, the store **neither pulls nor
+  queues**, even with a server set. The first pull from a server replaces
+  every list wholesale (`fetchAll`), which would take the phone's own projects
+  off the phone. Connecting in that state is done by a merge (phase 3).
 - A phone that was connected, disconnected and never edited can reconnect as
-  before: its rows came from that server. Turning the server off over a
-  non-empty library asks first and says this.
+  before: its rows came from that server. One that was edited while
+  disconnected merges, like a phone that never had a server. Turning the
+  server off over a non-empty library asks first and says this.
 - With no server, the sync strip says nothing. "Local only" on every list
   was a nag about the normal way to use the app.
 - Ops queued by an older build with no server stay in the queue. They replay
-  on connect, as they always would have, unless writes made since then have
-  turned on the refusal above.
+  on connect, as they always would have. If writes made since then call for a
+  merge instead, the queue is cleared once the merge is confirmed. The library
+  it would have rebuilt is newer, and has just been uploaded.
 
-## Phase 3: merge on connect
+## Phase 3: merge on connect (done)
 
 When a phone with its own data connects to a server that already has projects and
 issues, the owner's rule applies: **exact matches merge automatically, lookalikes
@@ -139,10 +141,26 @@ Why:
    filter. A view whose project was re-keyed or merged opens with a filter that
    matches nothing until it is edited.
 
-On the phone: Settings' Connect becomes *fetch the plan, show the lookalikes,
-apply, take the remap, pull*. `unsyncedLocalWork` clears only after the apply
-succeeds. An empty phone connecting is a plain download, and an empty server a
-plain upload through the same endpoint.
+### The phone side (done)
+
+- With a server set over a phone-only library, Settings shows **Upload this
+  phone's library** under the address. The sync strip says "Not on the server
+  yet" until it's done.
+- **Upload** asks for the dry run (`GraftStore.planMerge`) and opens
+  `MergeReviewView`.
+  - The view shows what will be created, merged and re-keyed.
+  - It lists the lookalikes with a Merge / Keep both choice. Same-named
+    projects start on Merge; issues and saved views start on Keep both.
+- **Upload** on the sheet applies (`applyMerge`).
+  - A `409`, meaning the server changed since the dry run, shows the new plan
+    and asks again. Nothing is written on either side.
+  - A network failure says so, and nothing on the phone changes.
+- **Only after the server confirms** is `unsyncedLocalWork` cleared, the old
+  queue dropped, and a full pull run. The pull replaces the lists with the
+  server's copy, which now holds everything. If that pull fails, the phone
+  keeps its own rows, under their old ids, until the next sync.
+- An empty phone connecting is a plain download, with no merge. An empty
+  server is a plain upload through the same sheet.
 
 ## Phase 4: what the server still computes
 
@@ -164,9 +182,11 @@ lacks them until they move:
 - **Import:** a cache file that doesn't decode isn't imported and isn't removed.
   The app starts empty, as it did before, and the file stays for a later build
   to read.
-- **Refusing to connect** is deliberately blunt. A phone-only user can't join a
-  server until phase 3, except by starting from an empty library. Markdown
-  export (Settings) keeps a readable copy meanwhile.
+- **Between the apply and the pull**, the phone's rows still carry their old
+  ids. The review sheet is modal while the apply is in flight, so nothing is
+  edited in that window. But a pull that fails afterwards leaves those ids in
+  place until the next one, and an edit to a row whose id was merged away
+  would be sent to an id the server doesn't have.
 - **Backups:** the database is in Application Support, which is in the device
   backup. For a phone with no server, that backup and the Markdown export are
   the only other copies.

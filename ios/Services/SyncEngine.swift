@@ -266,6 +266,16 @@ final class SyncEngine {
         saveDropped()
     }
 
+    /// Forgets every queued write. Only for the moment a merge has put the
+    /// whole library on the server: the library is newer than anything in the
+    /// queue, so replaying the queue afterwards could only put older values
+    /// back over the ones just uploaded. Not recorded as dropped, because
+    /// nothing was lost.
+    func clearPending() {
+        pendingOps.removeAll()
+        saveOps()
+    }
+
     /// Clears the record of what was thrown away, once the user has seen it.
     func clearDropped() {
         droppedOps = []

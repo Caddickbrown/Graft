@@ -52,11 +52,11 @@ final class GraftStore {
     ///
     /// With no server nothing is queued (see `send`), so these changes exist
     /// only in the library. The first pull from a server replaces every list
-    /// wholesale, which would take them off the phone, and uploading them into
-    /// a server that has its own projects is a merge this build doesn't do
-    /// yet. So while this is set and the library isn't empty, connecting is
-    /// refused — see `connectWouldReplaceLocalWork` and docs/local-first.md.
-    /// Cleared by the first pull that lands.
+    /// wholesale, which would take them off the phone, so while this is set and
+    /// the library isn't empty the store neither pulls nor queues. A server
+    /// connected in that state is joined by a merge instead (`planMerge`,
+    /// `applyMerge`), and this is cleared once the server confirms it. Also
+    /// cleared by any pull that lands. See docs/local-first.md.
     private(set) var unsyncedLocalWork = false
 
     // MARK: - Persisted view state
@@ -397,8 +397,8 @@ final class GraftStore {
     }
 
     /// Connecting now would pull a server's lists over changes that exist only
-    /// on this phone. Settings refuses to connect while this is true, and the
-    /// store refuses to pull, so the refusal holds whichever way a URL arrives.
+    /// on this phone. While it is true the store refuses to pull or queue,
+    /// whichever way a URL arrived, and Settings offers the merge instead.
     var connectWouldReplaceLocalWork: Bool {
         unsyncedLocalWork && !isLibraryEmpty
     }
@@ -410,8 +410,12 @@ final class GraftStore {
     /// that lands all at once on whatever server appears, and replaying how
     /// the library got here is the wrong way to put it on one. Connecting later
     /// is an upload of what the library *is* — see docs/local-first.md.
+    ///
+    /// The same holds while a server is set but this phone's own library has
+    /// not been merged into it yet: those writes are in the library the merge
+    /// will send, and queuing them as well would replay them on top of it.
     private func send(method: String, path: String, body: Data? = nil) {
-        guard isServerConfigured else {
+        guard isServerConfigured, !connectWouldReplaceLocalWork else {
             if !unsyncedLocalWork {
                 unsyncedLocalWork = true
                 saveSettings()
@@ -428,6 +432,54 @@ final class GraftStore {
             unsyncedLocalWork = false
             saveSettings()
         }
+    }
+
+    // MARK: - Joining a server
+
+    /// The library as `POST /api/merge` takes it.
+    private var mergeLibrary: GraftMergeRequest.Library {
+        GraftMergeRequest.Library(
+            areas: areas,
+            projects: projects,
+            milestones: milestones,
+            issues: issues,
+            links: links,
+            views: savedViews
+        )
+    }
+
+    /// What merging this phone's library into the server would do. A dry run:
+    /// nothing changes on either side.
+    func planMerge() async throws -> GraftMergePlan {
+        guard let base = activeBase else { throw URLError(.badURL) }
+        let body = GraftMergeRequest(library: mergeLibrary, decisions: [:])
+        return try await api.merge(base: base, body: body, apply: false)
+    }
+
+    /// Merges this phone's library into the server, with the user's answers
+    /// for the lookalikes, then pulls.
+    ///
+    /// Returns the server's plan. `applied` false means it held the merge back
+    /// (a lookalike nobody has answered, perhaps one that appeared since the
+    /// dry run) and wrote nothing; the caller shows the plan again.
+    ///
+    /// Nothing on the phone is touched until the server has said the merge is
+    /// done. Only then is `unsyncedLocalWork` cleared and the pull allowed to
+    /// replace the lists, with the server's copy, which now holds all of it.
+    /// If that pull fails, the phone keeps what it had, and the next sync
+    /// tries again.
+    func applyMerge(decisions: [String: String]) async throws -> GraftMergePlan {
+        guard let base = activeBase else { throw URLError(.badURL) }
+        let body = GraftMergeRequest(library: mergeLibrary, decisions: decisions)
+        let plan = try await api.merge(base: base, body: body, apply: true)
+        guard plan.applied else { return plan }
+        unsyncedLocalWork = false
+        saveSettings()
+        // Anything an older build queued is already in what was just merged,
+        // and older than it. See `SyncEngine.clearPending`.
+        syncEngine.clearPending()
+        await sync()
+        return plan
     }
 
     // MARK: - Flush pending ops to server
@@ -1704,6 +1756,9 @@ final class GraftStore {
     /// of five screens.
     enum ConnectionState: Equatable {
         case noServer
+        /// A server is set, and this phone's own library is waiting to be
+        /// merged into it from Settings.
+        case awaitingMerge
         case syncing
         case pending(Int)
         case failed(String)
@@ -1713,6 +1768,7 @@ final class GraftStore {
 
     var connection: ConnectionState {
         if !isServerConfigured { return .noServer }
+        if connectWouldReplaceLocalWork { return .awaitingMerge }
         if isLoading { return .syncing }
         if let dropped = syncEngine.droppedOps.last { return .failed(dropped.reason) }
         if let error = errorMessage { return .unreachable(error) }

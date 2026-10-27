@@ -22,11 +22,14 @@ struct SettingsView: View {
 
     @FocusState private var urlFieldFocused: Bool
     @State private var showShortcuts = false
-    /// "Connect a server" was turned on over changes that exist only on this
-    /// phone. See `GraftStore.connectWouldReplaceLocalWork`.
-    @State private var showConnectRefused = false
     /// "Connect a server" was turned off over a library that came from one.
     @State private var showDisconnectConfirm = false
+    /// The server's dry-run plan for this phone's library, while the review
+    /// sheet is up. See `MergeReviewView`.
+    @State private var mergePlan: GraftMergePlan?
+    @State private var isPlanningMerge = false
+    @State private var mergeMessage: String?
+    @State private var mergeFailed = false
 
     var lastSyncedString: String {
         guard let date = store.lastSynced else { return "Never" }
@@ -98,36 +101,47 @@ struct SettingsView: View {
             .onChange(of: serverURL) { _, _ in applySettings() }
             .onChange(of: fallbackURL) { _, _ in applySettings() }
             .onChange(of: piEnabled) { _, _ in applySettings() }
-            .alert("This phone's work isn't on a server yet", isPresented: $showConnectRefused) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(connectRefusedMessage)
+            .sheet(isPresented: Binding(get: { mergePlan != nil },
+                                        set: { if !$0 { mergePlan = nil } })) {
+                if let plan = mergePlan {
+                    MergeReviewView(plan: plan) { result in
+                        mergeFailed = false
+                        mergeMessage = "Uploaded. \(result.creates.count) new, \(result.exact.count) merged with what was already there."
+                    }
+                }
             }
             .confirmationDialog("Disconnect from the server?", isPresented: $showDisconnectConfirm,
                                 titleVisibility: .visible) {
                 Button("Disconnect", role: .destructive) { piEnabled = false }
                 Button("Stay connected", role: .cancel) {}
             } message: {
-                Text("Everything stays on this phone. Changes you make while disconnected stay here too. Sending them to a server comes in a later version, so you won't be able to reconnect after making them.")
+                Text("Everything stays on this phone. Changes you make while disconnected stay here too, and are merged back in when you reconnect, with anything that looks like the server's shown to you first.")
             }
         }
     }
 
-    /// Said when connecting is refused. Plain about the reason, and about the
-    /// fact that nothing has been lost.
-    private var connectRefusedMessage: String {
-        "Everything here was made without a server. Connecting now would put the server's projects in its place, and uploading into a server that has projects of its own isn't built yet. So Graft won't connect until it can upload, and nothing is lost. Export as Markdown, below, keeps a copy in the meantime."
+    /// Asks the server what merging this phone's library would do, and opens
+    /// the review sheet on its answer. A dry run: nothing changes anywhere.
+    private func startMerge() async {
+        applySettings()
+        isPlanningMerge = true
+        mergeMessage = nil
+        defer { isPlanningMerge = false }
+        do {
+            mergePlan = try await store.planMerge()
+        } catch {
+            mergeFailed = true
+            mergeMessage = "Couldn't reach the server: \(error.localizedDescription). Nothing has changed."
+        }
     }
 
-    /// The switch, with the two cases where flipping it straight away would be
-    /// wrong caught on the way.
+    /// The switch, with turning it off over a library that came from a server
+    /// caught on the way.
     private var connectBinding: Binding<Bool> {
         Binding(
             get: { piEnabled },
             set: { wanted in
-                if wanted && store.connectWouldReplaceLocalWork {
-                    showConnectRefused = true
-                } else if !wanted && store.isServerConfigured && !store.isLibraryEmpty {
+                if !wanted && store.isServerConfigured && !store.isLibraryEmpty {
                     showDisconnectConfirm = true
                 } else {
                     piEnabled = wanted
@@ -312,9 +326,60 @@ struct SettingsView: View {
                         text: $fallbackURL,
                         focused: $urlFieldFocused
                     )
+
+                    if store.connectWouldReplaceLocalWork {
+                        Divider().background(Color.gHairline)
+                        mergePanel
+                    } else if let mergeMessage {
+                        Text(mergeMessage)
+                            .font(GraftFont.text(GraftType.caption))
+                            .foregroundStyle(Color.gInk2)
+                            .padding(.vertical, GraftMetrics.spaceXS)
+                    }
                 }
             }
         }
+    }
+
+    /// What this phone's own library needs before the server can be used: an
+    /// upload, by way of the server's merge. Nothing syncs until it is done.
+    private var mergePanel: some View {
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceXS) {
+            Text("This phone's projects aren't on the server yet. Uploading merges them in. Anything that matches exactly is merged automatically, anything that only looks alike is shown to you first, and nothing on either side is deleted.")
+                .font(GraftFont.text(GraftType.caption))
+                .foregroundStyle(Color.gInk2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                Task { await startMerge() }
+            } label: {
+                HStack(spacing: GraftMetrics.spaceXS) {
+                    if isPlanningMerge {
+                        ProgressView().tint(Color.gOnAccent).scaleEffect(0.85)
+                    } else {
+                        Image(systemName: "arrow.up.circle")
+                            .font(.system(size: GraftType.secondary, weight: .medium))
+                    }
+                    Text(isPlanningMerge ? "Asking the server…" : "Upload this phone's library")
+                        .font(GraftFont.text(GraftType.secondary, .semibold))
+                }
+                .foregroundStyle(Color.gOnAccent)
+                .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap)
+                .background(serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+                            ? Color.gAccent.opacity(0.4) : Color.gAccent)
+                .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+            }
+            .buttonStyle(.plain)
+            .disabled(isPlanningMerge || serverURL.trimmingCharacters(in: .whitespaces).isEmpty)
+
+            if let mergeMessage {
+                Text(mergeMessage)
+                    .font(GraftFont.text(GraftType.caption))
+                    .foregroundStyle(mergeFailed ? Color.gRed : Color.gInk2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, GraftMetrics.spaceS)
     }
 
     // MARK: - Certificate trust

@@ -146,6 +146,28 @@ struct APIService: Sendable {
         try await get(base + "/api/issues?" + query.serverQueryString())
     }
 
+    /// `POST /api/merge`, as a dry run or (`apply`) for real.
+    ///
+    /// A 409 is an answer here, not a failure: it carries the plan with the
+    /// lookalikes still waiting on a decision, and means nothing was written.
+    func merge(base: String, body: GraftMergeRequest, apply: Bool) async throws -> GraftMergePlan {
+        guard let url = URL(string: base + "/api/merge" + (apply ? "?apply=1" : "")) else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        // A whole library, and on apply one transaction over all of it: longer
+        // than the ten seconds a single row is given.
+        request.timeoutInterval = 60
+        let (data, response) = try await session.data(for: request)
+        if (response as? HTTPURLResponse)?.statusCode != 409 {
+            try validateResponse(response)
+        }
+        return try JSONDecoder().decode(GraftMergePlan.self, from: data)
+    }
+
     // MARK: - Private
 
     /// `?a=b&c=d`, or `""`. Uses the same `+`-escaping fix as

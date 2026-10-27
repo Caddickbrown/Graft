@@ -199,6 +199,15 @@ struct SyncStrip: View {
             // fault, and a strip on every list asking to "Link" was a nag.
             EmptyView()
 
+        case .awaitingMerge:
+            strip(
+                icon: "arrow.up.circle",
+                tint: Color.gAmber,
+                title: "Not on the server yet",
+                detail: "This phone's projects are waiting to be uploaded",
+                actionTitle: "Upload"
+            ) { router.tab = .settings }
+
         case .syncing:
             strip(
                 icon: "arrow.triangle.2.circlepath",
