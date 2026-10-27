@@ -284,10 +284,20 @@ private struct ExternalIssueList: View {
 }
 
 private struct ExternalIssueRow: View {
-    let issue: GraftIssue
+    /// Read again from the store on every render. `GraftIssue`'s `==` compares
+    /// only the id (it is a navigation route too), so an issue passed in and
+    /// edited since compares equal, SwiftUI keeps the old body, and a `]` on the
+    /// phone never reached the monitor. Looking it up here makes the body depend
+    /// on the store itself. The panels below do the same.
+    private let passed: GraftIssue
+    private var issue: GraftIssue { store.issues.first { $0.id == passed.id } ?? passed }
     let store: GraftStore
     let metrics: ExternalMetrics
     let selected: Bool
+
+    init(issue: GraftIssue, store: GraftStore, metrics: ExternalMetrics, selected: Bool) {
+        passed = issue; self.store = store; self.metrics = metrics; self.selected = selected
+    }
 
     var body: some View {
         let done = issue.status == "done"
@@ -416,10 +426,16 @@ private struct ExternalProjectList: View {
 /// One issue, read from across a desk. `compact` is the preview beside a list;
 /// otherwise it is the whole screen and the description gets the room.
 private struct ExternalIssuePanel: View {
-    let issue: GraftIssue
+    /// Read from the store on every render; see `ExternalIssueRow`.
+    private let passed: GraftIssue
+    private var issue: GraftIssue { store.issues.first { $0.id == passed.id } ?? passed }
     let store: GraftStore
     let metrics: ExternalMetrics
     let compact: Bool
+
+    init(issue: GraftIssue, store: GraftStore, metrics: ExternalMetrics, compact: Bool) {
+        passed = issue; self.store = store; self.metrics = metrics; self.compact = compact
+    }
 
     var body: some View {
         let status = IssueStatus(rawValue: issue.status) ?? .backlog
@@ -524,9 +540,15 @@ private struct ExternalIssuePanel: View {
 
 /// A project under the selection: its numbers and the work that is moving.
 private struct ExternalProjectPanel: View {
-    let project: GraftProject
+    /// Read from the store on every render; see `ExternalIssueRow`.
+    private let passed: GraftProject
+    private var project: GraftProject { store.project(passed.id) ?? passed }
     let store: GraftStore
     let metrics: ExternalMetrics
+
+    init(project: GraftProject, store: GraftStore, metrics: ExternalMetrics) {
+        passed = project; self.store = store; self.metrics = metrics
+    }
 
     var body: some View {
         let issues = store.issues(for: project.id)
