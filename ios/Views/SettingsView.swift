@@ -22,6 +22,14 @@ struct SettingsView: View {
 
     @FocusState private var urlFieldFocused: Bool
     @State private var showShortcuts = false
+    /// "Connect a server" was turned off over a library that came from one.
+    @State private var showDisconnectConfirm = false
+    /// The server's dry-run plan for this phone's library, while the review
+    /// sheet is up. See `MergeReviewView`.
+    @State private var mergePlan: GraftMergePlan?
+    @State private var isPlanningMerge = false
+    @State private var mergeMessage: String?
+    @State private var mergeFailed = false
 
     var lastSyncedString: String {
         guard let date = store.lastSynced else { return "Never" }
@@ -93,7 +101,53 @@ struct SettingsView: View {
             .onChange(of: serverURL) { _, _ in applySettings() }
             .onChange(of: fallbackURL) { _, _ in applySettings() }
             .onChange(of: piEnabled) { _, _ in applySettings() }
+            .sheet(isPresented: Binding(get: { mergePlan != nil },
+                                        set: { if !$0 { mergePlan = nil } })) {
+                if let plan = mergePlan {
+                    MergeReviewView(plan: plan) { result in
+                        mergeFailed = false
+                        mergeMessage = "Uploaded. \(result.creates.count) new, \(result.exact.count) merged with what was already there."
+                    }
+                }
+            }
+            .confirmationDialog("Disconnect from the server?", isPresented: $showDisconnectConfirm,
+                                titleVisibility: .visible) {
+                Button("Disconnect", role: .destructive) { piEnabled = false }
+                Button("Stay connected", role: .cancel) {}
+            } message: {
+                Text("Everything stays on this phone. Changes you make while disconnected stay here too, and are merged back in when you reconnect, with anything that looks like the server's shown to you first.")
+            }
         }
+    }
+
+    /// Asks the server what merging this phone's library would do, and opens
+    /// the review sheet on its answer. A dry run: nothing changes anywhere.
+    private func startMerge() async {
+        applySettings()
+        isPlanningMerge = true
+        mergeMessage = nil
+        defer { isPlanningMerge = false }
+        do {
+            mergePlan = try await store.planMerge()
+        } catch {
+            mergeFailed = true
+            mergeMessage = "Couldn't reach the server: \(error.localizedDescription). Nothing has changed."
+        }
+    }
+
+    /// The switch, with turning it off over a library that came from a server
+    /// caught on the way.
+    private var connectBinding: Binding<Bool> {
+        Binding(
+            get: { piEnabled },
+            set: { wanted in
+                if !wanted && store.isServerConfigured && !store.isLibraryEmpty {
+                    showDisconnectConfirm = true
+                } else {
+                    piEnabled = wanted
+                }
+            }
+        )
     }
 
     // MARK: - Pending
@@ -220,22 +274,30 @@ struct SettingsView: View {
     }
 
     private var serverSection: some View {
-        SettingsSection(title: "Pi Server") {
+        SettingsSection(title: "Server") {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
                     Image(systemName: "server.rack")
                         .font(.system(size: 13))
                         .foregroundStyle(Color.gInk2)
                         .frame(width: 18)
-                    Text("Link to Pi server")
+                    Text("Connect a server")
                         .font(GraftFont.text(GraftType.secondary))
                         .foregroundStyle(Color.gInk)
                     Spacer()
-                    Toggle("", isOn: $piEnabled)
+                    Toggle("", isOn: connectBinding)
                         .tint(Color.gAccent)
                         .labelsHidden()
                 }
                 .frame(minHeight: GraftMetrics.tap)
+
+                if !piEnabled {
+                    Text("Graft is keeping everything on this phone. Connect your Pi to share projects and issues with the web client and everyone else who uses it.")
+                        .font(GraftFont.text(GraftType.caption))
+                        .foregroundStyle(Color.gInk2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 6)
+                }
 
                 if piEnabled {
                     Divider().background(Color.gHairline)
@@ -264,9 +326,60 @@ struct SettingsView: View {
                         text: $fallbackURL,
                         focused: $urlFieldFocused
                     )
+
+                    if store.connectWouldReplaceLocalWork {
+                        Divider().background(Color.gHairline)
+                        mergePanel
+                    } else if let mergeMessage {
+                        Text(mergeMessage)
+                            .font(GraftFont.text(GraftType.caption))
+                            .foregroundStyle(Color.gInk2)
+                            .padding(.vertical, GraftMetrics.spaceXS)
+                    }
                 }
             }
         }
+    }
+
+    /// What this phone's own library needs before the server can be used: an
+    /// upload, by way of the server's merge. Nothing syncs until it is done.
+    private var mergePanel: some View {
+        VStack(alignment: .leading, spacing: GraftMetrics.spaceXS) {
+            Text("This phone's projects aren't on the server yet. Uploading merges them in. Anything that matches exactly is merged automatically, anything that only looks alike is shown to you first, and nothing on either side is deleted.")
+                .font(GraftFont.text(GraftType.caption))
+                .foregroundStyle(Color.gInk2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                Task { await startMerge() }
+            } label: {
+                HStack(spacing: GraftMetrics.spaceXS) {
+                    if isPlanningMerge {
+                        ProgressView().tint(Color.gOnAccent).scaleEffect(0.85)
+                    } else {
+                        Image(systemName: "arrow.up.circle")
+                            .font(.system(size: GraftType.secondary, weight: .medium))
+                    }
+                    Text(isPlanningMerge ? "Asking the server…" : "Upload this phone's library")
+                        .font(GraftFont.text(GraftType.secondary, .semibold))
+                }
+                .foregroundStyle(Color.gOnAccent)
+                .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap)
+                .background(serverURL.trimmingCharacters(in: .whitespaces).isEmpty
+                            ? Color.gAccent.opacity(0.4) : Color.gAccent)
+                .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+            }
+            .buttonStyle(.plain)
+            .disabled(isPlanningMerge || serverURL.trimmingCharacters(in: .whitespaces).isEmpty)
+
+            if let mergeMessage {
+                Text(mergeMessage)
+                    .font(GraftFont.text(GraftType.caption))
+                    .foregroundStyle(mergeFailed ? Color.gRed : Color.gInk2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, GraftMetrics.spaceS)
     }
 
     // MARK: - Certificate trust
@@ -477,7 +590,7 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !piEnabled {
-                    Text("No server linked, so there is nothing to schedule from yet.")
+                    Text("No server connected, so reminders are worked out on this phone, from its own issues.")
                         .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk3)
                         .fixedSize(horizontal: false, vertical: true)

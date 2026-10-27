@@ -390,6 +390,18 @@ struct GraftNotification: Decodable, Identifiable, Hashable {
         case issueProjectId = "issue_project_id"
     }
 
+    /// A row worked out on the phone, for a library with no server to ask.
+    /// See `NotificationScheduler.desiredLocally`.
+    init(id: String, issueId: String, kind: String, fireAt: String,
+         issueTitle: String? = nil, issueStatus: String? = nil) {
+        self.id = id
+        self.issueId = issueId
+        self.kind = kind
+        self.fireAt = fireAt
+        self.issueTitle = issueTitle
+        self.issueStatus = issueStatus
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         func text(_ key: CodingKeys) -> String? {
@@ -714,11 +726,71 @@ struct GraftCachedData: Codable {
     }
 }
 
+// MARK: - Merging into a server
+//
+// `POST /api/merge`, which folds a phone-only library into a server that may
+// already hold projects and issues of its own. The rules are the server's; see
+// "Merging a phone-only library" in the README and docs/local-first.md.
+
+/// The request body. Each list is sent the way this phone caches it, which is
+/// the shape the server's own `GET`s answer with.
+struct GraftMergeRequest: Encodable {
+    struct Library: Encodable {
+        var areas: [GraftArea]
+        var projects: [GraftProject]
+        var milestones: [GraftMilestone]
+        var issues: [GraftIssue]
+        var links: [GraftLink]
+        var views: [GraftSavedView]
+    }
+
+    var library: Library
+    /// Phone id to `"merge"` or `"keep"`, for the lookalikes.
+    var decisions: [String: String]
+}
+
+/// What the server says a merge does, or did.
+struct GraftMergePlan: Decodable {
+    struct Entry: Decodable, Identifiable, Hashable {
+        let kind: String
+        let phoneId: String
+        let serverId: String
+        /// The lookalike's name or title, as the phone has it.
+        let name: String?
+        /// A lookalike's default answer. `nil` means it must be answered.
+        let defaultChoice: String?
+
+        var id: String { kind + "/" + phoneId }
+
+        enum CodingKeys: String, CodingKey {
+            case kind, name
+            case phoneId = "phone_id"
+            case serverId = "server_id"
+            case defaultChoice = "default"
+        }
+    }
+
+    let exact: [Entry]
+    let lookalikes: [Entry]
+    let creates: [Entry]
+    let collisions: [Entry]
+    let undecided: [String]
+    let remap: [String: String]
+    /// False on a dry run, and on an apply the server held back (409).
+    let applied: Bool
+}
+
 // MARK: - Settings Container
 
 struct GraftSettings: Codable {
     var serverURL: String
     var fallbackURL: String
+    /// "Start using it" was tapped on the welcome screen. Optional, like every
+    /// key added after the first build, so an older settings file still decodes.
+    var startedLocally: Bool?
+    /// Something was written on this phone while no server was configured.
+    /// See `GraftStore.unsyncedLocalWork`.
+    var unsyncedLocalWork: Bool?
 }
 
 // MARK: - Pending Operation (offline queue)

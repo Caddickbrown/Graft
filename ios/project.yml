@@ -43,7 +43,10 @@ targets:
         CODE_SIGN_STYLE: Automatic
     scheme:
       testTargets: []
-    dependencies: []
+    dependencies:
+      # System SQLite, for ios/Storage. No packages, so there is nothing to
+      # resolve on first open.
+      - sdk: libsqlite3.tbd
 schemes:
   Graft:
     build:

@@ -1,0 +1,36 @@
+name: Server
+
+on:
+  push:
+    branches: [ master ]
+    paths: [ 'server/**', 'requirements.txt', '.github/workflows/server.yml' ]
+  pull_request:
+    branches: [ master ]
+    paths: [ 'server/**', 'requirements.txt', '.github/workflows/server.yml' ]
+
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: Compile server
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compile
+        run: python -m py_compile server/app.py server/tests/*.py
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # The tests point GRAFT_DB at a temporary file before importing app.py and
+      # refuse to run if it lands anywhere else.
+      - name: Tests
+        run: python -m unittest discover -s server/tests -v

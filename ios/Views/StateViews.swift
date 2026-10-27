@@ -129,21 +129,52 @@ struct GraftErrorState: View {
 
 // MARK: - First run
 //
-// A new install used to see "No projects yet / Time to get grafting" — a
-// healthy-looking empty state with no hint that the app can be pointed at a
-// server, or that Settings is where you do it.
+// Graft runs on the phone with no server at all, so a new install is offered
+// that first. A server is the second choice, here or later in Settings. This
+// used to read "No server linked", which made the normal way to use the app
+// look like a fault waiting to be fixed.
 
-struct GraftNoServerState: View {
+struct GraftWelcomeState: View {
+    @Environment(GraftStore.self) private var store
     @Environment(GraftRouter.self) private var router
 
     var body: some View {
-        GraftEmptyState(
-            title: "No server linked",
-            subtitle: "Graft is working on its own on this phone. Link it to your Pi in Settings to sync with the web client — or carry on locally and link it later.",
-            systemImage: "antenna.radiowaves.left.and.right.slash",
-            actionTitle: "Open Settings",
-            action: { router.tab = .settings }
-        )
+        VStack(spacing: GraftMetrics.spaceS) {
+            Image(systemName: "leaf")
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(Color.gAccent)
+            Text("Welcome to Graft")
+                .font(GraftFont.display(GraftType.heading))
+                .foregroundStyle(Color.gInk)
+            Text("Projects and issues, kept on this phone. Connect a server whenever you want to share them with the web client and everyone else on it.")
+                .font(GraftFont.text(GraftType.body))
+                .foregroundStyle(Color.gInk2)
+                .multilineTextAlignment(.center)
+
+            Button {
+                store.startLocally()
+            } label: {
+                Text("Start using it")
+                    .font(GraftFont.text(GraftType.body, .semibold))
+                    .foregroundStyle(Color.gOnAccent)
+                    .frame(maxWidth: 280, minHeight: GraftMetrics.tap)
+                    .background(Color.gAccent, in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, GraftMetrics.spaceXXS)
+
+            Button {
+                router.tab = .settings
+            } label: {
+                Text("Connect a server")
+                    .font(GraftFont.text(GraftType.body, .medium))
+                    .foregroundStyle(Color.gAccentText)
+                    .frame(maxWidth: 280, minHeight: GraftMetrics.tap)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(GraftMetrics.space3XL)
     }
 }
 
@@ -164,12 +195,17 @@ struct SyncStrip: View {
             EmptyView()
 
         case .noServer:
+            // Nothing to say either. No server is a way to use Graft, not a
+            // fault, and a strip on every list asking to "Link" was a nag.
+            EmptyView()
+
+        case .awaitingMerge:
             strip(
-                icon: "antenna.radiowaves.left.and.right.slash",
-                tint: Color.gInk2,
-                title: "Local only",
-                detail: "Not linked to a server",
-                actionTitle: "Link"
+                icon: "arrow.up.circle",
+                tint: Color.gAmber,
+                title: "Not on the server yet",
+                detail: "This phone's projects are waiting to be uploaded",
+                actionTitle: "Upload"
             ) { router.tab = .settings }
 
         case .syncing:
