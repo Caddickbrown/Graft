@@ -20,6 +20,7 @@ struct GraftApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .modifier(ReducedMotion())
                 .environment(store)
                 .environment(router)
                 .preferredColorScheme(GraftTheme(rawValue: themeRaw)?.colorScheme)
@@ -345,6 +346,21 @@ struct RootView: View {
         }
         .onChange(of: colorScheme) { _, scheme in
             ExternalDisplayModel.shared.appColorScheme = scheme
+        }
+    }
+}
+
+/// Under Reduce Motion the app still changes; it just doesn't move. Covers
+/// withAnimation and .animation(_:value:) alike. See kit/specs/MOTION.md.
+private struct ReducedMotion: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.transaction { transaction in
+            if reduceMotion {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
         }
     }
 }

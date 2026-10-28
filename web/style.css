@@ -4,7 +4,7 @@
    Green is a highlight, not the wallpaper — the accent should appear
    four or five times on a screen, never as a wash over the furniture.
    ------------------------------------------------------------------ */
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Geist:wght@300..700&family=Geist+Mono:wght@400..600&display=swap');
+@import url('fonts/fonts.css'); /* self-hosted: no request leaves the app */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
