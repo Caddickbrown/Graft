@@ -265,7 +265,12 @@ struct RootView: View {
     @Environment(GraftStore.self) private var store
     @Environment(GraftRouter.self) private var router
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var showShortcuts = false
+    /// The regular-width "+" in the folded sidebar strip.
+    @State private var showNewIssue = false
+    /// The sidebar folded to a strip; remembered across launches.
+    @AppStorage("graft.sidebarCollapsed") private var sidebarCollapsed = false
 
     var body: some View {
         @Bindable var router = router
@@ -279,35 +284,51 @@ struct RootView: View {
         // TabView's own chrome but not passed down to the screen inside it, so
         // the + button on two of the three tabs sat half-under the bar. Stacked,
         // the TabView is simply given the height that is left.
-        VStack(spacing: 0) {
-            TabView(selection: $router.tab) {
-                InboxView()
-                    .tag(GraftTab.inbox)
-                    .toolbar(.hidden, for: .tabBar)
-
-                ProjectsView()
-                    .tag(GraftTab.projects)
-                    .toolbar(.hidden, for: .tabBar)
-
-                SettingsView()
-                    .tag(GraftTab.settings)
-                    .toolbar(.hidden, for: .tabBar)
+        //
+        // At regular width (iPad, an opened-out iPhone) the bar becomes a
+        // sidebar on the left. The `TabView` keeps its place in the same
+        // `HStack` either way, so a size-class change does not rebuild it.
+        HStack(spacing: 0) {
+            if sizeClass == .regular {
+                if sidebarCollapsed {
+                    GraftSideRail(onNew: { showNewIssue = true },
+                                  onExpand: { withAnimation(.easeInOut(duration: 0.2)) { sidebarCollapsed = false } })
+                } else {
+                    GraftSideBar(selection: $router.tab,
+                                 pendingCount: store.pendingBadgeCount,
+                                 favourites: favourites,
+                                 onReselect: reselect,
+                                 onOpenProject: openProject,
+                                 onCollapse: { withAnimation(.easeInOut(duration: 0.2)) { sidebarCollapsed = true } })
+                }
+                Rectangle()
+                    .fill(Color.gHairline)
+                    .frame(width: GraftMetrics.border)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
             }
-            .tint(Color.gAccent)
+            VStack(spacing: 0) {
+                TabView(selection: $router.tab) {
+                    InboxView()
+                        .tag(GraftTab.inbox)
+                        .toolbar(.hidden, for: .tabBar)
 
-            GraftTabBar(selection: $router.tab,
-                        pendingCount: store.pendingBadgeCount,
-                        onReselect: { tab in
-                            // Tapping the tab you are on: put the keyboard away
-                            // and unwind to the top of that section. Both, in
-                            // that order — if a search field has focus the
-                            // keyboard is what is in the way, and popping the
-                            // stack out from under a focused field without
-                            // dismissing it leaves the keyboard up over a
-                            // screen that has nothing for it to type into.
-                            graftDismissKeyboard()
-                            router.popToRoot(tab)
-                        })
+                    ProjectsView()
+                        .tag(GraftTab.projects)
+                        .toolbar(.hidden, for: .tabBar)
+
+                    SettingsView()
+                        .tag(GraftTab.settings)
+                        .toolbar(.hidden, for: .tabBar)
+                }
+                .tint(Color.gAccent)
+
+                if sizeClass != .regular {
+                    GraftTabBar(selection: $router.tab,
+                                pendingCount: store.pendingBadgeCount,
+                                onReselect: reselect)
+                }
+            }
         }
         .background(Color.gBg)
         // The keyboard's first responder for the whole app, and the keys that
@@ -337,6 +358,11 @@ struct RootView: View {
             }
         ), base: true)
         .sheet(isPresented: $showShortcuts) { KeyboardShortcutsView() }
+        .sheet(isPresented: $showNewIssue) {
+            // As the Inbox's own +: no project to assume, so NewIssueView offers
+            // the picker.
+            NewIssueView(projectId: store.projects.first(where: { !$0.archived })?.id ?? "")
+        }
         .onAppear {
             // The monitor's scene has no environment of its own to read these
             // from. See `ExternalDisplayModel`.
@@ -346,5 +372,31 @@ struct RootView: View {
         .onChange(of: colorScheme) { _, scheme in
             ExternalDisplayModel.shared.appColorScheme = scheme
         }
+    }
+
+    /// Tapping the tab you are on: put the keyboard away and unwind to the top
+    /// of that section. Both, in that order — if a search field has focus the
+    /// keyboard is what is in the way, and popping the stack out from under a
+    /// focused field without dismissing it leaves the keyboard up over a screen
+    /// that has nothing for it to type into.
+    private func reselect(_ tab: GraftTab) {
+        graftDismissKeyboard()
+        router.popToRoot(tab)
+    }
+
+    /// The sidebar's favourites: the projects Projects pins to its top.
+    private var favourites: [GraftProject] {
+        store.projects
+            .filter { $0.isFavourite && !$0.archived }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// A favourite in the sidebar opens its project on the Projects tab.
+    private func openProject(_ project: GraftProject) {
+        graftDismissKeyboard()
+        var path = NavigationPath()
+        path.append(GraftRoute.project(project.id))
+        router.projectsPath = path
+        router.tab = .projects
     }
 }

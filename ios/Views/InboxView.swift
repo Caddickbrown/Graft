@@ -18,6 +18,7 @@ import SwiftUI
 struct InboxView: View {
     @Environment(GraftStore.self) private var store
     @Environment(GraftRouter.self) private var router
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     @State private var showNewIssue = false
     @State private var showFilters = false
@@ -28,6 +29,17 @@ struct InboxView: View {
     /// Done issues are left out unless this is on. Remembered, like the
     /// Inbox's filters.
     @AppStorage("graft.inbox.showDone") private var showDone = false
+    /// The issue open beside the list, when there is room for both.
+    @State private var selectedIssue: GraftIssue?
+    /// The list and the open issue sit side by side rather than one over the
+    /// other. Set from the width the screen is given, below.
+    @State private var splitActive = false
+
+    /// The width this screen needs before an issue opens beside the list
+    /// instead of over it: iPad landscape does, iPad portrait with the sidebar
+    /// out doesn't.
+    private static let splitMinWidth: CGFloat = 700
+    private static let listWidth: CGFloat = 380
 
     // MARK: - Data
 
@@ -129,6 +141,106 @@ struct InboxView: View {
 
     var body: some View {
         NavigationStack(path: router.binding(for: .inbox)) {
+            root
+            .toolbar(.hidden, for: .navigationBar)
+            .graftKeyList(
+                ids: keySections.flatMap(\.ids),
+                selection: $keySelection,
+                display: { selected in
+                    .issues(title: "Inbox", items: ExternalListItem.sections(keySections), selected: selected,
+                            query: query.q)
+                },
+                onOpen: { id in
+                    guard let issue = store.issues.first(where: { $0.id == id }) else { return }
+                    if splitActive {
+                        selectedIssue = issue
+                    } else {
+                        router.inboxPath.append(GraftRoute.issue(issue))
+                    }
+                },
+                key: { k, selected in
+                    switch k {
+                    case "n": showNewIssue = true; return true
+                    case "/": searchFocus += 1; return true
+                    default:
+                        guard let selected else { return false }
+                        return store.handleIssueKey(k, issueId: selected) { undo = $0 }
+                    }
+                }
+            )
+            .graftRoutes()
+            .sheet(isPresented: $showFilters) {
+                FilterSortSheet(query: queryBinding)
+            }
+            .sheet(isPresented: $showNewIssue) {
+                // The Inbox spans every project, so there is no right project to
+                // assume — this used to hard-code the first one and file
+                // everything there. NewIssueView picks up the suggestion, offers
+                // a picker, and handles having no projects at all.
+                NewIssueView(projectId: store.projects.first(where: { !$0.archived })?.id ?? "")
+            }
+            .undoBanner($undo)
+        }
+    }
+
+    /// The phone: the list, exactly as it always was. Regular width: the list,
+    /// and beside it the open issue once the screen is wide enough for both.
+    @ViewBuilder
+    private var root: some View {
+        if sizeClass == .regular {
+            GeometryReader { geo in
+                let split = geo.size.width >= Self.splitMinWidth
+                HStack(spacing: 0) {
+                    listColumn
+                        .frame(width: split ? Self.listWidth : nil)
+                    if split {
+                        Rectangle()
+                            .fill(Color.gHairline)
+                            .frame(width: GraftMetrics.border)
+                            .ignoresSafeArea()
+                            .accessibilityHidden(true)
+                        detailColumn
+                    }
+                }
+                .onAppear { setSplit(split) }
+                .onChange(of: split) { _, now in setSplit(now) }
+            }
+            .background(Color.gBg.ignoresSafeArea())
+        } else {
+            listColumn
+                .onAppear { setSplit(false) }
+        }
+    }
+
+    /// Narrowed with an issue open beside the list: it carries on as a pushed
+    /// screen rather than vanishing.
+    private func setSplit(_ now: Bool) {
+        splitActive = now
+        if !now, let open = selectedIssue {
+            selectedIssue = nil
+            router.inboxPath.append(GraftRoute.issue(open))
+        }
+    }
+
+    /// The issue beside the list, or a quiet word when none is open.
+    @ViewBuilder
+    private var detailColumn: some View {
+        if let selectedIssue {
+            IssueDetailView(issue: selectedIssue, onClose: { self.selectedIssue = nil })
+                // A fresh screen per issue: its fields load once, on appear.
+                .id(selectedIssue.id)
+        } else {
+            GraftEmptyState(title: "No issue open",
+                            subtitle: "Choose one from the list, or start a new one.",
+                            systemImage: "square.and.pencil")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.gBg.ignoresSafeArea())
+        }
+    }
+
+    /// The header, the filters and the list — the whole screen on the phone,
+    /// the left column beside an open issue.
+    private var listColumn: some View {
             ZStack(alignment: .bottomTrailing) {
             VStack(spacing: 0) {
                 // The header, the filter row and the search field are all
@@ -136,6 +248,11 @@ struct InboxView: View {
                 // is hidden outright rather than restyled, because from iOS 26
                 // its items come wrapped in glass capsules we cannot reach.
                 GraftScreenHeader(title: "Inbox", subtitle: summary) {
+                    // Regular width: the + is here rather than floating, so it
+                    // never sits over the open issue's Mark done.
+                    if sizeClass == .regular {
+                        newIssueButton
+                    }
                     if store.isLoading {
                         ProgressView()
                             .tint(Color.gAccent)
@@ -172,47 +289,30 @@ struct InboxView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            GraftFAB(label: "New issue") { showNewIssue = true }
+            if sizeClass != .regular {
+                GraftFAB(label: "New issue") { showNewIssue = true }
+            }
             }
             // `.background` rather than a `Color` inside the stack: a child
             // that ignores the safe area drags the stack's own bounds down
             // with it, which is what used to push the + button under the bar.
             .background(Color.gBg.ignoresSafeArea())
-            .toolbar(.hidden, for: .navigationBar)
-            .graftKeyList(
-                ids: keySections.flatMap(\.ids),
-                selection: $keySelection,
-                display: { selected in
-                    .issues(title: "Inbox", items: ExternalListItem.sections(keySections), selected: selected,
-                            query: query.q)
-                },
-                onOpen: { id in
-                    guard let issue = store.issues.first(where: { $0.id == id }) else { return }
-                    router.inboxPath.append(GraftRoute.issue(issue))
-                },
-                key: { k, selected in
-                    switch k {
-                    case "n": showNewIssue = true; return true
-                    case "/": searchFocus += 1; return true
-                    default:
-                        guard let selected else { return false }
-                        return store.handleIssueKey(k, issueId: selected) { undo = $0 }
-                    }
-                }
-            )
-            .graftRoutes()
-            .sheet(isPresented: $showFilters) {
-                FilterSortSheet(query: queryBinding)
-            }
-            .sheet(isPresented: $showNewIssue) {
-                // The Inbox spans every project, so there is no right project to
-                // assume — this used to hard-code the first one and file
-                // everything there. NewIssueView picks up the suggestion, offers
-                // a picker, and handles having no projects at all.
-                NewIssueView(projectId: store.projects.first(where: { !$0.archived })?.id ?? "")
-            }
-            .undoBanner($undo)
+    }
+
+    /// The FAB's action as a pill in the header, for regular width.
+    private var newIssueButton: some View {
+        Button { showNewIssue = true } label: {
+            Text("+ Issue")
+                .font(GraftFont.text(GraftType.secondary, .semibold))
+                .foregroundStyle(Color.gOnAccent)
+                .padding(.horizontal, GraftMetrics.spaceS)
+                .frame(minHeight: GraftMetrics.control)
+                .background(Color.gAccent, in: Capsule())
+                .frame(minHeight: GraftMetrics.tap)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("New issue")
     }
 
     // MARK: - The five states
@@ -326,13 +426,7 @@ struct InboxView: View {
             }
 
             ForEach(issues) { issue in
-                NavigationLink(value: GraftRoute.issue(issue)) {
-                    GraftIssueRow(issue: issue,
-                                  project: store.project(issue.projectId),
-                                  due: store.dueDate(for: issue))
-                        .graftKeySelected(keySelection == issue.id)
-                }
-                .buttonStyle(.plain)
+                issueLink(issue)
                 .id(issue.id)
                 .padding(.horizontal, GraftMetrics.gutter)
                 .padding(.bottom, GraftMetrics.spaceXS)
@@ -347,6 +441,27 @@ struct InboxView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Pushed on the phone; beside the list, a tap opens it in the right pane.
+    @ViewBuilder
+    private func issueLink(_ issue: GraftIssue) -> some View {
+        let row = GraftIssueRow(issue: issue,
+                                project: store.project(issue.projectId),
+                                due: store.dueDate(for: issue))
+            .graftKeySelected(keySelection == issue.id || (splitActive && selectedIssue?.id == issue.id))
+        if splitActive {
+            Button {
+                // A tap takes over from the keyboard's row, so only one
+                // outline shows (and the list doesn't scroll to recentre it).
+                keySelection = nil
+                selectedIssue = issue
+            } label: { row }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink(value: GraftRoute.issue(issue)) { row }
+                .buttonStyle(.plain)
         }
     }
 

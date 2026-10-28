@@ -23,6 +23,7 @@ struct KeyboardShortcutsView: View {
             .init(keys: "esc", action: "Clear the selection, then go back"),
             .init(keys: "r", action: "Refresh"),
             .init(keys: "u  ⌘Z", action: "Undo an archive"),
+            .init(keys: "⌃⌘S", action: "Hide or show the sidebar (iPad)"),
             .init(keys: "?", action: "This sheet"),
         ]),
         ShortcutGroup(title: "Lists", shortcuts: [
