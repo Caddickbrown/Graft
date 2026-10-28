@@ -256,7 +256,7 @@ Hub writes one file per action into the App Group both apps share,
 
 ```json
 {"id": "<uuid>", "kind": "graft.update", "issue_id": "iss_xxxxxxxx",
- "fields": {"status": "done"}, "made_at": "2026-10-28T16:20:47Z", "source": "hub"}
+ "fields": {"status": "done"}, "made_at": "2026-10-28T16:20:47.312Z", "source": "hub"}
 ```
 
 `fields` holds absolute Graft fields (`title`, `description`, `status`,
