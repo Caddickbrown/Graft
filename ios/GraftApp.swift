@@ -27,6 +27,9 @@ struct GraftApp: App {
                     // On first launch: try to sync if a server is configured,
                     // otherwise just load from local cache (already done in init)
                     await store.sync()
+                    // Then anything Hub left for us, against the freshest copy
+                    // of the library there is. See `HubHandoff`.
+                    await HubHandoff.drain(into: store)
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active {
@@ -48,6 +51,9 @@ struct GraftApp: App {
                         // would be two network calls for nothing.
                         Task {
                             await store.flushPending()
+                            // After the pull `flushPending` ends with, so a Hub
+                            // edit is judged against the server's latest.
+                            await HubHandoff.drain(into: store)
                             await store.rescheduleNotifications()
                         }
                     }

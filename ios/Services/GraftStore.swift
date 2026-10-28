@@ -923,11 +923,14 @@ final class GraftStore {
         startAt: String = "",
         dueAt: String = "",
         recurrence: String = "",
-        recurrenceAnchor: String = "schedule"
+        recurrenceAnchor: String = "schedule",
+        id: String? = nil
     ) async throws {
         let ts = nowISO()
         let issue = GraftIssue(
-            id: newId("iss_"),
+            // An id is handed in only when another app minted it — Hub, through
+            // `HubHandoff` — and has to stay the same on both sides.
+            id: id ?? newId("iss_"),
             projectId: projectId,
             milestoneId: milestoneId,
             milestoneName: milestones.first(where: { $0.id == milestoneId })?.name,
