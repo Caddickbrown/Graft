@@ -20,6 +20,10 @@ struct IssueDetailView: View {
     @Environment(GraftRouter.self) private var router
 
     let issue: GraftIssue
+    /// Set when the issue is shown beside the Inbox list rather than pushed:
+    /// there is nothing to pop, so back, delete and archive-instead close the
+    /// pane through this instead of `dismiss`.
+    var onClose: (() -> Void)? = nil
 
     @State private var title = ""
     @State private var description = ""
@@ -112,7 +116,7 @@ struct IssueDetailView: View {
             GraftScreenHeader(title: "",
                               titleView: AnyView(EmptyView()),
                               leading: {
-                                  GraftBackButton(label: backLabel) { dismiss() }
+                                  GraftBackButton(label: onClose == nil ? backLabel : "Inbox") { close() }
                               },
                               actions: {
                                   saveIndicator
@@ -205,9 +209,9 @@ struct IssueDetailView: View {
         }))
         .confirmationDialog("Delete this issue?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button("Delete permanently", role: .destructive) {
-                Task { try? await store.deleteIssue(id: issue.id); dismiss() }
+                Task { try? await store.deleteIssue(id: issue.id); close() }
             }
-            Button("Archive instead") { archive(); dismiss() }
+            Button("Archive instead") { archive(); close() }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Archiving keeps the issue and can be undone. Deleting cannot.")
@@ -602,6 +606,11 @@ struct IssueDetailView: View {
     }
 
     // MARK: - Helpers
+
+    /// Back: pop the stack, or close the pane beside the list.
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
+    }
 
     private var divider: some View {
         Rectangle().fill(Color.gHairline).frame(height: 0.5).padding(.leading, 14)

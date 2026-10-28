@@ -57,6 +57,7 @@ without a monitor. `?` shows every key.
 | `n`, `/`, `r` | New issue (project on Projects), search, refresh |
 | `]` `[`, `x`, `p`, `a` | Status forward/back, done, cycle priority, archive |
 | `f` | Favourite a project |
+| `⌃⌘S` | Hide or show the sidebar (iPad) |
 | `t` `e` | Edit an open issue's title / description |
 | `⌘↵`, `esc` | Save / cancel a sheet |
 | `⌥⌘` `=` `−` `T` `P` `H` | Monitor: text size, theme, pause, key hints |
@@ -67,6 +68,10 @@ The monitor scene is declared in `ios/Info.plist`
 `ios/Services/KeyboardCommands.swift`, the monitor model in
 `ExternalDisplay.swift`, its views in `ios/Views/ExternalDisplayView.swift`.
 Settings → Keyboard & monitor tunes text size, theme, hints and dimming.
+
+On iPad (regular width) the tab bar becomes a sidebar with your favourite
+projects under it; it folds to a strip (`sidebar.left`, ⌃⌘S) that keeps "+".
+With room, an Inbox issue opens beside the list rather than over it.
 
 ## Systemd
 
