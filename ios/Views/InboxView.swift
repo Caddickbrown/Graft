@@ -233,7 +233,7 @@ struct InboxView: View {
                 }
             }
 
-        } else if store.issues.isEmpty, let error = store.errorMessage {
+        } else if store.emptyBecauseUnreachable, let error = store.errorMessage {
             GraftErrorState(message: error) {
                 Task { await store.sync() }
             }

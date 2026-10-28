@@ -227,12 +227,13 @@ struct SyncStrip: View {
                 actionTitle: "Retry"
             ) { Task { await store.flushPending() } }
 
-        case .unreachable(let message):
+        case .waitingForServer(let count):
+            // Calm: everything is saved here, and it goes up when the Pi is back.
             strip(
-                icon: "exclamationmark.triangle",
-                tint: Color.gRed,
-                title: "Can't reach the server",
-                detail: message,
+                icon: "icloud.slash",
+                tint: Color.gInk2,
+                title: "\(count) change\(count == 1 ? "" : "s") waiting to sync",
+                detail: "Saved on this phone; the Pi is out of reach",
                 actionTitle: "Retry"
             ) { Task { await store.sync() } }
 

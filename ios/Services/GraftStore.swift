@@ -1925,7 +1925,8 @@ final class GraftStore {
         case syncing
         case pending(Int)
         case failed(String)
-        case unreachable(String)
+        /// Changes are waiting, and the Pi is out of reach just now.
+        case waitingForServer(Int)
         case ok
     }
 
@@ -1934,9 +1935,20 @@ final class GraftStore {
         if connectWouldReplaceLocalWork { return .awaitingMerge }
         if isLoading { return .syncing }
         if let dropped = syncEngine.droppedOps.last { return .failed(dropped.reason) }
-        if let error = errorMessage { return .unreachable(error) }
-        if syncEngine.pendingCount > 0 { return .pending(syncEngine.pendingCount) }
+        // The phone owns the library, so a Pi out of reach is only news when
+        // something is waiting for it: then it's a count of waiting changes,
+        // not an error. With nothing waiting it's silent; Settings keeps the
+        // detail for anyone who goes looking.
+        if syncEngine.pendingCount > 0 {
+            return errorMessage == nil ? .pending(syncEngine.pendingCount) : .waitingForServer(syncEngine.pendingCount)
+        }
         return .ok
+    }
+
+    /// Nothing on this phone yet, and no pull has landed: the one time a Pi out
+    /// of reach explains an empty screen.
+    var emptyBecauseUnreachable: Bool {
+        errorMessage != nil && lastSynced == nil && isLibraryEmpty
     }
 
     var pendingCount: Int { syncEngine.pendingCount }
