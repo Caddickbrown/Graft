@@ -124,6 +124,14 @@ An issue with no date never matches a bound on that date — undated is not due.
 A date-only upper bound covers the whole of that day, so `updated_before=<today>`
 includes edits made today.
 
+### Stale edits
+
+`PUT /api/issues/:id` takes an optional `_ts`, when the client made the edit
+(ISO 8601, UTC). If the issue's `updated_at` is newer, the answer is `409` with
+`{"error": "...", "issue": {...current issue...}}` and nothing is written; a
+`_ts` that isn't a timestamp is a `400`. Without `_ts` nothing changes. See
+docs/local-first.md for this and Hub's on-phone hand-off.
+
 ### Clearing a field
 
 Every optional text column — `assignee`, `area_id`, `icon`, `repo_url`,

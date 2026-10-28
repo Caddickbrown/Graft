@@ -32,6 +32,16 @@ targets:
           - 'make_icon.swift'
           - '.git'
           - '.gitignore'
+    # The App Group Hub shares with Graft, for edits handed over on the same
+    # phone (Services/HubHandoff.swift). xcodegen writes Graft.entitlements from
+    # these properties and points CODE_SIGN_ENTITLEMENTS at it. A signed build
+    # needs the group registered for this App ID in the developer portal; CI
+    # builds with CODE_SIGNING_ALLOWED=NO, where the container is simply nil.
+    entitlements:
+      path: Graft.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.caddickbrown.shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.caddickbrown.graft

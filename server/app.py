@@ -2276,6 +2276,24 @@ def update_issue(iid):
     if row is None:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(force=True)
+    # _ts is when the client made this edit, for a client (Hub, through its
+    # proxy) that queues edits offline and sends absolute values. Replayed late,
+    # such an edit would quietly undo whatever happened here in the meantime, so
+    # a row that changed after it was made refuses it and hands back what is
+    # there now. Never a column: `fields` below doesn't name it. Absent means the
+    # old behaviour — the iOS queue and the web form don't send it.
+    if isinstance(data, dict) and "_ts" in data:
+        made_at = _merge_time(data["_ts"]) if isinstance(data["_ts"], str) else None
+        if made_at is None:
+            return jsonify({"error": "_ts must be an ISO 8601 timestamp"}), 400
+        current = _merge_time(row["updated_at"])
+        if current is not None and current > made_at:
+            fresh = db.execute(
+                "SELECT i.*, m.name AS milestone_name FROM issues i LEFT JOIN milestones m ON i.milestone_id = m.id WHERE i.id=?",
+                (iid,),
+            ).fetchone()
+            return jsonify({"error": "This issue changed after that edit was made",
+                            "issue": _issue_row_to_dict(fresh)}), 409
     fields = ["title", "description", "status", "priority", "assignee", "milestone_id",
               "project_id", "start_at", "due_at", "recurrence_parent", "sort_order", "archived"]
     updates = {f: data[f] for f in fields if f in data}
