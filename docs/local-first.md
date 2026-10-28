@@ -224,6 +224,67 @@ Left, because they need a server by nature:
 - **Search through the server's `q`** (`refreshIssues`). Filtering is already
   local and complete.
 
+## Hub: edits made somewhere else
+
+Hub, on the same phone, shows Graft's issues and lets them be ticked off and
+edited. It reaches Graft two ways, and both refuse an edit that is older than
+the issue it would overwrite.
+
+### Through the server: `_ts`
+
+Hub queues edits offline and sends them later through its Pi proxy as
+`PUT /api/issues/<id>` with absolute values. A late replay would undo whatever
+changed in the meantime, so the body may carry `_ts`: when the edit was made,
+ISO 8601 in UTC (`Z`, an offset, or naive meaning UTC).
+
+- The row's `updated_at` strictly newer than `_ts`: **409**
+  `{"error": "This issue changed after that edit was made", "issue": {...}}`,
+  the issue as it is now, and nothing is written.
+- Otherwise the edit applies as any PUT does. `_ts` is never stored.
+- `_ts` that isn't a timestamp: **400**.
+- No `_ts`: unchanged. The iOS queue and the web client don't send it.
+
+Tested in `server/tests/test_stale_edit.py`.
+
+### On the phone: the App Group hand-off
+
+Hub writes one file per action into the App Group both apps share,
+`group.com.caddickbrown.shared`:
+
+    <container>/handoff/graft-actions/<id>.json    written by Hub, atomically
+    <container>/handoff/graft-applied/<id>         empty, written by Graft
+
+```json
+{"id": "<uuid>", "kind": "graft.update", "issue_id": "iss_xxxxxxxx",
+ "fields": {"status": "done"}, "made_at": "2026-10-28T16:20:47Z", "source": "hub"}
+```
+
+`fields` holds absolute Graft fields (`title`, `description`, `status`,
+`priority`, `assignee`, `labels`, `project_id`, `milestone_id`, `start_at`,
+`due_at`, `recurrence`, `recurrence_anchor`, `archived`); anything else is
+ignored. A `graft.create` carries `body` instead: the whole create body,
+including the `id` Hub minted.
+
+`ios/Services/HubHandoff.swift` reads the folder after the launch sync and on
+every foreground, oldest `made_at` first:
+
+- **`graft.update`** applies through `updateIssue` (and `archiveIssue` when
+  `archived` differs), so it is saved, queued and sent like a tap — or stays
+  in the library in phone-only mode. Skipped when the issue isn't here, or
+  its `updatedAt` is newer than `made_at`. Within one pass, a second edit to
+  the same issue is compared with the first edit's `made_at`, not with the
+  write that edit just made.
+- **`graft.create`** goes through `createIssue` with Hub's id. Skipped if an
+  issue with that id exists. `created_at` in the body is not used: the issue
+  is stamped when Graft creates it.
+- An applied action gets its marker; every action file — applied, skipped or
+  malformed — is then deleted. Hub settles anything without a marker by its
+  own route.
+
+Without the entitlement (an unsigned build, a profile missing the group) there
+is no container and nothing happens. A signed build needs the group registered
+in the developer portal and enabled for `com.caddickbrown.graft`.
+
 ## Risks
 
 - **Swift is compiled first by CI** (`.github/workflows/ios.yml`). Nothing on
