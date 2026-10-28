@@ -34,6 +34,10 @@ struct InboxView: View {
     /// The list and the open issue sit side by side rather than one over the
     /// other. Set from the width the screen is given, below.
     @State private var splitActive = false
+    /// The issue this screen last pushed on the phone, and how deep the path
+    /// was with it on top. Unfolding takes it back into the right pane while
+    /// it is still the screen showing, so fold → unfold keeps the issue open.
+    @State private var pushed: PushedIssue?
 
     /// The width this screen needs before an issue opens beside the list
     /// instead of over it: iPad landscape does, iPad portrait with the sidebar
@@ -155,7 +159,7 @@ struct InboxView: View {
                     if splitActive {
                         selectedIssue = issue
                     } else {
-                        router.inboxPath.append(GraftRoute.issue(issue))
+                        push(issue)
                     }
                 },
                 key: { k, selected in
@@ -185,41 +189,58 @@ struct InboxView: View {
 
     /// The phone: the list, exactly as it always was. Regular width: the list,
     /// and beside it the open issue once the screen is wide enough for both.
-    @ViewBuilder
+    ///
+    /// One tree for both, so the list keeps its identity — scroll position,
+    /// search field and all — when a foldable opens or closes, or an iPad
+    /// window is resized; only the split's condition changes.
     private var root: some View {
-        if sizeClass == .regular {
-            GeometryReader { geo in
-                let split = geo.size.width >= Self.splitMinWidth
-                HStack(spacing: 0) {
-                    listColumn
-                        .frame(width: split ? Self.listWidth : nil)
-                    if split {
-                        Rectangle()
-                            .fill(Color.gHairline)
-                            .frame(width: GraftMetrics.border)
-                            .ignoresSafeArea()
-                            .accessibilityHidden(true)
-                        detailColumn
-                    }
+        GeometryReader { geo in
+            let split = sizeClass == .regular && geo.size.width >= Self.splitMinWidth
+            HStack(spacing: 0) {
+                listColumn
+                    .frame(width: split ? Self.listWidth : nil)
+                if split {
+                    Rectangle()
+                        .fill(Color.gHairline)
+                        .frame(width: GraftMetrics.border)
+                        .ignoresSafeArea()
+                        .accessibilityHidden(true)
+                    detailColumn
                 }
-                .onAppear { setSplit(split) }
-                .onChange(of: split) { _, now in setSplit(now) }
             }
-            .background(Color.gBg.ignoresSafeArea())
-        } else {
-            listColumn
-                .onAppear { setSplit(false) }
+            .onAppear { setSplit(split) }
+            .onChange(of: split) { _, now in setSplit(now) }
+        }
+        .background(Color.gBg.ignoresSafeArea())
+        // Backed out of the pushed issue: it is no longer the one to restore.
+        .onChange(of: router.inboxPath.count) { _, count in
+            if let pushed, count < pushed.depth { self.pushed = nil }
         }
     }
 
-    /// Narrowed with an issue open beside the list: it carries on as a pushed
-    /// screen rather than vanishing.
+    /// The selected issue survives the switch both ways. Narrowed with an
+    /// issue open beside the list, it carries on as a pushed screen rather than
+    /// vanishing; widened with that issue (or one tapped on the phone) still on
+    /// top, it comes off the stack and back into the right pane.
     private func setSplit(_ now: Bool) {
         splitActive = now
-        if !now, let open = selectedIssue {
+        if now {
+            if let pushed, router.inboxPath.count == pushed.depth,
+               let issue = store.issues.first(where: { $0.id == pushed.id }) {
+                router.inboxPath.removeLast()
+                selectedIssue = issue
+            }
+            pushed = nil
+        } else if let open = selectedIssue {
             selectedIssue = nil
-            router.inboxPath.append(GraftRoute.issue(open))
+            push(open)
         }
+    }
+
+    /// Opens an issue over the list on the phone, remembering it for `setSplit`.
+    private func push(_ issue: GraftIssue) {
+        router.inboxPath.append(GraftRoute.issue(issue))
+        pushed = PushedIssue(id: issue.id, depth: router.inboxPath.count)
     }
 
     /// The issue beside the list, or a quiet word when none is open.
@@ -460,7 +481,10 @@ struct InboxView: View {
             } label: { row }
             .buttonStyle(.plain)
         } else {
-            NavigationLink(value: GraftRoute.issue(issue)) { row }
+            // A button that pushes rather than a NavigationLink, so the push
+            // is remembered (`push`) and unfolding can bring the issue back
+            // beside the list.
+            Button { push(issue) } label: { row }
                 .buttonStyle(.plain)
         }
     }
@@ -473,4 +497,10 @@ struct InboxView: View {
             }
         }
     }
+}
+
+/// An issue the Inbox pushed, and the path's depth with it on top.
+private struct PushedIssue {
+    let id: String
+    let depth: Int
 }
