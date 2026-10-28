@@ -71,7 +71,9 @@ Settings → Keyboard & monitor tunes text size, theme, hints and dimming.
 
 On iPad (regular width) the tab bar becomes a sidebar with your favourite
 projects under it; it folds to a strip (`sidebar.left`, ⌃⌘S) that keeps "+".
-With room, an Inbox issue opens beside the list rather than over it.
+With room, an Inbox issue opens beside the list rather than over it, and it
+stays open when the window narrows or widens (a foldable iPhone opening or
+closing): see `docs/iphone-duo.md`.
 
 ## Systemd
 
