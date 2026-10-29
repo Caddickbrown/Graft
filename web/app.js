@@ -2380,12 +2380,23 @@
     })), { label: 'Move to' });
   }
 
+  // Closing an issue here (not one arriving from elsewhere) pops its ring and
+  // sweeps the strike across the title, as the iOS app does. style.css holds
+  // the motion, and stills it under prefers-reduced-motion.
+  function _justDone(id) {
+    document.querySelectorAll(`.issue-row[data-id="${CSS.escape(id)}"]`).forEach(row => {
+      row.classList.add('just-done');
+      setTimeout(() => row.classList.remove('just-done'), 700);
+    });
+  }
+
   async function setIssueStatus(id, status) {
     const issue = _issue(id);
     if (!issue || issue.status === status) return;
     const previous = issue.status;
     issue.status = status;
     rerenderCurrentView();
+    if (status === 'done') _justDone(id);
     try {
       const res = await api('PUT', `/api/issues/${id}`, { status });
       // No undo when the completion spawned the next occurrence: putting the
