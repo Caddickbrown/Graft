@@ -216,7 +216,7 @@ struct ProjectDetailView: View {
             .scrollContentBackground(.hidden)
             // Project detail had no refresh at all: the only way to pull was to
             // go back to a tab root and pull there.
-            .refreshable { await store.sync() }
+            .graftRefreshable { await store.sync() }
             .onChange(of: keySelection) { _, selected in
                 guard let selected else { return }
                 withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(selected, anchor: .center) }
@@ -475,6 +475,8 @@ struct ProjectDetailView: View {
             .graftKeySelected(keySelection == issue.id)
         }
         .buttonStyle(.plain)
+        .graftZoomSource(.issue(issue))
+        .transition(.graftTuck)
         .id(issue.id)
         .padding(.horizontal, GraftMetrics.gutter)
         .padding(.vertical, GraftMetrics.spaceXXS)
@@ -640,7 +642,10 @@ struct KanbanColumn: View {
                         }
                         KanbanCard(issue: issue)
                             .graftKeySelected(keySelection == issue.id, radius: GraftMetrics.radiusSmall)
+                            .graftZoomSource(.issue(issue))
                     }
+                    // A card changing column leaves one and lands in the next.
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
                     .id(issue.id)
                     .padding(.horizontal, GraftMetrics.spaceXS)
                     // Hold to pick a card up. `.draggable` is a long press on
@@ -750,6 +755,11 @@ private struct KanbanDragPreview: View {
         .padding(.vertical, GraftMetrics.spaceXS)
         .frame(maxWidth: 200, alignment: .leading)
         .background(Color.gSurface2, in: RoundedRectangle(cornerRadius: GraftMetrics.radiusSmall))
+        // Picked up: lifted off the board, a shadow under it and a slight tilt,
+        // like a card held between two fingers.
+        .shadow(color: .black.opacity(0.28), radius: 12, y: 8)
+        .rotationEffect(.degrees(-2))
+        .padding(12)
     }
 }
 
@@ -833,14 +843,19 @@ struct KanbanCard: View {
                 HStack(spacing: GraftMetrics.spaceXXS) {
                     let s = IssueStatus(rawValue: issue.status) ?? .backlog
                     StatusRing(status: s, size: 10)
+                    // A new status slides up into the pill.
                     Text(s.label)
                         .font(GraftFont.text(GraftType.micro, .medium))
                         .foregroundStyle(s.color)
+                        .id(s)
+                        .transition(.push(from: .bottom))
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
                 .background(statusColor(issue.status).opacity(0.12))
                 .clipShape(Capsule())
+                .clipped()
+                .animation(GraftMotion.standard, value: issue.status)
                 .frame(maxWidth: .infinity, minHeight: GraftMetrics.tap, alignment: .leading)
                 .contentShape(Rectangle())
             }

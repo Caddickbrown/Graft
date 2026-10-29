@@ -949,7 +949,7 @@ final class GraftStore {
             createdAt: ts,
             updatedAt: ts
         )
-        issues.append(issue)
+        GraftEdit.animated { issues.append(issue) }
         // Creating an issue with a name on it is an assignment like any other,
         // and the server records one — see `updateIssue`.
         if !assignee.isEmpty { notifications.noteOwnAssignment(issueId: issue.id) }
@@ -993,8 +993,16 @@ final class GraftStore {
                 notifications.noteOwnAssignment(issueId: issue.id)
             }
             let previousStatus = issues[idx].status
-            issues[idx] = updated
-            spawnLocally(previousStatus: previousStatus, completed: updated)
+            let assigned = issues[idx].assignee != updated.assignee && !updated.assignee.isEmpty
+            GraftEdit.animated {
+                issues[idx] = updated
+                spawnLocally(previousStatus: previousStatus, completed: updated)
+            }
+            if previousStatus != "done" && updated.status == "done" {
+                GraftHaptic.success.play()
+            } else if assigned {
+                GraftHaptic.land.play()
+            }
         }
         saveCachedData()
 
@@ -1009,8 +1017,11 @@ final class GraftStore {
         let previousStatus = updated.status
         updated.status = status
         updated.updatedAt = nowISO()
-        issues[idx] = updated
-        spawnLocally(previousStatus: previousStatus, completed: updated)
+        GraftEdit.animated {
+            issues[idx] = updated
+            spawnLocally(previousStatus: previousStatus, completed: updated)
+        }
+        if previousStatus != "done" && status == "done" { GraftHaptic.success.play() }
         saveCachedData()
 
         let body = try JSONSerialization.data(withJSONObject: issueWriteBody(updated, at: updated.updatedAt))
@@ -1061,20 +1072,24 @@ final class GraftStore {
 
         let ts = nowISO()
         var renumbered: [[String: Any]] = []
-        for (position, issueId) in order.enumerated() {
-            guard let idx = issues.firstIndex(where: { $0.id == issueId }) else { continue }
-            if issues[idx].sortOrder != position {
-                issues[idx].sortOrder = position
+        GraftEdit.animated {
+            for (position, issueId) in order.enumerated() {
+                guard let idx = issues.firstIndex(where: { $0.id == issueId }) else { continue }
+                if issues[idx].sortOrder != position {
+                    issues[idx].sortOrder = position
+                    issues[idx].updatedAt = ts
+                    renumbered.append(["id": issueId, "sort_order": position])
+                }
+            }
+
+            if statusChanged, let idx = issues.firstIndex(where: { $0.id == id }) {
+                issues[idx].status = status
                 issues[idx].updatedAt = ts
-                renumbered.append(["id": issueId, "sort_order": position])
+                spawnLocally(previousStatus: moving.status, completed: issues[idx])
             }
         }
-
-        if statusChanged, let idx = issues.firstIndex(where: { $0.id == id }) {
-            issues[idx].status = status
-            issues[idx].updatedAt = ts
-            spawnLocally(previousStatus: moving.status, completed: issues[idx])
-        }
+        // A card put down; a card put down in Done is a job finished.
+        (statusChanged && status == "done" ? GraftHaptic.success : GraftHaptic.land).play()
         saveCachedData()
 
         if statusChanged, let updated = issues.first(where: { $0.id == id }) {
@@ -1225,8 +1240,10 @@ final class GraftStore {
 
     func archiveIssue(id: String) async throws {
         if let idx = issues.firstIndex(where: { $0.id == id }) {
-            issues[idx].archived.toggle()
-            issues[idx].updatedAt = nowISO()
+            GraftEdit.animated {
+                issues[idx].archived.toggle()
+                issues[idx].updatedAt = nowISO()
+            }
         }
         saveCachedData()
         send(method: "PATCH", path: "/api/issues/\(id)/archive")
@@ -1234,7 +1251,7 @@ final class GraftStore {
     }
 
     func deleteIssue(id: String) async throws {
-        issues.removeAll { $0.id == id }
+        GraftEdit.animated { issues.removeAll { $0.id == id } }
         // The server deletes the issue's links with it; without this the phone
         // kept showing them until the next pull.
         links.removeAll { $0.ownerType == "issue" && $0.ownerId == id }
@@ -1668,6 +1685,11 @@ final class GraftStore {
     /// every one of them, so the confirmation says the number out loud.
     func issueCount(usingMilestone id: String) -> Int {
         issues.filter { $0.milestoneId == id }.count
+    }
+
+    /// How many of a milestone's issues are done, for its progress line.
+    func doneCount(usingMilestone id: String) -> Int {
+        issues.filter { $0.milestoneId == id && $0.status == "done" }.count
     }
 
     // MARK: - The query engine (client-side)

@@ -454,9 +454,12 @@ struct IssueDetailView: View {
                 HStack(spacing: 5) {
                     ForEach(current.labels.uniqued, id: \.self) { label in
                         GraftLabelChip(text: label)
+                            .transition(.graftPop)
                     }
                     Spacer(minLength: 0)
                 }
+                // A label typed in pops onto the row as it's saved.
+                .animation(GraftMotion.settle, value: current.labels)
                 .padding(.horizontal, 14)
                 .padding(.bottom, GraftMetrics.spaceS)
             }
@@ -591,11 +594,13 @@ struct IssueDetailView: View {
             } label: {
                 Label(current.status == "done" ? "Reopen" : "Mark done",
                       systemImage: current.status == "done" ? "arrow.uturn.backward" : "checkmark")
+                    .contentTransition(.symbolEffect(.replace))
                     .font(GraftFont.text(GraftType.body, .bold))
                     .foregroundStyle(Color.gOnAccent)
                     .frame(maxWidth: .infinity, minHeight: 48)
                     .background(current.status == "done" ? Color.gInk2 : Color.gAccent,
                                 in: RoundedRectangle(cornerRadius: GraftMetrics.radius))
+                    .animation(GraftMotion.standard, value: current.status)
             }
             .buttonStyle(.plain)
         }

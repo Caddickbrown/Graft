@@ -140,9 +140,7 @@ struct GraftWelcomeState: View {
 
     var body: some View {
         VStack(spacing: GraftMetrics.spaceS) {
-            Image(systemName: "leaf")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(Color.gAccent)
+            GraftSeedling(size: 56)
             Text("Welcome to Graft")
                 .font(GraftFont.display(GraftType.heading))
                 .foregroundStyle(Color.gInk)
@@ -340,6 +338,8 @@ struct GraftSectionHeader: View {
                 Text("\(count)")
                     .font(GraftFont.mono(GraftType.micro))
                     .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animation(GraftMotion.standard, value: count)
                     .foregroundStyle(Color.gInk3)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
@@ -357,6 +357,7 @@ struct GraftSectionHeader: View {
         .padding(.horizontal, inset ? GraftMetrics.gutter : 0)
         .padding(.top, GraftMetrics.spaceXXS)
         .padding(.bottom, GraftMetrics.spaceXS)
+        .graftArrive()
     }
 }
 
@@ -387,6 +388,7 @@ struct GraftSectionEmpty: View {
             )
             .padding(.horizontal, GraftMetrics.gutter)
             .padding(.bottom, GraftMetrics.spaceXS)
+            .graftArrive()
     }
 }
 

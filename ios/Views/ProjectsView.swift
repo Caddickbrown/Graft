@@ -376,6 +376,8 @@ struct ProjectsView: View {
                             NavigationLink(value: GraftRoute.project(project.id)) {
                                 ProjectCardView(project: project)
                                     .graftKeySelected(keySelection == project.id)
+                                    .graftZoomSource(.project(project.id))
+                                    .graftArrive()
                             }
                             .id(project.id)
                             .listRowBackground(Color.clear)
@@ -430,7 +432,7 @@ struct ProjectsView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .refreshable {
+        .graftRefreshable {
             await store.sync()
         }
         .onChange(of: keySelection) { _, selected in

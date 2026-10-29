@@ -374,15 +374,20 @@ enum IssueStatus: String, CaseIterable {
 struct StatusRing: View {
     let status: IssueStatus
     var size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// How much of the tick is drawn: closing an issue draws it in rather than
+    /// it simply being there, and the ring pops as it fills.
+    @State private var tick: CGFloat
+    @State private var pop: CGFloat = 1
 
     init(status: IssueStatus, size: CGFloat = GraftMetrics.ring) {
         self.status = status
         self.size = size
+        _tick = State(initialValue: status == .done ? 1 : 0)
     }
 
     init(status: String, size: CGFloat = GraftMetrics.ring) {
-        self.status = IssueStatus(rawValue: status) ?? .backlog
-        self.size = size
+        self.init(status: IssueStatus(rawValue: status) ?? .backlog, size: size)
     }
 
     private var stroke: CGFloat { size * 0.125 }
@@ -394,6 +399,7 @@ struct StatusRing: View {
                 Circle()
                     .fill(Color.gAccent)
                 CheckMark()
+                    .trim(from: 0, to: tick)
                     .stroke(
                         Color.gOnAccent,
                         style: StrokeStyle(lineWidth: size * 0.14, lineCap: .round, lineJoin: .round)
@@ -426,6 +432,18 @@ struct StatusRing: View {
             }
         }
         .frame(width: size, height: size)
+        .scaleEffect(pop)
+        // The wedge sweeps round to its new fill; transactions carry it, so
+        // Reduce Motion (which strips them) leaves it still.
+        .animation(GraftMotion.settle, value: status)
+        .onChange(of: status) { old, new in
+            guard new == .done else { tick = 0; return }
+            guard !reduceMotion, old != .done else { tick = 1; return }
+            tick = 0
+            pop = 0.7
+            withAnimation(GraftMotion.settle) { pop = 1 }
+            withAnimation(.easeOut(duration: 0.22).delay(0.08)) { tick = 1 }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(status.label)
     }
@@ -598,9 +616,15 @@ struct GraftEmptyState: View {
 
     var body: some View {
         VStack(spacing: GraftMetrics.spaceS) {
-            Image(systemName: systemImage)
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(Color.gInk3)
+            // Graft's own "nothing here": a seedling grows where a leaf glyph
+            // would sit.
+            if systemImage == "leaf" {
+                GraftSeedling(size: 56)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: 36, weight: .light))
+                    .foregroundStyle(Color.gInk3)
+            }
             Text(title)
                 .font(GraftFont.display(GraftType.heading))
                 .foregroundStyle(Color.gInk)
@@ -625,6 +649,7 @@ struct GraftEmptyState: View {
             }
         }
         .padding(GraftMetrics.space3XL)
+        .graftArrive()
     }
 }
 
@@ -773,6 +798,7 @@ struct GraftAvatar: View {
                     .overlay(Circle().strokeBorder(Color.gHairline, lineWidth: GraftMetrics.border))
             }
         }
+        .graftPersonaGreeting(name)
         .accessibilityLabel(name.isEmpty ? "Unassigned" : name)
     }
 }
@@ -923,10 +949,9 @@ struct GraftIssueRow: View {
                     .frame(width: 22, height: 22)
 
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(issue.title)
-                        .font(GraftFont.text(GraftType.title, .medium))
-                        .foregroundStyle(done ? Color.gInk2 : Color.gInk)
-                        .strikethrough(done, color: Color.gInk2)
+                    GraftStrikeText(issue.title, done: done,
+                                    font: GraftFont.text(GraftType.title, .medium),
+                                    colour: Color.gInk, doneColour: Color.gInk2)
                         .fixedSize(horizontal: false, vertical: true)
                         .multilineTextAlignment(.leading)
 
@@ -951,6 +976,7 @@ struct GraftIssueRow: View {
                         HStack(spacing: 5) {
                             ForEach(labels.prefix(maxLabels), id: \.self) { label in
                                 GraftLabelChip(text: label)
+                                    .transition(.graftPop)
                             }
                             if labels.count > maxLabels {
                                 Text("+\(labels.count - maxLabels)")
@@ -973,6 +999,8 @@ struct GraftIssueRow: View {
             RoundedRectangle(cornerRadius: GraftMetrics.radius)
                 .strokeBorder(Color.gHairline, lineWidth: GraftMetrics.border)
         )
+        .animation(GraftMotion.settle, value: labels)
+        .graftArrive()
     }
 }
 

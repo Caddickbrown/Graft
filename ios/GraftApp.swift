@@ -219,9 +219,24 @@ final class GraftRouter {
 /// modifier rather than three lists.
 struct GraftRoutes: ViewModifier {
     @Environment(GraftStore.self) private var store
+    /// One per stack, since the modifier is applied once per stack: shared by
+    /// the rows that are tapped and the pages that grow out of them.
+    @Namespace private var zoom
 
     func body(content: Content) -> some View {
-        content.navigationDestination(for: GraftRoute.self) { route in
+        content
+            .graftArrivalRoot()
+            .environment(\.graftZoomNamespace, zoom)
+            .navigationDestination(for: GraftRoute.self) { route in
+                destination(route)
+                    .environment(\.graftZoomNamespace, zoom)
+                    .graftZoomDestination(route)
+                    .graftArrivalRoot()
+            }
+    }
+
+    @ViewBuilder
+    private func destination(_ route: GraftRoute) -> some View {
             switch route {
             case .project(let id):
                 // By id, resolved here: a project route outlives any particular
@@ -243,7 +258,6 @@ struct GraftRoutes: ViewModifier {
             case .series(let issue):
                 IssueSeriesView(issue: issue)
             }
-        }
     }
 }
 
@@ -316,15 +330,19 @@ struct RootView: View {
             }
             VStack(spacing: 0) {
                 TabView(selection: $router.tab) {
+                    // Switching to a tab replays its screen's arrival.
                     InboxView()
+                        .environment(\.graftTabActive, router.tab == .inbox)
                         .tag(GraftTab.inbox)
                         .toolbar(.hidden, for: .tabBar)
 
                     ProjectsView()
+                        .environment(\.graftTabActive, router.tab == .projects)
                         .tag(GraftTab.projects)
                         .toolbar(.hidden, for: .tabBar)
 
                     SettingsView()
+                        .environment(\.graftTabActive, router.tab == .settings)
                         .tag(GraftTab.settings)
                         .toolbar(.hidden, for: .tabBar)
                 }

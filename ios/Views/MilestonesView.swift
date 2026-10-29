@@ -73,7 +73,9 @@ struct MilestonesView: View {
                                 } label: {
                                     MilestoneRowView(
                                         milestone: milestone,
-                                        issueCount: store.issueCount(usingMilestone: milestone.id)
+                                        issueCount: store.issueCount(usingMilestone: milestone.id),
+                                        doneCount: store.doneCount(usingMilestone: milestone.id),
+                                        celebrates: true
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -186,9 +188,29 @@ struct MilestonesView: View {
 struct MilestoneRowView: View {
     let milestone: GraftMilestone
     var issueCount: Int = 0
+    /// How many of those issues are done, for the progress line.
+    var doneCount: Int = 0
+    /// Whether finishing the milestone is celebrated here. Off in reorder mode.
+    var celebrates: Bool = false
     /// Off in reorder mode: the row does not open anything while it is being
     /// dragged, and a chevron promising otherwise is a lie in a small space.
     var showsChevron: Bool = true
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The progress line as drawn: it grows in from nothing when the row
+    /// first shows, then follows the real value.
+    @State private var drawn: CGFloat = 0
+    @State private var confetti = 0
+    @State private var planted = 0
+
+    private var progress: CGFloat {
+        issueCount == 0 ? 0 : CGFloat(doneCount) / CGFloat(issueCount)
+    }
+    private var complete: Bool { issueCount > 0 && doneCount >= issueCount }
+
+    /// Milestones already celebrated, so finishing one is marked once — the
+    /// first time you see it done — and not every time the list redraws.
+    private static let celebratedKey = "graft.celebratedMilestones"
 
     var body: some View {
         // Through `dueLabel`, like every other surface in the app — this was
@@ -199,8 +221,27 @@ struct MilestoneRowView: View {
         HStack(spacing: GraftMetrics.spaceS) {
             Image(systemName: "flag.fill")
                 .font(.system(size: 15))
-                .foregroundStyle(Color.gInk2)
+                .foregroundStyle(complete ? Color.gAccent : Color.gInk2)
                 .frame(width: 22)
+                // Finished: the flag is planted — dropped in from above, and a
+                // wobble as it bites.
+                .keyframeAnimator(initialValue: FlagPose(), trigger: planted) { view, pose in
+                    view
+                        .offset(y: pose.y)
+                        .rotationEffect(.degrees(pose.angle), anchor: .bottomLeading)
+                } keyframes: { _ in
+                    KeyframeTrack(\.y) {
+                        CubicKeyframe(-14, duration: 0.01)
+                        CubicKeyframe(0, duration: 0.22)
+                    }
+                    KeyframeTrack(\.angle) {
+                        CubicKeyframe(0, duration: 0.22)
+                        CubicKeyframe(-12, duration: 0.08)
+                        CubicKeyframe(7, duration: 0.1)
+                        SpringKeyframe(0, duration: 0.3)
+                    }
+                }
+                .overlay { GraftConfetti(trigger: confetti).frame(width: 140, height: 140) }
 
             VStack(alignment: .leading, spacing: GraftMetrics.spaceXXS) {
                 Text(milestone.name)
@@ -233,6 +274,22 @@ struct MilestoneRowView: View {
                         .font(GraftFont.text(GraftType.caption))
                         .foregroundStyle(Color.gInk2)
                 }
+
+                if issueCount > 0 {
+                    // How far along: a hairline that fills.
+                    GeometryReader { g in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.gSurface2)
+                            Capsule()
+                                .fill(complete ? Color.gAccent : Color.gInk2.opacity(0.6))
+                                .frame(width: g.size.width * drawn)
+                        }
+                    }
+                    .frame(height: 3)
+                    .padding(.top, 2)
+                    .accessibilityElement()
+                    .accessibilityLabel("\(doneCount) of \(issueCount) done")
+                }
             }
 
             Spacer(minLength: 0)
@@ -246,13 +303,50 @@ struct MilestoneRowView: View {
         .padding(.horizontal, GraftMetrics.spaceS)
         .padding(.vertical, GraftMetrics.spaceS)
         .frame(minHeight: GraftMetrics.tap)
-        .background(Color.gSurface)
-        .clipShape(RoundedRectangle(cornerRadius: GraftMetrics.radius))
+        // Painted rather than clipped, so the confetti can fly past the edge.
+        .background(Color.gSurface, in: RoundedRectangle(cornerRadius: GraftMetrics.radius))
         .overlay(
             RoundedRectangle(cornerRadius: GraftMetrics.radius)
                 .strokeBorder(Color.gHairline, lineWidth: GraftMetrics.border)
         )
+        .graftArrive()
+        .onAppear {
+            if reduceMotion { drawn = progress } else {
+                withAnimation(GraftMotion.story.delay(0.1)) { drawn = progress }
+            }
+            celebrateIfNew()
+        }
+        .onChange(of: progress) { _, p in
+            withAnimation(GraftMotion.story) { drawn = p }
+            celebrateIfNew()
+        }
     }
+
+    private func celebrateIfNew() {
+        guard celebrates else { return }
+        let defaults = UserDefaults.standard
+        var seen = Set(defaults.stringArray(forKey: Self.celebratedKey) ?? [])
+        if !complete {
+            // Reopened: finishing it again is worth marking again.
+            if seen.remove(milestone.id) != nil { defaults.set(Array(seen), forKey: Self.celebratedKey) }
+            return
+        }
+        guard !seen.contains(milestone.id) else { return }
+        seen.insert(milestone.id)
+        defaults.set(Array(seen), forKey: Self.celebratedKey)
+        // After the progress line has run to the end.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            GraftHaptic.success.play()
+            guard !reduceMotion else { return }
+            planted += 1
+            confetti += 1
+        }
+    }
+}
+
+private struct FlagPose {
+    var y = 0.0
+    var angle = 0.0
 }
 
 // MARK: - Milestone Form

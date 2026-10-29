@@ -369,7 +369,7 @@ struct InboxView: View {
                     subtitle: store.projects.isEmpty
                         ? "No projects yet. Start one and its work shows up here."
                         : "No open issues anywhere. Enjoy it.",
-                    systemImage: "tray"
+                    systemImage: "leaf"
                 )
                 Spacer(minLength: 0)
             }
@@ -422,7 +422,7 @@ struct InboxView: View {
             }
             .padding(.top, GraftMetrics.spaceXS)
         }
-        .refreshable {
+        .graftRefreshable {
             // `sync()` records its own failure in `errorMessage`, which the
             // strip above renders — a pull that fails used to leave no trace
             // anywhere on this screen.
@@ -448,6 +448,8 @@ struct InboxView: View {
 
             ForEach(issues) { issue in
                 issueLink(issue)
+                .graftZoomSource(.issue(issue))
+                .transition(.graftTuck)
                 .id(issue.id)
                 .padding(.horizontal, GraftMetrics.gutter)
                 .padding(.bottom, GraftMetrics.spaceXS)
